@@ -224,7 +224,7 @@ pub(crate) struct DeviceData {
     #[serde(rename = "powerst")]
     power_status: DeviceStatus,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    elements: Vec<DeviceType>,
+    elements: Vec<OutData>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -370,7 +370,15 @@ pub(crate) struct SupplierDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum DeviceType {
+pub(crate) struct AgentDeviceData {
+    pub(crate) agent_id: u32,
+    #[serde(rename = "descrizione")]
+    pub(crate) description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) enum OutData {
+    Agent(AgentDeviceData),
     Data(DeviceData),
     Other(OtherDeviceData),
     Light(LightDeviceData),
@@ -380,5 +388,3 @@ pub(crate) enum DeviceType {
     Thermostat(ThermostatDeviceData),
     Supplier(SupplierDeviceData),
 }
-
-pub(crate) enum OutData {}

@@ -16,11 +16,14 @@ use crate::protocol::manager::RequestManager;
 use crate::protocol::messages;
 use crate::protocol::messages::{make_login_message, make_message, LoginInfo, MqttCommand, MqttMessage};
 
+const MQTT_USER: &str = "hsrv-user";
+const MQTT_PASSWORD: &str = "sf1nE9bjPc";
+
 #[derive(Parser, Debug)]
 struct Params {
-    #[clap(long, default_value = "hsrv-user")]
+    #[clap(long, default_value = "admin")]
     user: String,
-    #[clap(long, default_value = "sf1nE9bjPc")]
+    #[clap(long, default_value = "admin")]
     password: String,
     #[clap(long)]
     host: String,
@@ -33,8 +36,8 @@ async fn main() -> Result<(), ComelitClientError> {
     let params = Params::parse();
 
     let options = ComelitOptions::builder()
-        .user(params.user.clone())
-        .password(params.password.clone())
+        .user(MQTT_USER.to_string())
+        .password(MQTT_PASSWORD.to_string())
         .port(params.port)
         .host(params.host)
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;

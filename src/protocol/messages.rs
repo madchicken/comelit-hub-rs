@@ -1,6 +1,7 @@
 use std::error::Error;
 use serde::{Deserialize, Serialize};
-use crate::protocol::out_data_messages::{DeviceType};
+use serde_json::Value;
+use crate::protocol::out_data_messages::{OutData};
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
@@ -79,7 +80,7 @@ impl From<RequestSubType> for i32 {
     }
 }
 
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, Serialize)]
 pub(crate) struct MqttMessage {
     pub req_type: RequestType,
     pub seq_id: u32,
@@ -111,7 +112,7 @@ pub(crate) struct MqttMessage {
     pub act_type: Option<u32>,
 }
 
-#[derive(Default, Clone, Debug, Serialize, Deserialize)]
+#[derive(Default, Clone, Debug, Deserialize)]
 pub(crate) struct MqttResponseMessage {
     pub req_type: RequestType,
     pub seq_id: u32,
@@ -119,7 +120,7 @@ pub(crate) struct MqttResponseMessage {
     pub req_sub_type: RequestSubType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<u32>,
-    pub agent_type: u32,
+    pub agent_type: Option<u32>,
     #[serde(rename = "sessiontoken")]
     #[serde(skip_serializing_if = "Option::is_none")]
     pub session_token: Option<String>,
@@ -129,9 +130,9 @@ pub(crate) struct MqttResponseMessage {
     pub param_type: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub obj_id: Option<String>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub out_data: Vec<DeviceType>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub out_data: Vec<Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub params_data: Vec<Param>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
@@ -169,15 +170,6 @@ impl From<&MqttMessage> for Vec<u8> {
 impl From<MqttMessage> for Vec<u8> {
     fn from(value: MqttMessage) -> Self {
         Vec::<u8>::from(&value)
-    }
-}
-
-impl TryFrom<&[u8]> for MqttMessage {
-    type Error = Box<dyn Error>;
-
-    fn try_from(value: &[u8]) -> Result<Self, Self::Error> {
-        let string = String::from_utf8(value.to_vec())?;
-        Ok(serde_json::from_str::<MqttMessage>(string.as_str())?)
     }
 }
 

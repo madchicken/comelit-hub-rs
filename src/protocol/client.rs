@@ -3,7 +3,7 @@ use crate::protocol::messages::{
     MqttMessage, MqttResponseMessage, make_announce_message, make_login_message,
     make_status_message,
 };
-use crate::protocol::out_data_messages::{DeviceData, DeviceType};
+use crate::protocol::out_data_messages::{AgentDeviceData, DeviceData, OutData};
 use derive_builder::Builder;
 use mac_address::get_mac_address;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
@@ -92,7 +92,6 @@ impl ComelitClient {
         println!("Connected to MQTT broker at {:?}", mqttoptions);
         let request_manager = Arc::new(Mutex::new(RequestManager::new()));
         let manager_clone = Arc::clone(&request_manager);
-        let response_topic_clone = write_topic.to_string();
 
         if let Err(e) = client
             .subscribe(read_topic.clone(), QoS::AtLeastOnce)
@@ -105,9 +104,10 @@ impl ComelitClient {
         }
         println!("Subscribed to topic: {}", read_topic);
         // Start the event loop in a separate thread
+        let read_topic_clone = read_topic.clone();
         let _ = tokio::spawn(async move {
             println!("Starting event loop");
-            ComelitClient::run_eventloop(eventloop, manager_clone, response_topic_clone).await
+            ComelitClient::run_eventloop(eventloop, manager_clone, read_topic_clone).await
         });
 
         Ok(ComelitClient {
@@ -145,6 +145,7 @@ impl ComelitClient {
                             // Process incoming response
                             match serde_json::from_slice::<MqttResponseMessage>(&publish.payload) {
                                 Ok(response) => {
+                                    println!("Received response: {:?}", response);
                                     let mut manager = request_manager.lock().await;
                                     if !manager.complete_request(&response).await {
                                         println!("Response for unknown request: {:?}", response);
@@ -195,7 +196,7 @@ impl ComelitClient {
                 )));
             }
 
-            if response_receiver.try_recv().is_ok() {
+            if !response_receiver.is_empty() {
                 // Response is ready
                 break;
             }
@@ -206,8 +207,8 @@ impl ComelitClient {
         // Extract the response
         match response_receiver.try_recv() {
             Ok(response) => Ok(response),
-            Err(_) => Err(ComelitClientError::ReadError(
-                "Failed to receive response".to_string(),
+            Err(e) => Err(ComelitClientError::ReadError(
+                format!("Failed to receive response: {e}"),
             )),
         }
     }
@@ -232,7 +233,10 @@ impl ComelitClient {
                         format!("Announce failed: {}", response.req_result).into(),
                     ));
                 }
-                self.state = State::Announce(response.agent_id.unwrap());
+                let out = response.out_data.first().unwrap();
+                let agent_data = serde_json::from_value::<AgentDeviceData>(out.clone()).unwrap();
+                println!("Announce HUB description: {}", agent_data.description);
+                self.state = State::Announce(agent_data.agent_id);
                 Box::pin(self.login(user, password)).await
             }
             State::Announce(agent_id) => {
@@ -282,11 +286,7 @@ impl ComelitClient {
                 .await
                 .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
             Ok(resp.out_data.first().map(|out| {
-                if let DeviceType::Data(device) = out {
-                    device.clone()
-                } else {
-                    panic!("Expected DeviceType::Device")
-                }
+                serde_json::from_value::<DeviceData>(out.clone()).unwrap()
             }))
         }
     }
