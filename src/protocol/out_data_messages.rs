@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "i32", from = "i32")]
 pub(crate) enum ObjectType {
     Other = 1,
     Blind = 2,
@@ -44,6 +45,7 @@ impl From<ObjectType> for i32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "i32", from = "i32")]
 pub(crate) enum ObjectSubtype {
     Generic = 0,
     DigitalLight = 1,
@@ -104,8 +106,10 @@ impl From<ObjectSubtype> for i32 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(into = "i32", from = "String")]
 pub(crate) enum DeviceStatus {
+    #[default]
     On = 0,
     Off = 1,
     Running = 2,
@@ -122,12 +126,39 @@ impl From<i32> for DeviceStatus {
     }
 }
 
+impl From<&str> for DeviceStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::On,
+            "1" => Self::Off,
+            "2" => Self::Running,
+            _ => Self::Off, // Default case
+        }
+    }
+}
+
+impl From<String> for DeviceStatus {
+    fn from(value: String) -> Self {
+        DeviceStatus::from(value.as_str())
+    }
+}
+
 impl From<DeviceStatus> for i32 {
     fn from(value: DeviceStatus) -> Self {
         match value {
             DeviceStatus::On => 0,
             DeviceStatus::Off => 1,
             DeviceStatus::Running => 2,
+        }
+    }
+}
+
+impl From<DeviceStatus> for &str {
+    fn from(value: DeviceStatus) -> Self {
+        match value {
+            DeviceStatus::On => "0",
+            DeviceStatus::Off => "1",
+            DeviceStatus::Running => "2",
         }
     }
 }
@@ -205,7 +236,7 @@ pub(crate) struct DeviceData {
     sub_type: ObjectSubtype,
     sched_status: Option<DeviceStatus>,
     sched_lock: Option<String>,
-    #[serde(rename = "schedZoneStatus")]
+    #[serde(default, rename = "schedZoneStatus")]
     sched_zone_status: Vec<u32>,
     status: DeviceStatus,
     #[serde(rename = "descrizione")]
@@ -216,14 +247,14 @@ pub(crate) struct DeviceData {
     num_uscita: Option<String>,
     icon_id: Option<String>,
     #[serde(rename = "isProtected")]
-    is_protected: DeviceStatus,
+    is_protected: Option<DeviceStatus>,
     #[serde(rename = "objectId")]
     object_id: Option<String>,
     #[serde(rename = "placeId")]
     place_id: Option<String>,
     #[serde(rename = "powerst")]
     power_status: DeviceStatus,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     elements: Vec<OutData>,
 }
 

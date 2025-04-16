@@ -3,13 +3,12 @@ use crate::protocol::messages::{
     MqttMessage, MqttResponseMessage, make_announce_message, make_login_message,
     make_status_message,
 };
-use crate::protocol::out_data_messages::{AgentDeviceData, DeviceData, OutData};
+use crate::protocol::out_data_messages::{AgentDeviceData, DeviceData};
 use derive_builder::Builder;
 use mac_address::get_mac_address;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
-use std::thread;
 use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::Mutex;
@@ -74,7 +73,7 @@ enum State {
 impl ComelitClient {
     pub async fn new(options: ComelitOptions) -> Result<Self, ComelitClientError> {
         let client_id = generate_client_id();
-        let (write_topic, read_topic) = if let Some(mac_address) =
+        let (write_topic, read_topic) = if let Some(_mac_address) =
             get_mac_address().map_err(|e| ComelitClientError::GenericError(e.to_string()))?
         {
             let addr = "0025291701EC";
@@ -146,10 +145,11 @@ impl ComelitClient {
                             match serde_json::from_slice::<MqttResponseMessage>(&publish.payload) {
                                 Ok(response) => {
                                     println!("Received response: {:?}", response);
-                                    let mut manager = request_manager.lock().await;
+                                    let manager = request_manager.lock().await;
                                     if !manager.complete_request(&response).await {
                                         println!("Response for unknown request: {:?}", response);
                                     }
+                                    manager.remove_pending_requests();
                                 }
                                 Err(e) => eprintln!("Failed to parse response: {:?}", e),
                             }
@@ -171,7 +171,7 @@ impl ComelitClient {
     ) -> Result<MqttResponseMessage, ComelitClientError> {
         // Register this request before publishing
         let mut response_receiver = {
-            let mut manager = self.request_manager.lock().await;
+            let manager = self.request_manager.lock().await;
             manager.add_request(payload.seq_id.clone()).await
         };
 

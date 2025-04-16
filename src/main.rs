@@ -1,20 +1,11 @@
 mod protocol;
 
-use rumqttc::{MqttOptions, AsyncClient, QoS, Event, Incoming, EventLoop};
-use tokio::{task};
 use std::time::Duration;
-use std::error::Error;
-use std::sync::atomic::{AtomicU32, Ordering};
 use clap::Parser;
 use clap_derive::Parser;
 use crossterm::{event, terminal};
 use crossterm::event::Event::Key;
-use mac_address::get_mac_address;
-use uuid::Uuid;
 use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID};
-use crate::protocol::manager::RequestManager;
-use crate::protocol::messages;
-use crate::protocol::messages::{make_login_message, make_message, LoginInfo, MqttCommand, MqttMessage};
 
 const MQTT_USER: &str = "hsrv-user";
 const MQTT_PASSWORD: &str = "sf1nE9bjPc";
