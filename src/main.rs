@@ -27,8 +27,10 @@ async fn main() -> Result<(), ComelitClientError> {
     let params = Params::parse();
 
     let options = ComelitOptions::builder()
-        .user(MQTT_USER.to_string())
-        .password(MQTT_PASSWORD.to_string())
+        .user(params.user)
+        .password(params.password)
+        .mqtt_user(MQTT_USER.to_string())
+        .mqtt_password(MQTT_PASSWORD.to_string())
         .port(params.port)
         .host(params.host)
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
@@ -46,7 +48,7 @@ async fn main() -> Result<(), ComelitClientError> {
                         break println!("Exiting...");
                     }
                     event::KeyCode::Char('l') => {
-                        if let Err(e) = client.login(&params.user, &params.password).await {
+                        if let Err(e) = client.login().await {
                             println!("Login failed: {}", e);
                         } else {
                             println!("Login successful");
