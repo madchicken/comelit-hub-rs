@@ -5,6 +5,8 @@ use clap::Parser;
 use clap_derive::Parser;
 use crossterm::{event, terminal};
 use crossterm::event::Event::Key;
+use tracing::{error, info};
+use tracing_subscriber::EnvFilter;
 use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID};
 
 const MQTT_USER: &str = "hsrv-user";
@@ -24,6 +26,12 @@ struct Params {
 
 #[tokio::main]
 async fn main() -> Result<(), ComelitClientError> {
+    // Initialize the tracing subscriber
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env()
+            .add_directive("comelit_hub_client=info".parse().unwrap()))
+        .init();
+
     let params = Params::parse();
 
     let options = ComelitOptions::builder()
@@ -35,8 +43,14 @@ async fn main() -> Result<(), ComelitClientError> {
         .host(params.host)
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
     let mut client = ComelitClient::new(options).await?;
+    if let Err(e) = client.login().await {
+        error!("Login failed: {}", e);
+        return Err(e);
+    } else {
+        info!("Login successful");
+    }
 
-    println!("Press 'q' to quit, 'l' to login, 'i' to get info");
+    println!("Press 'q' to quit, 'i' to get the hose index, '1' to subscribe to ROOT_ID, '2' to subscribe to VIP#APARTMENT, '3' to subscribe to VIP#OD#00000100.2");
     terminal::enable_raw_mode().unwrap();
     // read keyboard input
     loop {
@@ -47,18 +61,32 @@ async fn main() -> Result<(), ComelitClientError> {
                     event::KeyCode::Char('q') => {
                         break println!("Exiting...");
                     }
-                    event::KeyCode::Char('l') => {
-                        if let Err(e) = client.login().await {
-                            println!("Login failed: {}", e);
+                    event::KeyCode::Char('i') => {
+                        if let Ok(data) = client.fetch_index().await {
+                            println!("Index {:?}", data);
                         } else {
-                            println!("Login successful");
+                            error!("Info error");
                         }
                     }
-                    event::KeyCode::Char('i') => {
-                        if let Err(e) = client.info(ROOT_ID, 1).await {
-                            println!("Info failed: {}", e);
+                    event::KeyCode::Char('1') => {
+                        if let Ok(_) = client.subscribe(ROOT_ID).await {
+                            println!("Successfully subscribed to ROOT_ID");
                         } else {
-                            println!("Info successful");
+                            error!("Subscribe error");
+                        }
+                    }
+                    event::KeyCode::Char('2') => {
+                        if let Ok(_) = client.subscribe("VIP#APARTMENT").await {
+                            println!("Successfully subscribed to VIP#APARTMENT");
+                        } else {
+                            error!("Subscribe error");
+                        }
+                    }
+                    event::KeyCode::Char('3') => {
+                        if let Ok(_) = client.subscribe("VIP#OD#00000100.2").await {
+                            println!("Successfully subscribed to VIP#OD#00000100.2");
+                        } else {
+                            error!("Subscribe error");
                         }
                     }
                     _ => {}

@@ -111,10 +111,11 @@ pub(crate) struct MqttMessage {
 }
 
 #[derive(Default, Clone, Debug, Deserialize)]
+#[allow(unused)]
 pub(crate) struct MqttResponseMessage {
     pub req_type: RequestType,
-    pub seq_id: u32,
-    pub req_result: u32,
+    pub seq_id: Option<u32>,
+    pub req_result: Option<u32>,
     pub req_sub_type: RequestSubType,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub agent_id: Option<u32>,
@@ -142,23 +143,6 @@ pub(crate) struct Param {
     param_value: String,
 }
 
-pub (crate) struct LoginInfo {
-    pub user: String,
-    pub password: String,
-    pub agent_id: u32,
-}
-
-pub enum MqttCommand {
-    Status(String, String, u8),
-    Action,
-    Subscribe,
-    Login(LoginInfo),
-    Ping,
-    ReadParams,
-    GetDatetime,
-    Announce(u32),
-}
-
 impl From<&MqttMessage> for Vec<u8> {
     fn from(value: &MqttMessage) -> Self {
         serde_json::to_string(value).unwrap().into_bytes()
@@ -171,24 +155,11 @@ impl From<MqttMessage> for Vec<u8> {
     }
 }
 
-pub fn make_message(seq_id: u32, cmd: MqttCommand) -> MqttMessage {
-    match cmd {
-        MqttCommand::Status(session, device, depth) => make_status_message(seq_id, session.as_str(), device.as_str(), depth),
-        MqttCommand::Action => make_action_message(seq_id),
-        MqttCommand::Subscribe => make_subscribe_message(seq_id),
-        MqttCommand::Login(info) => make_login_message(seq_id, info.user.as_str(), info.password.as_str(), info.agent_id),
-        MqttCommand::Ping => make_ping_message(seq_id),
-        MqttCommand::ReadParams => make_read_params_message(seq_id),
-        MqttCommand::GetDatetime => make_get_datetime_message(seq_id),
-        MqttCommand::Announce(agent_type) => make_announce_message(seq_id, agent_type),
-    }
-}
-
-fn make_get_datetime_message(p0: u32) -> MqttMessage {
+fn make_get_datetime_message(seq_id: u32) -> MqttMessage {
     todo!()
 }
 
-fn make_read_params_message(p0: u32) -> MqttMessage {
+fn make_read_params_message(seq_id: u32) -> MqttMessage {
     todo!()
 }
 
@@ -200,19 +171,32 @@ pub fn make_login_message(req_id: u32, user: &str, password: &str, agent_id: u32
         user_name: Some(user.to_string()),
         password: Some(password.to_string()),
         agent_id: Some(agent_id),
+        agent_type: Some(0),
         ..MqttMessage::default()
     }
 }
 
-fn make_ping_message(p0: u32) -> MqttMessage {
-    todo!()
+fn make_ping_message(seq_id: u32) -> MqttMessage {
+    MqttMessage {
+        req_type: RequestType::Ping,
+        seq_id,
+        req_sub_type: RequestSubType::None,
+        ..MqttMessage::default()
+    }
 }
 
-fn make_subscribe_message(p0: u32) -> MqttMessage {
-    todo!()
+pub fn make_subscribe_message(seq_id: u32, session_token: &str, device: &str) -> MqttMessage {
+    MqttMessage {
+        req_type: RequestType::Subscribe,
+        seq_id,
+        req_sub_type: RequestSubType::SubscribeRt,
+        session_token: Some(session_token.to_string()),
+        obj_id: Some(device.to_string()),
+        ..MqttMessage::default()
+    }
 }
 
-fn make_action_message(p0: u32) -> MqttMessage {
+fn make_action_message(seq_id: u32) -> MqttMessage {
     todo!()
 }
 

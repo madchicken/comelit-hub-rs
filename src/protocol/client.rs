@@ -1,17 +1,16 @@
 use crate::protocol::manager::RequestManager;
-use crate::protocol::messages::{
-    MqttMessage, MqttResponseMessage, make_announce_message, make_login_message,
-    make_status_message,
-};
-use crate::protocol::out_data_messages::{AgentDeviceData, DeviceData};
+use crate::protocol::messages::{MqttMessage, MqttResponseMessage, make_announce_message, make_login_message, make_status_message, make_subscribe_message};
+use crate::protocol::out_data_messages::{device_data_to_home_device, AgentDeviceData, DeviceData, HomeDeviceData};
 use derive_builder::Builder;
 use mac_address::get_mac_address;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
+use dashmap::DashMap;
 use thiserror::Error;
 use tokio::sync::Mutex;
+use tracing::{error, info};
 use uuid::Uuid;
 
 pub const ROOT_ID: &str = "GEN#17#13#1";
@@ -90,9 +89,10 @@ impl ComelitClient {
         let mut mqttoptions = MqttOptions::new(client_id, options.host, options.port);
         mqttoptions.set_keep_alive(Duration::from_secs(5));
         mqttoptions.set_credentials(options.mqtt_user, options.mqtt_password);
+        mqttoptions.set_max_packet_size(128 * 1024, 128 * 1024);
 
         let (client, eventloop) = AsyncClient::new(mqttoptions.clone(), 10);
-        println!("Connected to MQTT broker at {:?}", mqttoptions);
+        info!("Connected to MQTT broker at {:?}", mqttoptions);
         let request_manager = Arc::new(Mutex::new(RequestManager::new()));
         let manager_clone = Arc::clone(&request_manager);
 
@@ -106,11 +106,11 @@ impl ComelitClient {
                 e
             )));
         }
-        println!("Subscribed to topic: {}", read_topic);
+        info!("Subscribed to topic: {}", read_topic);
         // Start the event loop in a separate thread
         let read_topic_clone = read_topic.clone();
         let _ = tokio::spawn(async move {
-            println!("Starting event loop");
+            info!("Starting event loop");
             ComelitClient::run_eventloop(eventloop, manager_clone, read_topic_clone).await
         });
 
@@ -119,14 +119,14 @@ impl ComelitClient {
             request_manager,
             write_topic,
             read_topic,
-            req_id: AtomicU32::new(0),
+            req_id: AtomicU32::new(1),
             state: State::Disconnected,
             user: options.user,
             password: options.password,
         })
     }
 
-    pub async fn disconnect(&mut self) -> Result<(), ComelitClientError> {
+    pub async fn disconnect(self) -> Result<(), ComelitClientError> {
         self.client
             .unsubscribe(&self.read_topic)
             .await
@@ -135,7 +135,6 @@ impl ComelitClient {
             .disconnect()
             .await
             .map_err(|e| ComelitClientError::ConnectionError(format!("Disconnect error: {e}")))?;
-        self.state = State::Disconnected;
         Ok(())
     }
 
@@ -150,26 +149,39 @@ impl ComelitClient {
                     if let Event::Incoming(Packet::Publish(publish)) = notification {
                         if publish.topic == response_topic {
                             // Process incoming response
+                            info!("Received response: {}", String::from_utf8(publish.payload.to_vec()).unwrap());
                             match serde_json::from_slice::<MqttResponseMessage>(&publish.payload) {
                                 Ok(response) => {
-                                    println!("Received response: {:?}", response);
                                     let manager = request_manager.lock().await;
-                                    if !manager.complete_request(&response).await {
-                                        println!("Response for unknown request: {:?}", response);
+                                    if response.seq_id.is_some() {
+                                        if !manager.complete_request(&response).await {
+                                            info!("Response for unknown request: {:?}", response);
+                                        }
+                                    } else {
+                                        // this is an update message from the server
+                                        if let Some(obj_id) = response.obj_id {
+                                            info!("Updating object: {}", obj_id);
+                                            let vec = device_data_to_home_device(response.out_data.first().unwrap().clone());
+                                            let device = vec.first().unwrap();
+                                            info!("New data: {:?}", device);
+                                            manager.update_index(device.id(), device);
+                                        }
                                     }
                                     manager.remove_pending_requests();
+
                                 }
-                                Err(e) => eprintln!("Failed to parse response: {:?}", e),
+                                Err(e) => error!("Failed to parse response: {:?}", e),
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    eprintln!("Connection error: {:?}", e);
-                    tokio::time::sleep(Duration::from_secs(1)).await;
+                    error!("Connection error: {:?}", e);
+                    break
                 }
             }
         }
+        info!("Event loop terminated");
     }
 
     // Send a request and wait for the response
@@ -183,7 +195,7 @@ impl ComelitClient {
             manager.add_request(payload.seq_id.clone()).await
         };
 
-        // Publish the request
+        // Publish the request. Looping in case of invalid token response
         loop {
             match self
                 .client
@@ -191,62 +203,68 @@ impl ComelitClient {
                     &self.write_topic,
                     QoS::AtMostOnce,
                     false,
-                    serde_json::to_string(&payload).map_err(|e| {
+                    serde_json::to_string(&payload).map(|json| {
+                        info!("Sending request: {json}");
+                        json
+                    }).map_err(|e| {
                         ComelitClientError::PublishError(format!("Serialization error: {:?}", e))
                     })?,
                 )
                 .await
             {
                 Ok(_) => {
-                    break println!("Request sent successfully");
+                    info!("Request sent successfully");
                 }
                 Err(e) => {
-                    if e.to_string().contains("invalid token") {
+                    break Err(ComelitClientError::PublishError(format!(
+                        "Failed to publish request: {}",
+                        e
+                    )));
+                }
+            }
+
+            // Wait for the response with timeout
+            let timeout = Duration::from_secs(5);
+            let start = Instant::now();
+            // waiting loop for the response
+            loop {
+                if start.elapsed() > timeout {
+                    return Err(ComelitClientError::ReadError(format!(
+                        "Request timed out: {}",
+                        payload.seq_id
+                    )));
+                }
+
+                if !response_receiver.is_empty() {
+                    // Response is ready
+                    break;
+                }
+
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+
+            // Extract the response
+            match response_receiver.try_recv() {
+                Ok(response) => {
+                    if response.req_result.unwrap() != 0 {
                         match Box::pin(self.login()).await {
                             Ok((_, token)) => {
-                                println!("Reconnected successfully with session token {token}");
+                                info!("Reconnected successfully with session token {token}. Sending request again.");
                                 continue;
                             }
-                            Err(e) => return Err(ComelitClientError::PublishError(format!(
-                                "Failed to publish request: {}",
+                            Err(e) => break Err(ComelitClientError::PublishError(format!(
+                                "Failed to publish request after receiving an error: {}",
                                 e
                             )))
                         }
                     } else {
-                        return Err(ComelitClientError::PublishError(format!(
-                            "Failed to publish request: {}",
-                            e
-                        )));
+                        break Ok(response)
                     }
-                }
+                },
+                Err(e) => break Err(ComelitClientError::ReadError(format!(
+                    "Failed to receive response: {e}"
+                ))),
             }
-        }
-
-        // Wait for the response with timeout
-        let timeout = Duration::from_secs(5);
-        let start = Instant::now();
-        loop {
-            if start.elapsed() > timeout {
-                return Err(ComelitClientError::ReadError(format!(
-                    "Request timed out: {}",
-                    payload.seq_id
-                )));
-            }
-
-            if !response_receiver.is_empty() {
-                // Response is ready
-                break;
-            }
-
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-
-        // Extract the response
-        match response_receiver.try_recv() {
-            Ok(response) => Ok(response),
-            Err(e) => Err(ComelitClientError::ReadError(format!(
-                "Failed to receive response: {e}"
-            ))),
         }
     }
 
@@ -261,14 +279,14 @@ impl ComelitClient {
                     ))
                     .await
                     .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
-                if response.req_result != 0 {
+                if response.req_result.unwrap_or_default() != 0 {
                     return Err(ComelitClientError::LoginError(
-                        format!("Announce failed: {}", response.req_result).into(),
+                        format!("Announce failed: {}", response.req_result.unwrap_or_default()).into(),
                     ));
                 }
                 let out = response.out_data.first().unwrap();
                 let agent_data = serde_json::from_value::<AgentDeviceData>(out.clone()).unwrap();
-                println!("Announce HUB description: {}", agent_data.description);
+                info!("Announce HUB description: {}", agent_data.description);
                 self.state = State::Announced(agent_data.agent_id);
                 Box::pin(self.login()).await
             }
@@ -282,9 +300,9 @@ impl ComelitClient {
                     ))
                     .await
                     .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
-                if response.req_result != 0 {
+                if response.req_result.unwrap_or_default() != 0 {
                     return Err(ComelitClientError::LoginError(
-                        format!("Login failed: {}", response.req_result).into(),
+                        format!("Login failed: {}", response.req_result.unwrap_or_default()).into(),
                     ));
                 }
                 self.state = State::Logged(agent_id, response.session_token.unwrap());
@@ -301,7 +319,7 @@ impl ComelitClient {
         &mut self,
         device_id: &str,
         detail_level: u8,
-    ) -> Result<Option<DeviceData>, ComelitClientError> {
+    ) -> Result<Vec<DeviceData>, ComelitClientError> {
         if !matches!(self.state, State::Logged(..)) {
             Err(ComelitClientError::InvalidStateError)
         } else {
@@ -317,8 +335,52 @@ impl ComelitClient {
                 .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
             Ok(resp
                 .out_data
-                .first()
-                .map(|out| serde_json::from_value::<DeviceData>(out.clone()).unwrap()))
+                .iter()
+                .map(|out| serde_json::from_value::<DeviceData>(out.clone()).unwrap())
+                .collect::<Vec<DeviceData>>())
         }
+    }
+
+    pub async fn subscribe(&mut self, device_id: &str) -> Result<(), ComelitClientError> {
+        if !matches!(self.state, State::Logged(..)) {
+            return Err(ComelitClientError::InvalidStateError);
+        }
+        let (_, session_token) = self.login().await?;
+        let _resp = self
+            .send_request(make_subscribe_message(
+                self.req_id.fetch_add(1, Ordering::Relaxed),
+                session_token.as_str(),
+                device_id,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn fetch_index(&mut self) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+        if !matches!(self.state, State::Logged(..)) {
+            return Err(ComelitClientError::InvalidStateError);
+        }
+        let (_, session_token) = self.login().await?;
+        let resp = self
+            .send_request(make_status_message(
+                self.req_id.fetch_add(1, Ordering::Relaxed),
+                session_token.as_str(),
+                ROOT_ID,
+                2,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
+        let index = DashMap::new();
+        for v in resp.out_data.iter() {
+            let devices = device_data_to_home_device(v.clone());
+            for device in devices {
+                index.insert(device.id().clone(), device);
+            }
+        }
+        let index2 = index.clone();
+        let mut guard = self.request_manager.lock().await;
+        guard.set_index(index);
+        Ok(index2)
     }
 }

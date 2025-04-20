@@ -1,9 +1,10 @@
-use crate::protocol::messages::{MqttResponseMessage};
+use crate::protocol::messages::{MqttMessage, MqttResponseMessage};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::oneshot;
+use crate::protocol::out_data_messages::HomeDeviceData;
 
 pub(crate) struct TimedRequest {
     ts: Instant,
@@ -11,8 +12,9 @@ pub(crate) struct TimedRequest {
 }
 
 pub(crate) struct RequestManager {
-    pub pending: Arc<DashMap<u32, TimedRequest>>,
+    pending: Arc<DashMap<u32, TimedRequest>>,
     timeout: u64,
+    index: Option<DashMap<String, HomeDeviceData>>,
 }
 
 impl Default for RequestManager {
@@ -26,6 +28,7 @@ impl RequestManager {
         Self {
             pending: Arc::new(DashMap::new()),
             timeout: 10,
+            index: None,
         }
     }
 
@@ -42,10 +45,24 @@ impl RequestManager {
     }
 
     pub async fn complete_request(&self, response: &MqttResponseMessage) -> bool {
-        if let Some((_, sender)) = self.pending.remove(&response.seq_id) {
+        if let Some((_, sender)) = self.pending.remove(&response.seq_id.unwrap()) {
             sender.sender.send(response.clone()).is_ok()
         } else {
             false
         }
+    }
+
+    pub fn set_index(&mut self, index: DashMap<String, HomeDeviceData>) {
+        self.index = Some(index);
+    }
+
+    pub fn update_index(&self, key: String, value: &HomeDeviceData) {
+        if let Some(index) = &self.index {
+            index.insert(key, value.clone());
+        }
+    }
+    
+    pub fn get_index(&self) -> Option<&DashMap<String, HomeDeviceData>> {
+        self.index.as_ref()
     }
 }

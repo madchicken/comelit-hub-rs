@@ -14,9 +14,7 @@ mac_address = "1.1.8"
 rumqttc = { version = "0.24.0" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }
-strum = "0.27.1"
-strum_macros = "0.27.1"
-time = "0.3.41"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.44.1", features = ["full"] }
 uuid = { version = "1.16.0", features = ["v4"] }
-bincode = { version = "2.0.1", features = ["serde"] }
