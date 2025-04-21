@@ -8,6 +8,7 @@ use crossterm::event::Event::Key;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID};
+use crate::protocol::out_data_messages::ActionType;
 
 const MQTT_USER: &str = "hsrv-user";
 const MQTT_PASSWORD: &str = "sf1nE9bjPc";
@@ -50,7 +51,13 @@ async fn main() -> Result<(), ComelitClientError> {
         info!("Login successful");
     }
 
-    println!("Press 'q' to quit, 'i' to get the hose index, '1' to subscribe to ROOT_ID, '2' to subscribe to VIP#APARTMENT, '3' to subscribe to VIP#OD#00000100.2");
+    println!("Press 'q' to quit");
+    println!("Press 'f' to fetch the house index");
+    println!("Press 'i' to fetch the info about ROOT_ID");
+    println!("Press '1' to subscribe to ROOT_ID");
+    println!("Press '2' to subscribe to VIP#APARTMENT");
+    println!("Press '3' to subscribe to VIP#OD#00000100.2");
+
     terminal::enable_raw_mode().unwrap();
     // read keyboard input
     loop {
@@ -61,9 +68,16 @@ async fn main() -> Result<(), ComelitClientError> {
                     event::KeyCode::Char('q') => {
                         break println!("Exiting...");
                     }
-                    event::KeyCode::Char('i') => {
+                    event::KeyCode::Char('f') => {
                         if let Ok(data) = client.fetch_index().await {
                             println!("Index {:?}", data);
+                        } else {
+                            error!("Info error");
+                        }
+                    }
+                    event::KeyCode::Char('i') => {
+                        if let Ok(data) = client.info(ROOT_ID, 2).await {
+                            println!("Info received");
                         } else {
                             error!("Info error");
                         }
@@ -84,6 +98,13 @@ async fn main() -> Result<(), ComelitClientError> {
                     }
                     event::KeyCode::Char('3') => {
                         if let Ok(_) = client.subscribe("VIP#OD#00000100.2").await {
+                            println!("Successfully subscribed to VIP#OD#00000100.2");
+                        } else {
+                            error!("Subscribe error");
+                        }
+                    }
+                    event::KeyCode::Char('c') => {
+                        if let Ok(_) = client.send_action("VIP#OD#00000100.2", ActionType::Set, 1).await {
                             println!("Successfully subscribed to VIP#OD#00000100.2");
                         } else {
                             error!("Subscribe error");

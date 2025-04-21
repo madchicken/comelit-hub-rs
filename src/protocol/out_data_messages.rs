@@ -296,6 +296,50 @@ impl From<ClimaMode> for i32 {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(into = "u32", from = "u32")]
+pub(crate) enum ActionType {
+    Set = 0,
+    ClimaMode = 1,
+    ClimaSetPoint = 2,
+    SwitchSeason = 4,
+    SwitchClimaMode = 13,
+    UmiSetpoint = 19,
+    SwitchUmiMode = 23,
+    SetBlindPosition = 52,
+}
+
+impl From<u32> for ActionType {
+    fn from(value: u32) -> Self {
+        match value {
+            0 => Self::Set,
+            1 => Self::ClimaMode,
+            2 => Self::ClimaSetPoint,
+            4 => Self::SwitchSeason,
+            13 => Self::SwitchClimaMode,
+            19 => Self::UmiSetpoint,
+            23 => Self::SwitchUmiMode,
+            52 => Self::SetBlindPosition,
+            _ => Self::Set, // Default case
+        }
+    }
+}
+
+impl From<ActionType> for u32 {
+    fn from(value: ActionType) -> Self {
+        match value {
+            ActionType::Set => 0,
+            ActionType::ClimaMode => 1,
+            ActionType::ClimaSetPoint => 2,
+            ActionType::SwitchSeason => 4,
+            ActionType::SwitchClimaMode => 13,
+            ActionType::UmiSetpoint => 19,
+            ActionType::SwitchUmiMode => 23,
+            ActionType::SetBlindPosition => 52,
+        }
+    }
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DeviceData {

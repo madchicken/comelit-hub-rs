@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use crate::protocol::out_data_messages::ActionType;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
@@ -32,7 +33,6 @@ impl From<i32> for RequestType {
     }
 }
 
-// Implementazione per convertire da RequestSubType a i32
 impl From<RequestType> for i32 {
     fn from(value: RequestType) -> Self {
         value as i32
@@ -54,7 +54,6 @@ pub enum RequestSubType {
     None = -1,
 }
 
-// Implementazione per convertire da i32 a RequestSubType
 impl From<i32> for RequestSubType {
     fn from(value: i32) -> Self {
         match value {
@@ -71,7 +70,6 @@ impl From<i32> for RequestSubType {
     }
 }
 
-// Implementazione per convertire da RequestSubType a i32
 impl From<RequestSubType> for i32 {
     fn from(value: RequestSubType) -> Self {
         value as i32
@@ -159,8 +157,17 @@ fn make_get_datetime_message(seq_id: u32) -> MqttMessage {
     todo!()
 }
 
-fn make_read_params_message(seq_id: u32) -> MqttMessage {
-    todo!()
+pub fn make_action_message(seq_id: u32, session_token: &str, obj_id: &str, act_type: ActionType, value: u32) -> MqttMessage {
+    MqttMessage {
+        req_type: RequestType::Action,
+        seq_id,
+        req_sub_type: RequestSubType::SetActionObj,
+        session_token: Some(session_token.to_string()),
+        obj_id: Some(obj_id.to_string()),
+        act_params: vec![value],
+        act_type: Some(act_type.into()),
+        ..MqttMessage::default()
+    }
 }
 
 pub fn make_login_message(req_id: u32, user: &str, password: &str, agent_id: u32) -> MqttMessage {
@@ -194,10 +201,6 @@ pub fn make_subscribe_message(seq_id: u32, session_token: &str, device: &str) ->
         obj_id: Some(device.to_string()),
         ..MqttMessage::default()
     }
-}
-
-fn make_action_message(seq_id: u32) -> MqttMessage {
-    todo!()
 }
 
 pub fn make_status_message(seq_id: u32, session_token: &str, device: &str, level: u8) -> MqttMessage {

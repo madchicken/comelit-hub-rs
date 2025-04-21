@@ -1,6 +1,6 @@
 use crate::protocol::manager::RequestManager;
-use crate::protocol::messages::{MqttMessage, MqttResponseMessage, make_announce_message, make_login_message, make_status_message, make_subscribe_message};
-use crate::protocol::out_data_messages::{device_data_to_home_device, AgentDeviceData, DeviceData, HomeDeviceData};
+use crate::protocol::messages::{MqttMessage, MqttResponseMessage, make_announce_message, make_login_message, make_status_message, make_subscribe_message, make_action_message};
+use crate::protocol::out_data_messages::{device_data_to_home_device, ActionType, AgentDeviceData, DeviceData, HomeDeviceData};
 use derive_builder::Builder;
 use mac_address::get_mac_address;
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS};
@@ -382,5 +382,28 @@ impl ComelitClient {
         let mut guard = self.request_manager.lock().await;
         guard.set_index(index);
         Ok(index2)
+    }
+
+    pub async fn send_action(
+        &mut self,
+        device_id: &str,
+        action_type: ActionType,
+        value: u32
+    ) -> Result<(), ComelitClientError> {
+        if !matches!(self.state, State::Logged(..)) {
+            return Err(ComelitClientError::InvalidStateError);
+        }
+        let (_, session_token) = self.login().await?;
+        let _resp = self
+            .send_request(make_action_message(
+                self.req_id.fetch_add(1, Ordering::Relaxed),
+                session_token.as_str(),
+                device_id,
+                action_type,
+                value,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
+        Ok(())
     }
 }
