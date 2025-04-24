@@ -58,9 +58,9 @@ async fn main() -> Result<(), ComelitClientError> {
     println!("Press '2' to subscribe to VIP#APARTMENT");
     println!("Press '3' to subscribe to VIP#OD#00000100.2");
 
-    terminal::enable_raw_mode().unwrap();
     // read keyboard input
     loop {
+        terminal::enable_raw_mode().unwrap();
         if event::poll(Duration::default()).unwrap() {
             if let Key(key_event) = event::read().unwrap() {
                 terminal::disable_raw_mode().unwrap();
@@ -76,7 +76,7 @@ async fn main() -> Result<(), ComelitClientError> {
                         }
                     }
                     event::KeyCode::Char('i') => {
-                        if let Ok(data) = client.info(ROOT_ID, 2).await {
+                        if let Ok(_) = client.info(ROOT_ID, 2).await {
                             println!("Info received");
                         } else {
                             error!("Info error");
@@ -112,7 +112,6 @@ async fn main() -> Result<(), ComelitClientError> {
                     }
                     _ => {}
                 }
-                terminal::enable_raw_mode().unwrap();
             }
         }
     }

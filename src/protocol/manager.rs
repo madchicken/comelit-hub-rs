@@ -1,4 +1,4 @@
-use crate::protocol::messages::{MqttMessage, MqttResponseMessage};
+use crate::protocol::messages::{MqttResponseMessage};
 use dashmap::DashMap;
 use std::sync::Arc;
 use std::time::Instant;
