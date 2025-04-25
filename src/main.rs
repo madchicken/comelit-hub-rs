@@ -7,7 +7,7 @@ use crossterm::{event, terminal};
 use crossterm::event::Event::Key;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
-use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID};
+use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, State, ROOT_ID};
 use crate::protocol::out_data_messages::ActionType;
 
 const MQTT_USER: &str = "hsrv-user";
@@ -44,7 +44,7 @@ async fn main() -> Result<(), ComelitClientError> {
         .host(params.host)
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
     let mut client = ComelitClient::new(options).await?;
-    if let Err(e) = client.login().await {
+    if let Err(e) = client.login(State::Disconnected).await {
         error!("Login failed: {}", e);
         return Err(e);
     } else {
@@ -58,9 +58,9 @@ async fn main() -> Result<(), ComelitClientError> {
     println!("Press '2' to subscribe to VIP#APARTMENT");
     println!("Press '3' to subscribe to VIP#OD#00000100.2");
 
+    terminal::enable_raw_mode().unwrap();
     // read keyboard input
     loop {
-        terminal::enable_raw_mode().unwrap();
         if event::poll(Duration::default()).unwrap() {
             if let Key(key_event) = event::read().unwrap() {
                 terminal::disable_raw_mode().unwrap();
@@ -72,7 +72,7 @@ async fn main() -> Result<(), ComelitClientError> {
                         if let Ok(data) = client.fetch_index().await {
                             println!("Index {:?}", data);
                         } else {
-                            error!("Info error");
+                            error!("Fetch index error");
                         }
                     }
                     event::KeyCode::Char('i') => {
@@ -112,6 +112,7 @@ async fn main() -> Result<(), ComelitClientError> {
                     }
                     _ => {}
                 }
+                terminal::enable_raw_mode().unwrap();
             }
         }
     }
