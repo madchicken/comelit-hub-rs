@@ -89,8 +89,12 @@ async fn make_id(req_id: &AtomicU32) -> u32 {
     req_id.fetch_add(1, Ordering::Relaxed)
 }
 
+pub trait StatusUpdate {
+    fn status_update(&self, device: &HomeDeviceData);
+}
+
 impl ComelitClient {
-    pub async fn new(options: ComelitOptions) -> Result<Self, ComelitClientError> {
+    pub async fn new(options: ComelitOptions, observer: Box<dyn StatusUpdate + Sync + Send>) -> Result<Self, ComelitClientError> {
         let client_id = generate_client_id();
         let (write_topic, read_topic) = if let Some(_mac_address) =
             get_mac_address().map_err(|e| ComelitClientError::GenericError(e.to_string()))?
@@ -127,9 +131,10 @@ impl ComelitClient {
         let read_topic_clone = read_topic.clone();
         let session = Arc::new(RwLock::new(None));
 
+        let observer = Arc::new(observer);
         tokio::spawn(async move {
             info!("Starting event loop");
-            ComelitClient::run_event_loop(event_loop, manager_clone, read_topic_clone)
+            ComelitClient::run_event_loop(event_loop, manager_clone, read_topic_clone, observer)
                 .await
         });
 
@@ -188,7 +193,7 @@ impl ComelitClient {
                             Some(session) => {
                                 // Send ping message. We don't use the manager, so the responses will be just ignored
                                 info!("Sending ping message");
-                                let payload = make_ping_message(req_id.fetch_add(1, Ordering::Relaxed), session.session_token.as_str());
+                                let payload = make_ping_message(req_id.fetch_add(1, Ordering::Relaxed), session.agent_id, session.session_token.as_str());
                                 client.publish(topic.as_str(), QoS::AtMostOnce, false, serde_json::to_string(&payload).unwrap()).await.map_err(|e| {
                                     ComelitClientError::PublishError(format!("Serialization error: {:?}", e))
                                 }).unwrap();
@@ -209,6 +214,7 @@ impl ComelitClient {
         mut event_loop: EventLoop,
         request_manager: Arc<Mutex<RequestManager>>,
         response_topic: String,
+        observer: Arc<Box<dyn StatusUpdate + Sync + Send>>,
     ) -> () {
         loop {
             // Poll the event loop for incoming messages
@@ -243,7 +249,7 @@ impl ComelitClient {
                                                     );
                                                     let device = vec.first().unwrap();
                                                     info!("New data: {:?}", device);
-                                                    manager.update_index(device.id(), device);
+                                                    observer.status_update(device);
                                                 }
                                             }
                                         }
@@ -433,11 +439,12 @@ impl ComelitClient {
         device_id: &str,
         detail_level: u8,
     ) -> Result<Vec<DeviceData>, ComelitClientError> {
-        let session_token = self.get_session_token().await?;
+        let session = self.get_session().await?;
         let resp = self
             .send_request(make_status_message(
                 make_id(&self.req_id).await,
-                session_token.as_str(),
+                session.0,
+                session.1.as_str(),
                 device_id,
                 detail_level,
             ))
@@ -451,11 +458,12 @@ impl ComelitClient {
     }
 
     pub async fn subscribe(&mut self, device_id: &str) -> Result<(), ComelitClientError> {
-        let session_token = self.get_session_token().await?;
+        let session = self.get_session().await?;
         let _resp = self
             .send_request(make_subscribe_message(
                 make_id(&self.req_id).await,
-                session_token.as_str(),
+                session.0,
+                session.1.as_str(),
                 device_id,
             ))
             .await
@@ -463,9 +471,9 @@ impl ComelitClient {
         Ok(())
     }
 
-    async fn get_session_token(&self) -> Result<String, ComelitClientError> {
+    async fn get_session(&self) -> Result<(u32, String), ComelitClientError> {
         if let Some(session) = self.session.read().await.as_ref() {
-            Ok(session.session_token.clone())
+            Ok((session.agent_id, session.session_token.clone()))
         } else {
             Err(ComelitClientError::InvalidStateError)
         }
@@ -474,11 +482,12 @@ impl ComelitClient {
     pub async fn fetch_index(
         &mut self,
     ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
-        let session_token = self.get_session_token().await?;
+        let session = self.get_session().await?;
         let resp = self
             .send_request(make_status_message(
                 make_id(&self.req_id).await,
-                session_token.as_str(),
+                session.0,
+                session.1.as_str(),
                 ROOT_ID,
                 2,
             ))
@@ -491,11 +500,7 @@ impl ComelitClient {
                 index.insert(device.id().clone(), device);
             }
         }
-        let index2 = index.clone();
-        let mut guard = self.request_manager.lock().await;
-        guard.set_index(index);
-        drop(guard);
-        Ok(index2)
+        Ok(index)
     }
 
     pub async fn send_action(
@@ -504,11 +509,12 @@ impl ComelitClient {
         action_type: ActionType,
         value: u32,
     ) -> Result<(), ComelitClientError> {
-        let session_token = self.get_session_token().await?;
+        let session = self.get_session().await?;
         let _resp = self
             .send_request(make_action_message(
                 make_id(&self.req_id).await,
-                session_token.as_str(),
+                session.0,
+                session.1.as_str(),
                 device_id,
                 action_type,
                 value,

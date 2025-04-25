@@ -7,8 +7,8 @@ use crossterm::{event, terminal};
 use crossterm::event::Event::Key;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
-use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, State, ROOT_ID};
-use crate::protocol::out_data_messages::ActionType;
+use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate, ROOT_ID};
+use crate::protocol::out_data_messages::{ActionType, HomeDeviceData};
 
 const MQTT_USER: &str = "hsrv-user";
 const MQTT_PASSWORD: &str = "sf1nE9bjPc";
@@ -23,6 +23,14 @@ struct Params {
     host: String,
     #[clap(long, default_value = "1883")]
     port: u16,
+}
+
+struct Updater;
+
+impl StatusUpdate for Updater {
+    fn status_update(&self, device: &HomeDeviceData) {
+        println!("Status update: {:?}", device);
+    }
 }
 
 #[tokio::main]
@@ -43,7 +51,7 @@ async fn main() -> Result<(), ComelitClientError> {
         .port(params.port)
         .host(params.host)
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
-    let mut client = ComelitClient::new(options).await?;
+    let mut client = ComelitClient::new(options, Box::new(Updater)).await?;
     if let Err(e) = client.login(State::Disconnected).await {
         error!("Login failed: {}", e);
         return Err(e);

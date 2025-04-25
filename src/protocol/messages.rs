@@ -153,7 +153,7 @@ impl From<MqttMessage> for Vec<u8> {
     }
 }
 
-pub(crate) fn make_action_message(seq_id: u32, session_token: &str, obj_id: &str, act_type: ActionType, value: u32) -> MqttMessage {
+pub(crate) fn make_action_message(seq_id: u32, agent_id: u32, session_token: &str, obj_id: &str, act_type: ActionType, value: u32) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Action,
         seq_id,
@@ -162,6 +162,7 @@ pub(crate) fn make_action_message(seq_id: u32, session_token: &str, obj_id: &str
         obj_id: Some(obj_id.to_string()),
         act_params: vec![value],
         act_type: Some(act_type.into()),
+        agent_id: Some(agent_id),
         ..MqttMessage::default()
     }
 }
@@ -179,28 +180,30 @@ pub(crate) fn make_login_message(req_id: u32, user: &str, password: &str, agent_
     }
 }
 
-pub(crate) fn make_ping_message(seq_id: u32, session_token: &str) -> MqttMessage {
+pub(crate) fn make_ping_message(seq_id: u32, agent_id: u32, session_token: &str) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Ping,
         seq_id,
         req_sub_type: RequestSubType::None,
         session_token: Some(session_token.to_string()),
+        agent_id: Some(agent_id),
         ..MqttMessage::default()
     }
 }
 
-pub(crate) fn make_subscribe_message(seq_id: u32, session_token: &str, device: &str) -> MqttMessage {
+pub(crate) fn make_subscribe_message(seq_id: u32, agent_id: u32, session_token: &str, device: &str) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Subscribe,
         seq_id,
         req_sub_type: RequestSubType::SubscribeRt,
         session_token: Some(session_token.to_string()),
         obj_id: Some(device.to_string()),
+        agent_id: Some(agent_id),
         ..MqttMessage::default()
     }
 }
 
-pub fn make_status_message(seq_id: u32, session_token: &str, device: &str, level: u8) -> MqttMessage {
+pub fn make_status_message(seq_id: u32, agent_id: u32, session_token: &str, device: &str, level: u8) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Status,
         seq_id,
@@ -208,6 +211,7 @@ pub fn make_status_message(seq_id: u32, session_token: &str, device: &str, level
         session_token: Some(session_token.to_string()),
         obj_id: Some(device.to_string()),
         detail_level: Some(level),
+        agent_id: Some(agent_id),
         ..MqttMessage::default()
     }
 }
