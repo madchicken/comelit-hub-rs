@@ -35,6 +35,8 @@ pub enum ComelitClientError {
     PublishError(String),
     #[error("Reading failed: {0}")]
     ReadError(String),
+    #[error("Scanning local network failed: {0}")]
+    ScannerError(String),
 }
 
 #[derive(Clone)]

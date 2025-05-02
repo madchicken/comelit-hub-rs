@@ -2,16 +2,24 @@ mod protocol;
 
 use std::time::Duration;
 use clap::Parser;
-use clap_derive::Parser;
+use clap_derive::{Parser, Subcommand};
 use crossterm::{event, terminal};
 use crossterm::event::Event::Key;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate, ROOT_ID};
 use crate::protocol::out_data_messages::{ActionType, HomeDeviceData};
+use crate::protocol::scanner::Scanner;
 
 const MQTT_USER: &str = "hsrv-user";
 const MQTT_PASSWORD: &str = "sf1nE9bjPc";
+
+#[derive(Subcommand, Debug, Default)]
+enum Commands {
+    Scan,
+    #[default]
+    Listen,
+}
 
 #[derive(Parser, Debug)]
 struct Params {
@@ -20,9 +28,12 @@ struct Params {
     #[clap(long, default_value = "admin")]
     password: String,
     #[clap(long)]
-    host: String,
+    host: Option<String>,
     #[clap(long, default_value = "1883")]
     port: u16,
+
+    #[command(subcommand)]
+    command: Commands,
 }
 
 struct Updater;
@@ -33,23 +44,14 @@ impl StatusUpdate for Updater {
     }
 }
 
-#[tokio::main]
-async fn main() -> Result<(), ComelitClientError> {
-    // Initialize the tracing subscriber
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env()
-            .add_directive("comelit_hub_client=info".parse().unwrap()))
-        .init();
-
-    let params = Params::parse();
-
+async fn listen(params: Params) -> Result<(), ComelitClientError> {
     let options = ComelitOptions::builder()
         .user(params.user)
         .password(params.password)
         .mqtt_user(MQTT_USER.to_string())
         .mqtt_password(MQTT_PASSWORD.to_string())
         .port(params.port)
-        .host(params.host)
+        .host(params.host.unwrap_or("127.0.0.1".to_string()))
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
     let mut client = ComelitClient::new(options, Box::new(Updater)).await?;
     if let Err(e) = client.login(State::Disconnected).await {
@@ -65,6 +67,8 @@ async fn main() -> Result<(), ComelitClientError> {
     println!("Press '1' to subscribe to ROOT_ID");
     println!("Press '2' to subscribe to VIP#APARTMENT");
     println!("Press '3' to subscribe to VIP#OD#00000100.2");
+    println!("Press 'c' to send action to VIP#OD#00000100.2");
+    println!("Press 'd' to send action to VIP#APARTMENT");
 
     terminal::enable_raw_mode().unwrap();
     // read keyboard input
@@ -113,9 +117,16 @@ async fn main() -> Result<(), ComelitClientError> {
                     }
                     event::KeyCode::Char('c') => {
                         if let Ok(_) = client.send_action("VIP#OD#00000100.2", ActionType::Set, 1).await {
-                            println!("Successfully subscribed to VIP#OD#00000100.2");
+                            println!("Successfully sent action to VIP#OD#00000100.2");
                         } else {
-                            error!("Subscribe error");
+                            error!("Action error");
+                        }
+                    }
+                    event::KeyCode::Char('d') => {
+                        if let Ok(_) = client.send_action("VIP#APARTMENT", ActionType::Set, 1).await {
+                            println!("Successfully set action to VIP#APARTMENT");
+                        } else {
+                            error!("Action error");
                         }
                     }
                     _ => {}
@@ -126,5 +137,28 @@ async fn main() -> Result<(), ComelitClientError> {
     }
     terminal::disable_raw_mode().unwrap();
     client.disconnect().await?;
+    Ok(())
+}
+#[tokio::main]
+async fn main() -> Result<(), ComelitClientError> {
+    // Initialize the tracing subscriber
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env()
+            .add_directive("comelit_hub_rs=info".parse().unwrap()))
+        .init();
+
+    let params = Params::parse();
+
+    match &params.command {
+        Commands::Scan => {
+            let hubs = Scanner::scan().await.map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
+            for hub in hubs {
+                println!("Found hub: {:?}", hub);
+            }
+        }
+        Commands::Listen => listen(params).await?,
+    }
+
+
     Ok(())
 }
