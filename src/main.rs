@@ -1,4 +1,5 @@
 mod protocol;
+mod js;
 
 use std::time::Duration;
 use clap::Parser;
@@ -8,11 +9,9 @@ use crossterm::event::Event::Key;
 use tracing::{error, info};
 use tracing_subscriber::EnvFilter;
 use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate, ROOT_ID};
+use crate::protocol::credentials::get_secrets;
 use crate::protocol::out_data_messages::{ActionType, HomeDeviceData};
 use crate::protocol::scanner::Scanner;
-
-const MQTT_USER: &str = "hsrv-user";
-const MQTT_PASSWORD: &str = "sf1nE9bjPc";
 
 #[derive(Subcommand, Debug, Default)]
 enum Commands {
@@ -23,14 +22,14 @@ enum Commands {
 
 #[derive(Parser, Debug)]
 struct Params {
-    #[clap(long, default_value = "admin")]
-    user: String,
-    #[clap(long, default_value = "admin")]
-    password: String,
+    #[clap(long)]
+    user: Option<String>,
+    #[clap(long)]
+    password: Option<String>,
     #[clap(long)]
     host: Option<String>,
-    #[clap(long, default_value = "1883")]
-    port: u16,
+    #[clap(long)]
+    port: Option<u16>,
 
     #[command(subcommand)]
     command: Commands,
@@ -45,13 +44,14 @@ impl StatusUpdate for Updater {
 }
 
 async fn listen(params: Params) -> Result<(), ComelitClientError> {
+    let (mqtt_user, mqtt_password) = get_secrets();
     let options = ComelitOptions::builder()
         .user(params.user)
         .password(params.password)
-        .mqtt_user(MQTT_USER.to_string())
-        .mqtt_password(MQTT_PASSWORD.to_string())
+        .mqtt_user(mqtt_user)
+        .mqtt_password(mqtt_password)
         .port(params.port)
-        .host(params.host.unwrap_or("127.0.0.1".to_string()))
+        .host(params.host)
         .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
     let mut client = ComelitClient::new(options, Box::new(Updater)).await?;
     if let Err(e) = client.login(State::Disconnected).await {
@@ -151,9 +151,18 @@ async fn main() -> Result<(), ComelitClientError> {
 
     match &params.command {
         Commands::Scan => {
-            let hubs = Scanner::scan().await.map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
-            for hub in hubs {
-                println!("Found hub: {:?}", hub);
+            if let Some(host) = params.host {
+                let hub = Scanner::scan_address(host.as_str()).await.map_err(|e| ComelitClientError::ScannerError(e.to_string()))?;
+                if let Some(hub) = hub {
+                    println!("Found hub: {:?}", hub);
+                } else {
+                    println!("No hub found at {}", host);
+                }
+            } else {
+                let hubs = Scanner::scan().await.map_err(|e| ComelitClientError::ScannerError(e.to_string()))?;
+                for hub in hubs {
+                    println!("Found hub: {:?}", hub);
+                }
             }
         }
         Commands::Listen => listen(params).await?,

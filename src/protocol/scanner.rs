@@ -3,6 +3,8 @@ use std::net::UdpSocket;
 use std::time::Duration;
 use tracing::{debug, error, info};
 
+const MAX_DATAGRAM_SIZE: usize = 65_507;
+
 fn to_string(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).trim_end_matches('\0').to_string()
 }
@@ -11,7 +13,8 @@ fn to_hex_string(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{:02X}", b)).collect()
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ComelitHUB {
     mac_address: String,
     hw_id: String,
@@ -20,8 +23,10 @@ pub(crate) struct ComelitHUB {
     system_id: String,
     description: String,
     model_id: String,
+    address: Option<String>,
 }
 
+#[allow(dead_code)]
 impl ComelitHUB {
     pub fn mac_address(&self) -> &str {
         &self.mac_address
@@ -51,6 +56,10 @@ impl ComelitHUB {
         &self.model_id
     }
 
+    pub fn address(&self) -> Option<&str> {
+        self.address.as_deref()
+    }
+
     pub fn model(&self) -> &str {
         match self.model_id.as_str() {
             "Extd" => "1456 - Gateway",
@@ -64,6 +73,11 @@ impl ComelitHUB {
             &_ => "Unknown",
         }
     }
+
+    pub fn with_address(mut self, address: String) -> Self {
+        self.address = Some(address);
+        self
+    }
 }
 
 impl From<&[u8]> for ComelitHUB {
@@ -76,9 +90,12 @@ impl From<&[u8]> for ComelitHUB {
             system_id: to_string(&msg[112..116]),
             description: to_string(&msg[116..152]),
             model_id: to_string(&msg[156..160]),
+            address: None,
         }
     }
 }
+
+const SCAN_PORT: &str = "24199";
 
 pub(crate) struct Scanner;
 
@@ -87,12 +104,11 @@ impl Scanner {
         let socket = UdpSocket::bind("0.0.0.0:34254")?;
 
         // Set the read timeout to 1 second
-        socket.set_read_timeout(Some(Duration::from_secs(1)))?;
+        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
         socket.set_broadcast(true)?;
 
-        const MAX_DATAGRAM_SIZE: usize = 65_507;
         let buf: Vec<u8> = vec![b'S', b'C', b'A', b'N', 0, 0, 0, 0, 0, 0xff, 0xff, 0xff];
-        socket.send_to(&buf, "255.255.255.255:24199")?;
+        socket.send_to(&buf, format!("255.255.255.255:{SCAN_PORT}"))?;
 
         let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
         let mut result: Vec<ComelitHUB> = Vec::new();
@@ -106,14 +122,14 @@ impl Scanner {
                         socket.send_to(&buf, &source)?;
                         continue;
                     } else {
-                        let comelit_hub = ComelitHUB::from(&data[..len]);
+                        let comelit_hub = ComelitHUB::from(&data[..len]).with_address(source.ip().to_string());
                         info!("Comelit HUB found: {:?}", comelit_hub);
                         result.push(comelit_hub);
                         continue;
                     }
                 }
                 Err(ref e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
-                    info!("No message received in 1 second, closing connection.");
+                    info!("No message received in 2 seconds, closing connection.");
                     break;
                 }
                 Err(e) => {
@@ -123,5 +139,32 @@ impl Scanner {
             }
         }
         Ok(result)
+    }
+
+    pub async fn scan_address(address: &str) -> Result<Option<ComelitHUB>, io::Error> {
+        let socket = UdpSocket::bind("0.0.0.0:34254")?;
+
+        // Set the read timeout to 1 second
+        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+        let buf: Vec<u8> = vec![b'I', b'N', b'F', b'O', 0, 0, 0, 0, 0, 0, 0, 0];
+        socket.send_to(&buf, format!("{address}:{SCAN_PORT}"))?;
+        loop {
+            let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
+            match socket.recv_from(&mut data) {
+                Ok((len, source)) => {
+                    let comelit_hub = ComelitHUB::from(&data[..len]).with_address(source.ip().to_string());
+                    info!("Comelit HUB found: {:?}", comelit_hub);
+                    break Ok(Some(comelit_hub));
+                }
+                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                    info!("No message received in 2 seconds, closing connection.");
+                    break Ok(None);
+                }
+                Err(e) => {
+                    error!("Error receiving UDP packet: {}", e);
+                    return Err(e);
+                }
+            }
+        }
     }
 }

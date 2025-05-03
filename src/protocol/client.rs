@@ -17,7 +17,11 @@ use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
 use tracing::{debug, error, info};
+use tsify_macros::Tsify;
 use uuid::Uuid;
+use wasm_bindgen::prelude::wasm_bindgen;
+use crate::protocol::credentials::get_secrets;
+use crate::protocol::scanner::{ComelitHUB, Scanner};
 
 pub const ROOT_ID: &str = "GEN#17#13#1";
 
@@ -56,19 +60,49 @@ pub struct ComelitClient {
     password: String,
 }
 
-#[derive(Builder)]
+#[derive(Builder, Tsify)]
 pub struct ComelitOptions {
-    pub host: String,
-    pub port: u16,
+    pub host: Option<String>,
+    pub port: Option<u16>,
     pub mqtt_user: String,
     pub mqtt_password: String,
-    pub user: String,
-    pub password: String,
+    pub user: Option<String>,
+    pub password: Option<String>,
 }
 
 impl ComelitOptions {
     pub fn builder() -> ComelitOptionsBuilder {
         ComelitOptionsBuilder::default()
+    }
+
+    async fn get_hub_info(&self) -> Result<Option<ComelitHUB>, ComelitClientError> {
+        if let Some(host) = &self.host {
+            let hub = Scanner::scan_address(host).await.map_err(|e| ComelitClientError::ScannerError(e.to_string()))?;
+            Ok(hub)
+        } else {
+            let devices = Scanner::scan().await.map_err(|e| ComelitClientError::ScannerError(e.to_string()))?;
+            if devices.is_empty() {
+                Err(ComelitClientError::ScannerError(
+                    "No Comelit HUB found".to_string(),
+                ))
+            } else {
+                Ok(devices.iter().find(|dev| dev.model_id() == "HSrv").cloned())
+            }
+        }
+    }
+}
+
+impl Default for ComelitOptions {
+    fn default() -> Self {
+        let (mqtt_user, mqtt_password) = get_secrets();
+        ComelitOptions {
+            host: None,
+            port: None,
+            mqtt_user,
+            mqtt_password,
+            user: Some("admin".to_string()),
+            password: Some("admin".to_string()),
+        }
     }
 }
 
@@ -97,67 +131,74 @@ pub trait StatusUpdate {
 
 impl ComelitClient {
     pub async fn new(options: ComelitOptions, observer: Box<dyn StatusUpdate + Sync + Send>) -> Result<Self, ComelitClientError> {
-        let client_id = generate_client_id();
-        let (write_topic, read_topic) = if let Some(_mac_address) =
-            get_mac_address().map_err(|e| ComelitClientError::GenericError(e.to_string()))?
-        {
-            let addr = "0025291701EC";
-            let rx_topic = format!("{CLIENT_ID_PREFIX}/{addr}/rx/{client_id}");
-            let tx_topic = format!("{CLIENT_ID_PREFIX}/{addr}/tx/{client_id}");
-            (rx_topic, tx_topic)
-        } else {
-            panic!("Failed to get mac address");
-        };
-        let mut mqttoptions = MqttOptions::new(client_id, options.host, options.port);
-        mqttoptions.set_keep_alive(Duration::from_secs(5));
-        mqttoptions.set_credentials(options.mqtt_user, options.mqtt_password);
-        mqttoptions.set_max_packet_size(128 * 1024, 128 * 1024);
+        let hub = options.get_hub_info().await?;
+        if let Some(hub) = hub {
+            let client_id = generate_client_id();
+            let (write_topic, read_topic) = if let Some(_mac_address) =
+                get_mac_address().map_err(|e| ComelitClientError::GenericError(e.to_string()))?
+            {
+                let addr = hub.mac_address();
+                let rx_topic = format!("{CLIENT_ID_PREFIX}/{addr}/rx/{client_id}");
+                let tx_topic = format!("{CLIENT_ID_PREFIX}/{addr}/tx/{client_id}");
+                (rx_topic, tx_topic)
+            } else {
+                panic!("Failed to get mac address");
+            };
+            let mut mqttoptions = MqttOptions::new(client_id, hub.address().unwrap(), options.port.unwrap());
+            mqttoptions.set_keep_alive(Duration::from_secs(5));
+            mqttoptions.set_credentials(options.mqtt_user, options.mqtt_password);
+            mqttoptions.set_max_packet_size(128 * 1024, 128 * 1024);
 
-        let (client, event_loop) = AsyncClient::new(mqttoptions.clone(), 10);
-        info!("Connected to MQTT broker at {:?}", mqttoptions);
-        let request_manager = Arc::new(Mutex::new(RequestManager::new()));
-        let manager_clone = Arc::clone(&request_manager);
+            let (client, event_loop) = AsyncClient::new(mqttoptions.clone(), 10);
+            info!("Connected to MQTT broker at {:?}", mqttoptions);
+            let request_manager = Arc::new(Mutex::new(RequestManager::new()));
+            let manager_clone = Arc::clone(&request_manager);
 
-        if let Err(e) = client
-            .subscribe(read_topic.clone(), QoS::AtLeastOnce)
-            .await
-            .map_err(|e| ComelitClientError::ConnectionError(e.to_string()))
-        {
-            return Err(ComelitClientError::ConnectionError(format!(
-                "Failed to subscribe to topic: {}",
-                e
-            )));
-        }
-        info!("Subscribed to topic: {}", read_topic);
-        // Start the event loop in a separate thread
-        let read_topic_clone = read_topic.clone();
-        let session = Arc::new(RwLock::new(None));
-
-        let observer = Arc::new(observer);
-        tokio::spawn(async move {
-            info!("Starting event loop");
-            ComelitClient::run_event_loop(event_loop, manager_clone, read_topic_clone, observer)
+            if let Err(e) = client
+                .subscribe(read_topic.clone(), QoS::AtLeastOnce)
                 .await
-        });
+                .map_err(|e| ComelitClientError::ConnectionError(e.to_string()))
+            {
+                return Err(ComelitClientError::ConnectionError(format!(
+                    "Failed to subscribe to topic: {}",
+                    e
+                )));
+            }
+            info!("Subscribed to topic: {}", read_topic);
+            // Start the event loop in a separate thread
+            let read_topic_clone = read_topic.clone();
+            let session = Arc::new(RwLock::new(None));
 
-        let req_id = Arc::new(AtomicU32::new(1));
-        let client = Arc::new(client);
-        Self::start_ping(
-            client.clone(),
-            session.clone(),
-            req_id.clone(),
-            write_topic.as_str(),
-        );
-        Ok(ComelitClient {
-            client,
-            request_manager,
-            write_topic,
-            read_topic,
-            req_id,
-            session,
-            user: options.user,
-            password: options.password,
-        })
+            let observer = Arc::new(observer);
+            tokio::spawn(async move {
+                info!("Starting event loop");
+                ComelitClient::run_event_loop(event_loop, manager_clone, read_topic_clone, observer)
+                    .await
+            });
+
+            let req_id = Arc::new(AtomicU32::new(1));
+            let client = Arc::new(client);
+            Self::start_ping(
+                client.clone(),
+                session.clone(),
+                req_id.clone(),
+                write_topic.as_str(),
+            );
+            Ok(ComelitClient {
+                client,
+                request_manager,
+                write_topic,
+                read_topic,
+                req_id,
+                session,
+                user: options.user.unwrap_or_default(),
+                password: options.password.unwrap_or_default(),
+            })
+        } else {
+            Err(ComelitClientError::ScannerError(
+                "No Comelit HUB found".to_string(),
+            ))
+        }
     }
 
     pub async fn disconnect(self) -> Result<(), ComelitClientError> {
