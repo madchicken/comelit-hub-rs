@@ -124,7 +124,7 @@ impl From<ObjectSubtype> for i32 {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(into = "i32", from = "String")]
 pub(crate) enum DeviceStatus {
     #[default]
@@ -340,7 +340,6 @@ impl From<ActionType> for u32 {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct DeviceData {
     pub(crate) id: String,
@@ -350,9 +349,9 @@ pub(crate) struct DeviceData {
     sched_lock: Option<String>,
     #[serde(default, rename = "schedZoneStatus")]
     sched_zone_status: Vec<u32>,
-    status: Option<DeviceStatus>,
+    pub(crate) status: Option<DeviceStatus>,
     #[serde(rename = "descrizione")]
-    description: Option<String>,
+    pub(crate) description: Option<String>,
     #[serde(rename = "placeOrder")]
     place_order: Option<String>,
     num_modulo: Option<String>,
@@ -380,7 +379,7 @@ pub(crate) struct OtherDeviceData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(crate) struct LightDeviceData {
     #[serde(flatten)]
-    data: DeviceData,
+    pub(crate) data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -583,11 +582,13 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             vec![HomeDeviceData::Light(light_data)]
         }
         ObjectType::Irrigation => {
-            let irrigation_data = serde_json::from_value::<IrrigationDeviceData>(value.clone()).unwrap();
+            let irrigation_data =
+                serde_json::from_value::<IrrigationDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Irrigation(irrigation_data)]
         }
         ObjectType::Thermostat => {
-            let thermostat_data = serde_json::from_value::<ThermostatDeviceData>(value.clone()).unwrap();
+            let thermostat_data =
+                serde_json::from_value::<ThermostatDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Thermostat(thermostat_data)]
         }
         ObjectType::Outlet => {
@@ -595,19 +596,26 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             vec![HomeDeviceData::Outlet(outlet_data)]
         }
         ObjectType::PowerSupplier => {
-            let supplier_data = serde_json::from_value::<SupplierDeviceData>(value.clone()).unwrap();
+            let supplier_data =
+                serde_json::from_value::<SupplierDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Supplier(supplier_data)]
         }
         ObjectType::Agent => {
             let agent_data = serde_json::from_value::<AgentDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Agent(agent_data)]
         }
-        ObjectType::Zone => {
-            data.elements.iter().flat_map(|v| {
-                println!("Zone {} found, reading element inside: {:?}", data.description.as_ref().unwrap_or(&"None".to_string()), v);
+        ObjectType::Zone => data
+            .elements
+            .iter()
+            .flat_map(|v| {
+                println!(
+                    "Zone {} found, reading element inside: {:?}",
+                    data.description.as_ref().unwrap_or(&"None".to_string()),
+                    v
+                );
                 device_data_to_home_device(v.clone())
-            }).collect::<Vec<HomeDeviceData>>()
-        }
+            })
+            .collect::<Vec<HomeDeviceData>>(),
         ObjectType::VipElement => {
             let other_data = serde_json::from_value::<BellDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Bell(other_data)]

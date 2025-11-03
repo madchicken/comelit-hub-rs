@@ -4,21 +4,23 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+anyhow = "1.0.72"
+async-trait = "0.1.89"
 base64 = { version = "0.13" }
 clap = "4.5.34"
 clap_derive = "4.5.32"
 crossterm = "0.28.1"
 dashmap = "7.0.0-rc2"
 derive_builder = "0.20.2"
+futures = "0.3.27"
+hap = { git = "https://github.com/airparade/hap-rs", branch = "main" }
 mac_address = "1.1.8"
 rumqttc = { version = "0.24.0" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }
 thiserror = "2.0.12"
 tokio = { version = "1.44.1", features = ["full"] }
-tracing = "0.1"
+tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tsify = { version = "0.5.5" }
-tsify-macros = { version = "0.5.5" }
 uuid = { version = "1.16.0", features = ["v4"] }
 wasm-bindgen = { version = "^0.2.100", features = ["default", "serde-serialize"] }

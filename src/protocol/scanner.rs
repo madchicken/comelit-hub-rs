@@ -6,11 +6,13 @@ use tracing::{debug, error, info};
 const MAX_DATAGRAM_SIZE: usize = 65_507;
 
 fn to_string(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim_end_matches('\0').to_string()
+    String::from_utf8_lossy(bytes)
+        .trim_end_matches('\0')
+        .to_string()
 }
 
 fn to_hex_string(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{:02X}", b)).collect()
+    bytes.iter().map(|b| format!("{b:02X}")).collect()
 }
 
 #[derive(Debug, Clone)]
@@ -119,16 +121,20 @@ impl Scanner {
                     let response = String::from_utf8_lossy(&data[..len]);
                     if response.starts_with("here") {
                         let buf: Vec<u8> = vec![b'I', b'N', b'F', b'O', 0, 0, 0, 0, 0, 0, 0, 0];
-                        socket.send_to(&buf, &source)?;
+                        socket.send_to(&buf, source)?;
                         continue;
                     } else {
-                        let comelit_hub = ComelitHUB::from(&data[..len]).with_address(source.ip().to_string());
+                        let comelit_hub =
+                            ComelitHUB::from(&data[..len]).with_address(source.ip().to_string());
                         info!("Comelit HUB found: {:?}", comelit_hub);
                         result.push(comelit_hub);
                         continue;
                     }
                 }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
+                Err(ref e)
+                    if e.kind() == io::ErrorKind::WouldBlock
+                        || e.kind() == io::ErrorKind::TimedOut =>
+                {
                     info!("No message received in 2 seconds, closing connection.");
                     break;
                 }
@@ -148,22 +154,23 @@ impl Scanner {
         socket.set_read_timeout(Some(Duration::from_secs(2)))?;
         let buf: Vec<u8> = vec![b'I', b'N', b'F', b'O', 0, 0, 0, 0, 0, 0, 0, 0];
         socket.send_to(&buf, format!("{address}:{SCAN_PORT}"))?;
-        loop {
-            let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
-            match socket.recv_from(&mut data) {
-                Ok((len, source)) => {
-                    let comelit_hub = ComelitHUB::from(&data[..len]).with_address(source.ip().to_string());
-                    info!("Comelit HUB found: {:?}", comelit_hub);
-                    break Ok(Some(comelit_hub));
-                }
-                Err(ref e) if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut => {
-                    info!("No message received in 2 seconds, closing connection.");
-                    break Ok(None);
-                }
-                Err(e) => {
-                    error!("Error receiving UDP packet: {}", e);
-                    return Err(e);
-                }
+        let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
+        match socket.recv_from(&mut data) {
+            Ok((len, source)) => {
+                let comelit_hub =
+                    ComelitHUB::from(&data[..len]).with_address(source.ip().to_string());
+                info!("Comelit HUB found: {:?}", comelit_hub);
+                Ok(Some(comelit_hub))
+            }
+            Err(ref e)
+                if e.kind() == io::ErrorKind::WouldBlock || e.kind() == io::ErrorKind::TimedOut =>
+            {
+                info!("No message received in 2 seconds, closing connection.");
+                Ok(None)
+            }
+            Err(e) => {
+                error!("Error receiving UDP packet: {}", e);
+                Err(e)
             }
         }
     }
