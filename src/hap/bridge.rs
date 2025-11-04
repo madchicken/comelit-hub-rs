@@ -144,7 +144,7 @@ pub async fn start_bridge(user: &str, password: &str, host: Option<String>, port
 
     info!("Starting HAP bridge server...");
     let handle = server.run_handle();
-
+    qr2term::print_qr("11223344")?;
     handle.await.context("Failed to run server")?;
     client
         .as_ref()
