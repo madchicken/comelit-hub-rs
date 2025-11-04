@@ -184,16 +184,16 @@ impl From<DeviceStatus> for &str {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "String")]
 enum ThermoSeason {
-    SUMMER = 0,
-    WINTER = 1,
+    Summer = 0,
+    Winter = 1,
 }
 
 impl From<i32> for ThermoSeason {
     fn from(value: i32) -> Self {
         match value {
-            0 => Self::SUMMER,
-            1 => Self::WINTER,
-            _ => Self::SUMMER, // Default case
+            0 => Self::Summer,
+            1 => Self::Winter,
+            _ => Self::Summer, // Default case
         }
     }
 }
@@ -201,8 +201,8 @@ impl From<i32> for ThermoSeason {
 impl From<ThermoSeason> for i32 {
     fn from(value: ThermoSeason) -> Self {
         match value {
-            ThermoSeason::SUMMER => 0,
-            ThermoSeason::WINTER => 1,
+            ThermoSeason::Summer => 0,
+            ThermoSeason::Winter => 1,
         }
     }
 }
@@ -210,8 +210,8 @@ impl From<ThermoSeason> for i32 {
 impl From<ThermoSeason> for &str {
     fn from(value: ThermoSeason) -> Self {
         match value {
-            ThermoSeason::SUMMER => "0",
-            ThermoSeason::WINTER => "1",
+            ThermoSeason::Summer => "0",
+            ThermoSeason::Winter => "1",
         }
     }
 }
@@ -219,9 +219,9 @@ impl From<ThermoSeason> for &str {
 impl From<String> for ThermoSeason {
     fn from(value: String) -> Self {
         match value.as_str() {
-            "0" => Self::SUMMER,
-            "1" => Self::WINTER,
-            _ => Self::SUMMER, // Default case
+            "0" => Self::Summer,
+            "1" => Self::Winter,
+            _ => Self::Summer, // Default case
         }
     }
 }
@@ -298,7 +298,7 @@ impl From<ClimaMode> for i32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "u32", from = "u32")]
-pub(crate) enum ActionType {
+pub enum ActionType {
     Set = 0,
     ClimaMode = 1,
     ClimaSetPoint = 2,
@@ -341,7 +341,7 @@ impl From<ActionType> for u32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DeviceData {
+pub struct DeviceData {
     pub(crate) id: String,
     pub(crate) r#type: ObjectType,
     pub(crate) sub_type: ObjectSubtype,
@@ -370,20 +370,20 @@ pub(crate) struct DeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OtherDeviceData {
+pub struct OtherDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     tempo_uscita: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LightDeviceData {
+pub struct LightDeviceData {
     #[serde(flatten)]
     pub(crate) data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BlindDeviceData {
+pub struct BlindDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     open_status: Option<DeviceStatus>,
@@ -399,7 +399,7 @@ pub(crate) struct BlindDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OutletDeviceData {
+pub struct OutletDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     instant_power: String,
@@ -407,14 +407,14 @@ pub(crate) struct OutletDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct IrrigationDeviceData {
+pub struct IrrigationDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_snake_case)]
-pub(crate) struct ThermostatDeviceData {
+pub struct ThermostatDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     num_ingresso: Option<u32>,
@@ -498,7 +498,7 @@ pub(crate) struct ThermostatDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SupplierDeviceData {
+pub struct SupplierDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     label_value: Option<String>,
@@ -515,26 +515,27 @@ pub(crate) struct SupplierDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct AgentDeviceData {
+pub struct AgentDeviceData {
     pub(crate) agent_id: u32,
     #[serde(rename = "descrizione")]
     pub(crate) description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DoorDeviceData {
+pub struct DoorDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BellDeviceData {
+pub struct BellDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum HomeDeviceData {
+#[allow(clippy::large_enum_variant)]
+pub enum HomeDeviceData {
     Agent(AgentDeviceData),
     Data(DeviceData),
     Other(OtherDeviceData),

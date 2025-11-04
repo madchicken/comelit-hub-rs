@@ -17,7 +17,7 @@ fn to_hex_string(bytes: &[u8]) -> String {
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
-pub(crate) struct ComelitHUB {
+pub struct ComelitHUB {
     mac_address: String,
     hw_id: String,
     app_id: String,
@@ -99,7 +99,7 @@ impl From<&[u8]> for ComelitHUB {
 
 const SCAN_PORT: &str = "24199";
 
-pub(crate) struct Scanner;
+pub struct Scanner;
 
 impl Scanner {
     pub async fn scan() -> Result<Vec<ComelitHUB>, std::io::Error> {

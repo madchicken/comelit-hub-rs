@@ -20,7 +20,6 @@ use crate::{
 use anyhow::{Context, Result};
 
 use crate::{
-    Params,
     protocol::{
         client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
         credentials::get_secrets,
@@ -67,15 +66,15 @@ impl StatusUpdate for Updater {
     }
 }
 
-pub async fn start_bridge(params: Params) -> Result<()> {
+pub async fn start_bridge(user: &str, password: &str, host: Option<String>, port: Option<u16>) -> Result<()> {
     let (mqtt_user, mqtt_password) = get_secrets();
     let options = ComelitOptions::builder()
-        .user(params.user)
-        .password(params.password)
+        .user(Some(user.into()))
+        .password(Some(password.into()))
         .mqtt_user(mqtt_user)
         .mqtt_password(mqtt_password)
-        .port(params.port)
-        .host(params.host)
+        .host(host)
+        .port(port)
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
     let updater = Arc::new(Updater::default());
@@ -117,8 +116,10 @@ pub async fn start_bridge(params: Params) -> Result<()> {
     };
 
     let server = IpServer::new(config, storage).await?;
+    info!("IP server created, adding bridge accessory...");
     server.add_accessory(bridge).await?;
 
+    info!("Fetching device index...");
     let index = client
         .fetch_index()
         .await
@@ -132,7 +133,7 @@ pub async fn start_bridge(params: Params) -> Result<()> {
         .enumerate()
         .filter_map(|(index, light)| {
             // Process each light device here
-            info!("Processing light device: {:?}", light);
+            info!("Adding light device: {}", light.data.id);
             ComelitLightbulbAccessory::new(index as u64, light.clone(), client.clone()).ok()
         })
         .collect();
@@ -141,6 +142,7 @@ pub async fn start_bridge(params: Params) -> Result<()> {
         updater.accessories.insert(lightbulb.id, ptr);
     }
 
+    info!("Starting HAP bridge server...");
     let handle = server.run_handle();
 
     handle.await.context("Failed to run server")?;

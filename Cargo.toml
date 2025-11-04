@@ -23,4 +23,10 @@ tokio = { version = "1.44.1", features = ["full"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.16.0", features = ["v4"] }
-wasm-bindgen = { version = "^0.2.100", features = ["default", "serde-serialize"] }
+
+[[bin]]
+name = "comelit-hub-hap-bridge"
+path = "src/cli/hap-bridge.rs"
+[[bin]]
+name = "comelit-hub-cli"
+path = "src/cli/comelit.rs"

@@ -1,17 +1,17 @@
-use crate::protocol::client::{
-    ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID, State, StatusUpdate,
-};
-use crate::protocol::credentials::get_secrets;
-use crate::protocol::out_data_messages::{ActionType, HomeDeviceData};
-use crate::protocol::scanner::Scanner;
 use async_trait::async_trait;
 use clap::Parser;
 use clap_derive::{Parser, Subcommand};
+use comelit_hub_rs::protocol::client::{
+    ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID, State, StatusUpdate,
+};
+use comelit_hub_rs::protocol::credentials::get_secrets;
+use comelit_hub_rs::protocol::out_data_messages::{ActionType, HomeDeviceData};
+use comelit_hub_rs::protocol::scanner::Scanner;
 use crossterm::event::Event::Key;
 use crossterm::{event, terminal};
 use std::sync::Arc;
 use std::time::Duration;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Subcommand, Debug, Default)]
@@ -85,43 +85,44 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                     }
                     event::KeyCode::Char('f') => {
                         if let Ok(data) = client.fetch_index().await {
-                            println!("Index {:?}", data);
+                            debug!("Index {:?}", data);
                         } else {
                             error!("Fetch index error");
                         }
                     }
                     event::KeyCode::Char('i') => {
-                        if let Ok(_) = client.info(ROOT_ID, 2).await {
+                        if client.info(ROOT_ID, 2).await.is_ok() {
                             println!("Info received");
                         } else {
                             error!("Info error");
                         }
                     }
                     event::KeyCode::Char('1') => {
-                        if let Ok(_) = client.subscribe(ROOT_ID).await {
+                        if client.subscribe(ROOT_ID).await.is_ok() {
                             println!("Successfully subscribed to ROOT_ID");
                         } else {
                             error!("Subscribe error");
                         }
                     }
                     event::KeyCode::Char('2') => {
-                        if let Ok(_) = client.subscribe("VIP#APARTMENT").await {
+                        if client.subscribe("VIP#APARTMENT").await.is_ok() {
                             println!("Successfully subscribed to VIP#APARTMENT");
                         } else {
                             error!("Subscribe error");
                         }
                     }
                     event::KeyCode::Char('3') => {
-                        if let Ok(_) = client.subscribe("VIP#OD#00000100.2").await {
+                        if client.subscribe("VIP#OD#00000100.2").await.is_ok() {
                             println!("Successfully subscribed to VIP#OD#00000100.2");
                         } else {
                             error!("Subscribe error");
                         }
                     }
                     event::KeyCode::Char('c') => {
-                        if let Ok(_) = client
+                        if client
                             .send_action("VIP#OD#00000100.2", ActionType::Set, 1)
                             .await
+                            .is_ok()
                         {
                             println!("Successfully sent action to VIP#OD#00000100.2");
                         } else {
@@ -129,9 +130,10 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         }
                     }
                     event::KeyCode::Char('d') => {
-                        if let Ok(_) = client
+                        if client
                             .send_action("VIP#APARTMENT", ActionType::Set, 1)
                             .await
+                            .is_ok()
                         {
                             println!("Successfully set action to VIP#APARTMENT");
                         } else {
@@ -167,16 +169,16 @@ async fn main() -> Result<(), ComelitClientError> {
                     .await
                     .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 if let Some(hub) = hub {
-                    println!("Found hub: {:?}", hub);
+                    info!("Found hub: {:?}", hub);
                 } else {
-                    println!("No hub found at {}", host);
+                    info!("No hub found at {}", host);
                 }
             } else {
                 let hubs = Scanner::scan()
                     .await
                     .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 for hub in hubs {
-                    println!("Found hub: {:?}", hub);
+                    info!("Found hub: {:?}", hub);
                 }
             }
         }

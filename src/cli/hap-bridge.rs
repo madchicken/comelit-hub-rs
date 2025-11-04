@@ -1,19 +1,16 @@
 use anyhow::Result;
 use clap::Parser;
 use clap_derive::Parser;
-use hap::start_bridge;
+use comelit_hub_rs::hap::start_bridge;
 use tracing_subscriber::EnvFilter;
 
-mod cli;
-mod hap;
-mod protocol;
 
 #[derive(Parser, Debug)]
 pub struct Params {
     #[clap(long)]
-    user: Option<String>,
+    user: String,
     #[clap(long)]
-    password: Option<String>,
+    password: String,
     #[clap(long)]
     host: Option<String>,
     #[clap(long)]
@@ -25,13 +22,13 @@ async fn main() -> Result<()> {
     // Initialize the tracing subscriber
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::from_default_env().add_directive("comelit_hub_rs=info".parse().unwrap()),
+            EnvFilter::from_default_env().add_directive("comelit_hub_rs=info".parse()?),
         )
         .init();
 
     let params = Params::parse();
 
-    start_bridge(params).await?;
+    start_bridge(params.user.as_str(), params.password.as_str(), params.host, params.port).await?;
 
     Ok(())
 }

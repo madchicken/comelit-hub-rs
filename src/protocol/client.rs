@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::sleep;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 use uuid::Uuid;
 
 pub const ROOT_ID: &str = "GEN#17#13#1";
@@ -100,7 +100,7 @@ impl Default for ComelitOptions {
         let (mqtt_user, mqtt_password) = get_secrets();
         ComelitOptions {
             host: None,
-            port: None,
+            port: Some(1883),
             mqtt_user,
             mqtt_password,
             user: Some("admin".to_string()),
@@ -152,7 +152,7 @@ impl ComelitClient {
                 panic!("Failed to get mac address");
             };
             let mut mqttoptions =
-                MqttOptions::new(client_id, hub.address().unwrap(), options.port.unwrap());
+                MqttOptions::new(client_id, hub.address().unwrap(), options.port.unwrap_or(1883));
             mqttoptions.set_keep_alive(Duration::from_secs(5));
             mqttoptions.set_credentials(options.mqtt_user, options.mqtt_password);
             mqttoptions.set_max_packet_size(128 * 1024, 128 * 1024);
@@ -273,7 +273,7 @@ impl ComelitClient {
                     if let Event::Incoming(Packet::Publish(publish)) = notification {
                         if publish.topic == response_topic {
                             // Process incoming response
-                            info!(
+                            trace!(
                                 "Received response: {}",
                                 String::from_utf8(publish.payload.to_vec()).unwrap()
                             );
@@ -410,7 +410,7 @@ impl ComelitClient {
                             }
                         }
                     } else {
-                        info!("Completing response: {:?}", response);
+                        trace!("Completing response: {:?}", response);
                         return Ok(response);
                     }
                 }
