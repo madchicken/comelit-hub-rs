@@ -1,36 +1,41 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
+use futures::FutureExt;
 use hap::{
     accessory::{AccessoryInformation, lightbulb::LightbulbAccessory},
-    characteristic::{CharacteristicCallbacks, HapCharacteristic},
+    characteristic::AsyncCharacteristicCallbacks,
+    server::{IpServer, Server},
 };
 use serde_json::Value;
 use tracing::{error, info};
 
-use crate::protocol::{
-    client::ComelitClient,
-    out_data_messages::{ActionType, LightDeviceData},
+use crate::{
+    hap::accessories::AccessoryPointer,
+    protocol::{
+        client::ComelitClient,
+        out_data_messages::{ActionType, DeviceStatus, LightDeviceData},
+    },
 };
 
 pub(crate) struct ComelitLightbulbAccessory {
-    pub(crate) id: String,
-    pub(crate) lightbulb_accessory: LightbulbAccessory,
-    client: Arc<ComelitClient>,
+    lightbulb_accessory: AccessoryPointer,
     data: LightDeviceData,
 }
 
 impl ComelitLightbulbAccessory {
-    pub(crate) fn new(
+    pub(crate) async fn new(
         id: u64,
         light_data: LightDeviceData,
         client: Arc<ComelitClient>,
+        server: &IpServer,
     ) -> Result<Self> {
+        let device_id = light_data.data.id.clone();
         let name = light_data
             .data
             .description
             .clone()
-            .unwrap_or(light_data.data.id.clone());
+            .unwrap_or(device_id.clone());
         let lightbulb_name = name.clone();
         let mut lightbulb_accessory = LightbulbAccessory::new(
             id,
@@ -43,66 +48,63 @@ impl ComelitLightbulbAccessory {
         )
         .context("Cannot create lightbulb accessory")?;
 
-        lightbulb_accessory.lightbulb.power_state.on_update(Some(
-            move |current_val: &bool, new_val: &bool| {
+        let c = client.clone();
+        lightbulb_accessory
+            .lightbulb
+            .power_state
+            .on_update_async(Some(move |current_val: bool, new_val: bool| {
                 info!(
                     "Lightbulb {}: power_state characteristic updated from {} to {}",
                     lightbulb_name, current_val, new_val
                 );
-                Ok(())
-            },
-        ));
+                let c = c.clone();
+                let id = device_id.clone();
+                async move {
+                    if c.send_action(id.as_str(), ActionType::Set, if new_val { 1 } else { 0 })
+                        .await
+                        .is_err()
+                    {
+                        error!("Failed to update power state for lightbulb {}", id);
+                    }
+                    Ok(())
+                }
+                .boxed()
+            }));
         Ok(Self {
-            id: light_data.data.id.clone(),
             data: light_data,
-            lightbulb_accessory,
-            client,
+            lightbulb_accessory: server.add_accessory(lightbulb_accessory).await?,
         })
     }
 
-    pub async fn on(&mut self) -> Result<()> {
-        match self
-            .client
-            .send_action(&self.data.data.id, ActionType::Set, 1)
-            .await
-        {
-            Ok(_) => {
-                if self
-                    .lightbulb_accessory
-                    .lightbulb
-                    .power_state
-                    .set_value(Value::Bool(true))
-                    .await
-                    .is_err()
-                {
-                    error!("Failed to set power state to true");
-                }
-                Ok(())
-            }
-            Err(e) => Err(e.into()),
-        }
+    pub fn id(&self) -> &str {
+        &self.data.data.id
     }
 
-    pub async fn off(&mut self) -> Result<()> {
-        match self
-            .client
-            .send_action(&self.data.data.id, ActionType::Set, 0)
-            .await
-        {
-            Ok(_) => {
-                if self
-                    .lightbulb_accessory
-                    .lightbulb
-                    .power_state
-                    .set_value(Value::Bool(false))
-                    .await
-                    .is_err()
-                {
-                    error!("Failed to set power state to false");
-                }
-                Ok(())
+    pub async fn update(&mut self, light_data: &LightDeviceData) {
+        self.data = light_data.clone();
+        let id = &self.data.data.id;
+        if let Some(state) = light_data.data.status.as_ref() {
+            let mut accessory = self.lightbulb_accessory.lock().await;
+            let service = accessory.get_mut_service(hap::HapType::Lightbulb).unwrap();
+            let power_state = service
+                .get_mut_characteristic(hap::HapType::PowerState)
+                .unwrap();
+            if power_state
+                .set_value(Value::Bool(*state == DeviceStatus::On))
+                .await
+                .is_err()
+            {
+                error!("Failed to update power state for device {id}");
+            } else {
+                info!(
+                    "Updated power state for device {id}: {:?}",
+                    if *state == DeviceStatus::On {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                );
             }
-            Err(e) => Err(e.into()),
         }
     }
 }

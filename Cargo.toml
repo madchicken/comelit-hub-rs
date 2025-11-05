@@ -16,6 +16,7 @@ futures = "0.3.27"
 hap = { git = "https://github.com/airparade/hap-rs", branch = "main" }
 mac_address = "1.1.8"
 qr2term = "0.3.3"
+rand = "0.8.5"
 rumqttc = { version = "0.24.0" }
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = { version = "1.0.140" }

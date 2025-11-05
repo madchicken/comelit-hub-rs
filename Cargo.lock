@@ -287,6 +287,7 @@ dependencies = [
  "hap",
  "mac_address",
  "qr2term",
+ "rand 0.8.5",
  "rumqttc",
  "serde",
  "serde_json",

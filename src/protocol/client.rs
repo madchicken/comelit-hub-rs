@@ -55,6 +55,7 @@ pub struct ComelitClient {
     read_topic: String,
     req_id: Arc<AtomicU32>,
     session: Arc<RwLock<Option<Session>>>,
+    pub mac_address: String,
     user: String,
     password: String,
 }
@@ -197,6 +198,7 @@ impl ComelitClient {
                 read_topic,
                 req_id,
                 session,
+                mac_address: hub.mac_address().to_string(),
                 user: options.user.unwrap_or_default(),
                 password: options.password.unwrap_or_default(),
             })
@@ -497,7 +499,7 @@ impl ComelitClient {
             .collect::<Vec<DeviceData>>())
     }
 
-    pub async fn subscribe(&mut self, device_id: &str) -> Result<(), ComelitClientError> {
+    pub async fn subscribe(&self, device_id: &str) -> Result<(), ComelitClientError> {
         let session = self.get_session().await?;
         let _resp = self
             .send_request(make_subscribe_message(
