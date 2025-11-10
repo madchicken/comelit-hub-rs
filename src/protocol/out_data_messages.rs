@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
 pub(crate) enum ObjectType {
     Other = 1,
-    Blind = 2,
+    WindowCovering = 2,
     Light = 3,
     Irrigation = 4,
     Thermostat = 9,
@@ -22,7 +23,7 @@ impl From<i32> for ObjectType {
     fn from(value: i32) -> Self {
         match value {
             1 => Self::Other,
-            2 => Self::Blind,
+            2 => Self::WindowCovering,
             3 => Self::Light,
             4 => Self::Irrigation,
             9 => Self::Thermostat,
@@ -41,7 +42,7 @@ impl From<ObjectType> for i32 {
     fn from(value: ObjectType) -> Self {
         match value {
             ObjectType::Other => 1,
-            ObjectType::Blind => 2,
+            ObjectType::WindowCovering => 2,
             ObjectType::Light => 3,
             ObjectType::Irrigation => 4,
             ObjectType::Thermostat => 9,
@@ -379,23 +380,23 @@ pub struct OtherDeviceData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightDeviceData {
     #[serde(flatten)]
-    pub(crate) data: DeviceData,
+    pub data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BlindDeviceData {
+pub struct WindowCoveringDeviceData {
     #[serde(flatten)]
-    data: DeviceData,
-    open_status: Option<DeviceStatus>,
-    position: Option<String>,
+    pub data: DeviceData,
+    pub open_status: Option<DeviceStatus>,
+    pub position: Option<String>,
     #[serde(rename = "openTime")]
-    open_time: Option<String>,
+    pub open_time: Option<String>,
     #[serde(rename = "closeTime")]
-    close_time: Option<String>,
+    pub close_time: Option<String>,
     #[serde(rename = "preferPosition")]
-    prefer_position: Option<String>,
+    pub prefer_position: Option<String>,
     #[serde(rename = "enablePreferPosition")]
-    enable_prefer_position: Option<DeviceStatus>,
+    pub enable_prefer_position: Option<DeviceStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -540,7 +541,7 @@ pub enum HomeDeviceData {
     Data(DeviceData),
     Other(OtherDeviceData),
     Light(LightDeviceData),
-    Blind(BlindDeviceData),
+    WindowCovering(WindowCoveringDeviceData),
     Outlet(OutletDeviceData),
     Irrigation(IrrigationDeviceData),
     Thermostat(ThermostatDeviceData),
@@ -556,7 +557,7 @@ impl HomeDeviceData {
             HomeDeviceData::Data(o) => o.id.clone(),
             HomeDeviceData::Other(o) => o.data.id.clone(),
             HomeDeviceData::Light(o) => o.data.id.clone(),
-            HomeDeviceData::Blind(o) => o.data.id.clone(),
+            HomeDeviceData::WindowCovering(o) => o.data.id.clone(),
             HomeDeviceData::Outlet(o) => o.data.id.clone(),
             HomeDeviceData::Irrigation(o) => o.data.id.clone(),
             HomeDeviceData::Thermostat(o) => o.data.id.clone(),
@@ -574,9 +575,10 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             let other_data = serde_json::from_value::<OtherDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Other(other_data)]
         }
-        ObjectType::Blind => {
-            let blind_data = serde_json::from_value::<BlindDeviceData>(value.clone()).unwrap();
-            vec![HomeDeviceData::Blind(blind_data)]
+        ObjectType::WindowCovering => {
+            let blind_data =
+                serde_json::from_value::<WindowCoveringDeviceData>(value.clone()).unwrap();
+            vec![HomeDeviceData::WindowCovering(blind_data)]
         }
         ObjectType::Light => {
             let light_data = serde_json::from_value::<LightDeviceData>(value.clone()).unwrap();
@@ -609,7 +611,7 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             .elements
             .iter()
             .flat_map(|v| {
-                println!(
+                debug!(
                     "Zone {} found, reading element inside: {:?}",
                     data.description.as_ref().unwrap_or(&"None".to_string()),
                     v
