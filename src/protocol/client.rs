@@ -214,10 +214,12 @@ impl ComelitClient {
             .unsubscribe(&self.read_topic)
             .await
             .map_err(|e| ComelitClientError::Generic(format!("Unsubscribe error: {e}")))?;
+        info!("Unsubscribed from MQTT broker");
         self.client
             .disconnect()
             .await
             .map_err(|e| ComelitClientError::Connection(format!("Disconnect error: {e}")))?;
+        info!("Disconnected from MQTT broker");
         self.session.write().await.take();
         Ok(())
     }
@@ -477,7 +479,7 @@ impl ComelitClient {
     }
 
     pub async fn info(
-        &mut self,
+        &self,
         device_id: &str,
         detail_level: u8,
     ) -> Result<Vec<DeviceData>, ComelitClientError> {

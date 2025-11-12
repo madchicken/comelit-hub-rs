@@ -127,9 +127,9 @@ impl From<ObjectSubtype> for i32 {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(into = "i32", from = "String")]
-pub(crate) enum DeviceStatus {
-    #[default]
+pub enum DeviceStatus {
     On = 0,
+    #[default]
     Off = 1,
     Running = 2,
 }

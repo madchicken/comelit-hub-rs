@@ -1,4 +1,4 @@
-use qr2term::qr;
+use crate::hap::accessories::ComelitAccessory;
 use rand::Rng;
 use std::sync::Arc;
 
@@ -10,15 +10,13 @@ use hap::{
     server::{IpServer, Server},
     storage::{FileStorage, Storage},
 };
-use std::fmt::Write;
 use tracing::{debug, error, info};
-// Use thiserror or anyhow for better error handling
 use crate::{
     hap::accessories::{ComelitLightbulbAccessory, ComelitWindowCoveringAccessory},
     protocol::out_data_messages::{LightDeviceData, WindowCoveringDeviceData},
 };
 use anyhow::{Context, Result};
-
+use tokio::signal;
 use crate::protocol::client::ROOT_ID;
 use crate::protocol::{
     client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
@@ -37,21 +35,21 @@ impl StatusUpdate for Updater {
     async fn status_update(&self, device: &HomeDeviceData) {
         debug!("Status update: {:?}", device);
         match device {
-            HomeDeviceData::Agent(agent_device_data) => {}
-            HomeDeviceData::Data(device_data) => {}
-            HomeDeviceData::Other(other_device_data) => {}
-            HomeDeviceData::Light(light_device_data) => {
-                if let Some(mut accessory) = self.lights.get_mut(&device.id()) {
-                    if let HomeDeviceData::Light(lightbulb) = device {
-                        accessory.update(lightbulb).await;
-                    }
+            HomeDeviceData::Agent(_) => {}
+            HomeDeviceData::Data(_) => {}
+            HomeDeviceData::Other(_) => {}
+            HomeDeviceData::Light(_) => {
+                if let Some(accessory) = self.lights.get(&device.id()) {
+                    accessory.update(device).await.unwrap_or_else(|e| {
+                        error!("Failed to update light accessory {}: {}", accessory.id(), e);
+                    });
                 }
             }
-            HomeDeviceData::WindowCovering(window_covering_device_data) => {
-                if let Some(mut accessory) = self.coverings.get_mut(&device.id()) {
-                    if let HomeDeviceData::WindowCovering(window_covering) = device {
-                        accessory.update(window_covering).await;
-                    }
+            HomeDeviceData::WindowCovering(_) => {
+                if let Some(accessory) = self.coverings.get(&device.id()) {
+                    accessory.update(device).await.unwrap_or_else(|e| {
+                        error!("Failed to update window covering accessory {}: {}", accessory.id(), e);
+                    })
                 }
             }
             HomeDeviceData::Outlet(outlet_device_data) => {}
@@ -147,7 +145,7 @@ pub async fn start_bridge(
     }
 
     let bridge = BridgeAccessory::new(
-        10000,
+        1,
         AccessoryInformation {
             name: "Comelit Bridge".into(),
             serial_number: "ABCD1234".into(),
@@ -197,7 +195,6 @@ pub async fn start_bridge(
     };
 
     let pin = config.pin.clone().to_string();
-    let device_id = config.device_id.to_string();
     let server = IpServer::new(config, storage).await?;
     info!("IP server created, adding bridge accessory...");
     server.add_accessory(bridge).await?;
@@ -216,9 +213,11 @@ pub async fn start_bridge(
         })
         .collect();
 
-    for (index, light) in lights.iter().enumerate() {
+    let mut i: u64 = 1;
+    for light in lights.iter() {
         info!("Adding light device: {}", light.data.id);
-        match ComelitLightbulbAccessory::new(index as u64, light.clone(), client.clone(), &server)
+        i += 1;
+        match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server)
             .await
         {
             Ok(accessory) => {
@@ -237,10 +236,11 @@ pub async fn start_bridge(
         })
         .collect();
 
-    for (index, covering) in window_coverings.iter().enumerate() {
+    for covering in window_coverings.iter() {
         info!("Adding light device: {}", covering.data.id);
+        i += 1;
         match ComelitWindowCoveringAccessory::new(
-            index as u64,
+            i,
             covering.clone(),
             client.clone(),
             &server,
@@ -259,15 +259,55 @@ pub async fn start_bridge(
 
     info!("Starting HAP bridge server...");
     let handle = server.run_handle();
-    info!("PIN for the Bridge accessory is: {pin}");
-    let uri = generate_setup_uri(pin.to_string().as_str(), 2, device_id.as_str());
+    let setup_id = "";
+    info!("PIN for the Bridge accessory is: {pin}, setup ID: {setup_id}");
+    let uri = generate_setup_uri(pin.to_string().as_str(), 2, setup_id);
     qr2term::print_qr(uri)?;
     client.subscribe(ROOT_ID).await?;
-    handle.await.context("Failed to run server")?;
-    client
-        .as_ref()
-        .disconnect()
-        .await
-        .context("Failed to disconnect client")?;
-    Ok(())
+
+    let ctrl_c = async {
+        signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        signal::unix::signal(signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        res = handle => {
+            client
+                .as_ref()
+                .disconnect()
+                .await
+                .context("Failed to disconnect client")?;
+            res.with_context(|| "Failed to disconnect client")
+        }
+        _ = ctrl_c => {
+            info!("signal received, starting graceful shutdown");
+            client
+                .as_ref()
+                .disconnect()
+                .await
+                .context("Failed to disconnect client")?;
+            Ok(())
+        },
+        _ = terminate => {
+            info!("signal received, starting graceful shutdown");
+            client
+                .as_ref()
+                .disconnect()
+                .await
+                .context("Failed to disconnect client")?;
+            Ok(())
+        },
+    }
 }

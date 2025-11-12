@@ -13,6 +13,8 @@ use crate::{
     hap::accessories::AccessoryPointer,
     protocol::{client::ComelitClient, out_data_messages::WindowCoveringDeviceData},
 };
+use crate::hap::accessories::ComelitAccessory;
+use crate::protocol::out_data_messages::{DeviceStatus, HomeDeviceData};
 
 pub(crate) struct ComelitWindowCoveringAccessory {
     accessory: AccessoryPointer,
@@ -23,7 +25,7 @@ impl ComelitWindowCoveringAccessory {
     pub(crate) async fn new(
         id: u64,
         window_covering_data: WindowCoveringDeviceData,
-        client: Arc<ComelitClient>,
+        _client: Arc<ComelitClient>,
         server: &IpServer,
     ) -> Result<Self> {
         let device_id = window_covering_data.data.id.clone();
@@ -36,13 +38,11 @@ impl ComelitWindowCoveringAccessory {
         let mut wc_accessory = WindowCoveringAccessory::new(
             id,
             AccessoryInformation {
-                manufacturer: "Comelit".into(),
                 name,
-                serial_number: window_covering_data.data.id.clone(),
                 ..Default::default()
             },
         )
-        .context("Cannot create lightbulb accessory")?;
+            .context("Cannot create lightbulb accessory")?;
 
         wc_accessory
             .window_covering
@@ -52,7 +52,7 @@ impl ComelitWindowCoveringAccessory {
                     info!("Current position for the window covering set to {pos1}, {pos2}");
                     Ok(())
                 }
-                .boxed()
+                    .boxed()
             }));
 
         Ok(Self {
@@ -60,12 +60,29 @@ impl ComelitWindowCoveringAccessory {
             data: window_covering_data,
         })
     }
+}
 
-    pub fn id(&self) -> &str {
+impl ComelitAccessory for ComelitWindowCoveringAccessory {
+    fn id(&self) -> &str {
         &self.data.data.id
     }
 
-    pub async fn update(&mut self, window_covering: &WindowCoveringDeviceData) {
-        self.data = window_covering.clone();
+    async fn update(&self, window_covering: &HomeDeviceData) -> Result<()> {
+        if let HomeDeviceData::WindowCovering(window_covering_data) = window_covering {
+            if let Some(status) = window_covering_data.open_status.as_ref() {
+                let mut accessory = self.accessory.lock().await;
+                let service = accessory.get_mut_service(hap::HapType::WindowCovering).unwrap();
+                let position = service
+                    .get_mut_characteristic(hap::HapType::CurrentPosition).unwrap();
+                position.set_value(serde_json::Value::Number(if *status == DeviceStatus::On { 100.into() } else { 0.into() }))
+                    .await
+                    .context("Cannot update window covering position")?;
+                info!(
+                    "Updated window covering {} position to {:?}",
+                    self.data.data.id, status
+                );
+            }
+        }
+        Ok(())
     }
 }
