@@ -64,33 +64,30 @@ impl StatusUpdate for Updater {
     }
 }
 
-fn generate_setup_uri(pincode: &str, category: u32, setup_id: &str) -> String {
+fn generate_setup_uri(pincode: &str, category: u64, setup_id: &str) -> String {
     // Rimuove i '-' e converte in numero
     let value_low_str = pincode.replace('-', "");
-    let mut value_low = u32::from_str_radix(&value_low_str, 10).expect("Invalid pincode format");
+    let value_low = u64::from_str_radix(&value_low_str, 10).unwrap_or(0);
 
-    let value_high = category >> 1;
+    let version = 0;
+    let reserved = 0;
+    let flag = 2;
+    let mut payload: u64 = 0;
 
-    // Supporta IP (bit 28)
-    value_low |= 1 << 28;
+    payload = payload | (version & 0x7);
+    payload = payload << 4;
+    payload = payload | (reserved & 0xf);
 
-    // Simula un buffer di 8 byte (big endian)
-    let mut buffer = [0u8; 8];
-    buffer[0..4].copy_from_slice(&value_high.to_be_bytes());
-    buffer[4..8].copy_from_slice(&value_low.to_be_bytes());
+    payload = payload << 8;
+    payload = payload | (category & 0xff);
 
-    // Se il category è dispari, imposta il bit 7 di buffer[4]
-    if category & 1 != 0 {
-        buffer[4] |= 1 << 7;
-    }
-
-    // Ricostruisce il valore a 64 bit combinando le due parti big endian
-    let high = u64::from(u32::from_be_bytes(buffer[0..4].try_into().unwrap()));
-    let low = u64::from(u32::from_be_bytes(buffer[4..8].try_into().unwrap()));
-    let combined = (high << 32) | low;
+    payload = payload << 4;
+    payload = payload | (flag & 0xf);
+    payload = payload << 27u64;
+    payload = payload | (u64::from(value_low) & 0x07ff_ffff);
 
     // Converte in base36 e uppercase
-    let mut encoded_payload = base36_encode(combined).to_uppercase();
+    let mut encoded_payload = base36_encode(payload).to_uppercase();
 
     // Padding a 9 caratteri
     while encoded_payload.len() < 9 {
@@ -100,7 +97,6 @@ fn generate_setup_uri(pincode: &str, category: u32, setup_id: &str) -> String {
     format!("X-HM://{}{}", encoded_payload, setup_id)
 }
 
-// Funzione per convertire un numero in base 36
 fn base36_encode(mut num: u64) -> String {
     let mut chars = Vec::new();
     while num > 0 {
@@ -214,7 +210,7 @@ pub async fn start_bridge(
         .collect();
 
     let mut i: u64 = 1;
-    for light in lights.iter() {
+    for light in lights.iter().take(1) {
         info!("Adding light device: {}", light.data.id);
         i += 1;
         match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server)
@@ -236,7 +232,7 @@ pub async fn start_bridge(
         })
         .collect();
 
-    for covering in window_coverings.iter() {
+    for covering in window_coverings.iter().take(1) {
         info!("Adding light device: {}", covering.data.id);
         i += 1;
         match ComelitWindowCoveringAccessory::new(
@@ -309,5 +305,27 @@ pub async fn start_bridge(
                 .context("Failed to disconnect client")?;
             Ok(())
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+
+    #[test]
+    fn test_generate_setup_uri() {
+        let pincode = "841-31-633";
+        let category = 8; // Switch
+        let setup_id = "";
+        let uri = super::generate_setup_uri(pincode, category, setup_id);
+        assert_eq!(uri, "X-HM://0081YCYEP");
+    }
+
+    #[test]
+    fn test_generate_setup_uri_with_setup_id() {
+        let pincode = "841-31-633";
+        let category = 8; // Switch
+        let setup_id = "3QYT";
+        let uri = super::generate_setup_uri(pincode, category, setup_id);
+        assert_eq!(uri, "X-HM://0081YCYEP3QYT");
     }
 }

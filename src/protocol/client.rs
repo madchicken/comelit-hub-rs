@@ -17,9 +17,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::{RwLock};
 use tokio::time::sleep;
-use tracing::{debug, error, info, trace};
+use tracing::{debug, error, info};
 use uuid::Uuid;
 
 pub const ROOT_ID: &str = "GEN#17#13#1";
@@ -50,7 +50,7 @@ struct Session {
 
 pub struct ComelitClient {
     client: Arc<AsyncClient>,
-    request_manager: Arc<Mutex<RequestManager>>,
+    request_manager: Arc<RequestManager>,
     write_topic: String,
     read_topic: String,
     req_id: Arc<AtomicU32>,
@@ -160,7 +160,7 @@ impl ComelitClient {
 
             let (client, event_loop) = AsyncClient::new(mqttoptions.clone(), 10);
             info!("Connected to MQTT broker at {:?}", mqttoptions);
-            let request_manager = Arc::new(Mutex::new(RequestManager::new()));
+            let request_manager = Arc::new(RequestManager::new());
             let manager_clone = Arc::clone(&request_manager);
 
             if let Err(e) = client
@@ -219,8 +219,8 @@ impl ComelitClient {
             .disconnect()
             .await
             .map_err(|e| ComelitClientError::Connection(format!("Disconnect error: {e}")))?;
-        info!("Disconnected from MQTT broker");
         self.session.write().await.take();
+        info!("Disconnected from MQTT broker");
         Ok(())
     }
 
@@ -265,7 +265,7 @@ impl ComelitClient {
 
     async fn run_event_loop(
         mut event_loop: EventLoop,
-        request_manager: Arc<Mutex<RequestManager>>,
+        request_manager: Arc<RequestManager>,
         response_topic: String,
         observer: Arc<dyn StatusUpdate + Sync + Send>,
     ) -> () {
@@ -277,13 +277,13 @@ impl ComelitClient {
                     if let Event::Incoming(Packet::Publish(publish)) = notification {
                         if publish.topic == response_topic {
                             // Process incoming response
-                            trace!(
+                            debug!(
                                 "Received response: {}",
                                 String::from_utf8(publish.payload.to_vec()).unwrap()
                             );
                             match serde_json::from_slice::<MqttResponseMessage>(&publish.payload) {
                                 Ok(response) => {
-                                    let manager = request_manager.lock().await;
+                                    let manager = request_manager.clone();
                                     match response.req_type {
                                         RequestType::Status => {
                                             if response.seq_id.is_some() {
@@ -320,6 +320,7 @@ impl ComelitClient {
                                         }
                                     }
                                     manager.remove_pending_requests();
+                                    drop(manager);
                                 }
                                 Err(e) => error!("Failed to parse response: {:?}", e),
                             }
@@ -362,12 +363,7 @@ impl ComelitClient {
             {
                 Ok(_) => {
                     info!("Request sent successfully");
-                    {
-                        let manager = self.request_manager.lock().await;
-                        let res = manager.add_request(payload.seq_id).await;
-                        drop(manager);
-                        res
-                    }
+                    self.request_manager.add_request(payload.seq_id).await
                 }
                 Err(e) => {
                     break 'outer Err(ComelitClientError::Publish(format!(
@@ -414,7 +410,7 @@ impl ComelitClient {
                             }
                         }
                     } else {
-                        trace!("Completing response: {:?}", response);
+                        debug!("Received response");
                         return Ok(response);
                     }
                 }
@@ -565,4 +561,41 @@ impl ComelitClient {
             .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
         Ok(())
     }
+
+    pub async fn toggle_device_status(&self, id: &str, on: bool) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::Set, if on { 1 } else { 0 }).await
+    }
+
+    pub async fn set_blind_position(&self, id: &str, position: u32) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::SetBlindPosition, position).await
+    }
+
+    // async setTemperature(id: string, temperature: number): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.CLIMA_SET_POINT, temperature);
+    // }
+    //
+    // async switchThermostatMode(id: string, mode: ClimaMode): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.SWITCH_CLIMA_MODE, parseInt(mode));
+    // }
+    //
+    // async switchThermostatSeason(id: string, mode: ThermoSeason): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.SWITCH_SEASON, parseInt(mode));
+    // }
+    //
+    // async setHumidity(id: string, humidity: number): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.UMI_SETPOINT, humidity);
+    // }
+    //
+    // async switchHumidifierMode(id: string, mode: ClimaMode): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.SWITCH_UMI_MODE, parseInt(mode));
+    // }
+    //
+    // async toggleHumidifierStatus(id: string, mode: ClimaOnOff): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.SET, mode);
+    // }
+    //
+    // async toggleThermostatStatus(id: string, mode: ClimaOnOff): Promise<boolean> {
+    // return this.sendAction(id, ACTION_TYPE.SET, mode);
+    // }
+
 }

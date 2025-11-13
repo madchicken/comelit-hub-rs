@@ -128,17 +128,17 @@ impl From<ObjectSubtype> for i32 {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(into = "i32", from = "String")]
 pub enum DeviceStatus {
-    On = 0,
     #[default]
-    Off = 1,
+    Off = 0,
+    On = 1,
     Running = 2,
 }
 
 impl From<i32> for DeviceStatus {
     fn from(value: i32) -> Self {
         match value {
-            0 => Self::On,
-            1 => Self::Off,
+            0 => Self::Off,
+            1 => Self::On,
             2 => Self::Running,
             _ => Self::Off, // Default case
         }
@@ -148,8 +148,8 @@ impl From<i32> for DeviceStatus {
 impl From<&str> for DeviceStatus {
     fn from(value: &str) -> Self {
         match value {
-            "0" => Self::On,
-            "1" => Self::Off,
+            "0" => Self::Off,
+            "1" => Self::On,
             "2" => Self::Running,
             _ => Self::Off, // Default case
         }
@@ -165,8 +165,8 @@ impl From<String> for DeviceStatus {
 impl From<DeviceStatus> for i32 {
     fn from(value: DeviceStatus) -> Self {
         match value {
-            DeviceStatus::On => 0,
-            DeviceStatus::Off => 1,
+            DeviceStatus::Off => 0,
+            DeviceStatus::On => 1,
             DeviceStatus::Running => 2,
         }
     }
@@ -175,8 +175,8 @@ impl From<DeviceStatus> for i32 {
 impl From<DeviceStatus> for &str {
     fn from(value: DeviceStatus) -> Self {
         match value {
-            DeviceStatus::On => "0",
-            DeviceStatus::Off => "1",
+            DeviceStatus::Off => "0",
+            DeviceStatus::On => "1",
             DeviceStatus::Running => "2",
         }
     }
@@ -355,8 +355,8 @@ pub struct DeviceData {
     pub(crate) description: Option<String>,
     #[serde(rename = "placeOrder")]
     place_order: Option<String>,
-    num_modulo: Option<String>,
-    num_uscita: Option<String>,
+    num_modulo: Option<u32>,
+    num_uscita: Option<u32>,
     icon_id: Option<String>,
     #[serde(rename = "isProtected")]
     is_protected: Option<DeviceStatus>,

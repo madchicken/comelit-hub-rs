@@ -105,7 +105,7 @@ impl ComelitLightbulbAccessory {
                 let c = client.clone();
                 let id = id.clone();
                 async move {
-                    if c.send_action(id.as_str(), ActionType::Set, if new_val { 1 } else { 0 })
+                    if new_val != current_val && c.send_action(id.as_str(), ActionType::Set, if new_val { 1 } else { 0 })
                         .await
                         .is_err()
                     {

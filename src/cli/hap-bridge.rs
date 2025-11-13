@@ -22,7 +22,7 @@ async fn main() -> Result<()> {
     // Initialize the tracing subscriber
     tracing_subscriber::fmt()
         .with_env_filter(
-            EnvFilter::from_default_env().add_directive("comelit_hub_rs=info".parse()?),
+            EnvFilter::from_default_env().add_directive("comelit_hub_rs=debug".parse()?),
         )
         .init();
 
