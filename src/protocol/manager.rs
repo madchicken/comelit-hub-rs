@@ -1,6 +1,5 @@
 use crate::protocol::messages::{MqttResponseMessage};
 use dashmap::DashMap;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::oneshot;
@@ -11,7 +10,7 @@ pub(crate) struct TimedRequest {
 }
 
 pub(crate) struct RequestManager {
-    pending: Arc<DashMap<u32, TimedRequest>>,
+    pending: DashMap<u32, TimedRequest>,
     timeout: u64,
 }
 
@@ -24,7 +23,7 @@ impl Default for RequestManager {
 impl RequestManager {
     pub fn new() -> Self {
         Self {
-            pending: Arc::new(DashMap::new()),
+            pending: DashMap::new(),
             timeout: 10,
         }
     }

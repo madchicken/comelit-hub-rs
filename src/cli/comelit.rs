@@ -1,17 +1,18 @@
-mod protocol;
-mod js;
-
-use std::time::Duration;
+use async_trait::async_trait;
 use clap::Parser;
 use clap_derive::{Parser, Subcommand};
-use crossterm::{event, terminal};
+use comelit_hub_rs::protocol::client::{
+    ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID, State, StatusUpdate,
+};
+use comelit_hub_rs::protocol::credentials::get_secrets;
+use comelit_hub_rs::protocol::out_data_messages::{ActionType, HomeDeviceData, LightDeviceData};
+use comelit_hub_rs::protocol::scanner::Scanner;
 use crossterm::event::Event::Key;
-use tracing::{error, info};
+use crossterm::{event, terminal};
+use std::sync::Arc;
+use std::time::Duration;
+use tracing::{debug, error, info};
 use tracing_subscriber::EnvFilter;
-use crate::protocol::client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate, ROOT_ID};
-use crate::protocol::credentials::get_secrets;
-use crate::protocol::out_data_messages::{ActionType, HomeDeviceData};
-use crate::protocol::scanner::Scanner;
 
 #[derive(Subcommand, Debug, Default)]
 enum Commands {
@@ -37,9 +38,10 @@ struct Params {
 
 struct Updater;
 
+#[async_trait]
 impl StatusUpdate for Updater {
-    fn status_update(&self, device: &HomeDeviceData) {
-        println!("Status update: {:?}", device);
+    async fn status_update(&self, device: &HomeDeviceData) {
+        println!("Status update: {device:?}");
     }
 }
 
@@ -52,14 +54,26 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
         .mqtt_password(mqtt_password)
         .port(params.port)
         .host(params.host)
-        .build().map_err(|e| ComelitClientError::GenericError(e.to_string()))?;
-    let mut client = ComelitClient::new(options, Box::new(Updater)).await?;
+        .build()
+        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+    let client = ComelitClient::new(options, Arc::new(Updater)).await?;
     if let Err(e) = client.login(State::Disconnected).await {
         error!("Login failed: {}", e);
         return Err(e);
     } else {
         info!("Login successful");
     }
+
+    let index = client.fetch_index().await?;
+    client.subscribe(ROOT_ID).await?;
+    info!("Subscribed to index updates");
+    let root_info = client.info(ROOT_ID, 2).await?;
+    let lights: Vec<LightDeviceData> = index.into_iter().filter_map(|(_, v)| {
+        match v {
+            HomeDeviceData::Light(l) => Some(l),
+            _ => None
+        }
+    }).collect();
 
     println!("Press 'q' to quit");
     println!("Press 'f' to fetch the house index");
@@ -82,48 +96,56 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                     }
                     event::KeyCode::Char('f') => {
                         if let Ok(data) = client.fetch_index().await {
-                            println!("Index {:?}", data);
+                            debug!("Index {:?}", data);
                         } else {
                             error!("Fetch index error");
                         }
                     }
                     event::KeyCode::Char('i') => {
-                        if let Ok(_) = client.info(ROOT_ID, 2).await {
+                        if client.info(ROOT_ID, 2).await.is_ok() {
                             println!("Info received");
                         } else {
                             error!("Info error");
                         }
                     }
                     event::KeyCode::Char('1') => {
-                        if let Ok(_) = client.subscribe(ROOT_ID).await {
+                        if client.subscribe(ROOT_ID).await.is_ok() {
                             println!("Successfully subscribed to ROOT_ID");
                         } else {
                             error!("Subscribe error");
                         }
                     }
                     event::KeyCode::Char('2') => {
-                        if let Ok(_) = client.subscribe("VIP#APARTMENT").await {
+                        if client.subscribe("VIP#APARTMENT").await.is_ok() {
                             println!("Successfully subscribed to VIP#APARTMENT");
                         } else {
                             error!("Subscribe error");
                         }
                     }
                     event::KeyCode::Char('3') => {
-                        if let Ok(_) = client.subscribe("VIP#OD#00000100.2").await {
+                        if client.subscribe("VIP#OD#00000100.2").await.is_ok() {
                             println!("Successfully subscribed to VIP#OD#00000100.2");
                         } else {
                             error!("Subscribe error");
                         }
                     }
                     event::KeyCode::Char('c') => {
-                        if let Ok(_) = client.send_action("VIP#OD#00000100.2", ActionType::Set, 1).await {
+                        if client
+                            .send_action("VIP#OD#00000100.2", ActionType::Set, 1)
+                            .await
+                            .is_ok()
+                        {
                             println!("Successfully sent action to VIP#OD#00000100.2");
                         } else {
                             error!("Action error");
                         }
                     }
                     event::KeyCode::Char('d') => {
-                        if let Ok(_) = client.send_action("VIP#APARTMENT", ActionType::Set, 1).await {
+                        if client
+                            .send_action("VIP#APARTMENT", ActionType::Set, 1)
+                            .await
+                            .is_ok()
+                        {
                             println!("Successfully set action to VIP#APARTMENT");
                         } else {
                             error!("Action error");
@@ -139,12 +161,14 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
     client.disconnect().await?;
     Ok(())
 }
+
 #[tokio::main]
 async fn main() -> Result<(), ComelitClientError> {
     // Initialize the tracing subscriber
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::from_default_env()
-            .add_directive("comelit_hub_rs=info".parse().unwrap()))
+        .with_env_filter(
+            EnvFilter::from_default_env().add_directive("comelit_hub_rs=info".parse().unwrap()),
+        )
         .init();
 
     let params = Params::parse();
@@ -152,22 +176,25 @@ async fn main() -> Result<(), ComelitClientError> {
     match &params.command {
         Commands::Scan => {
             if let Some(host) = params.host {
-                let hub = Scanner::scan_address(host.as_str()).await.map_err(|e| ComelitClientError::ScannerError(e.to_string()))?;
+                let hub = Scanner::scan_address(host.as_str())
+                    .await
+                    .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 if let Some(hub) = hub {
-                    println!("Found hub: {:?}", hub);
+                    info!("Found hub: {:?}", hub);
                 } else {
-                    println!("No hub found at {}", host);
+                    info!("No hub found at {}", host);
                 }
             } else {
-                let hubs = Scanner::scan().await.map_err(|e| ComelitClientError::ScannerError(e.to_string()))?;
+                let hubs = Scanner::scan()
+                    .await
+                    .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 for hub in hubs {
-                    println!("Found hub: {:?}", hub);
+                    info!("Found hub: {:?}", hub);
                 }
             }
         }
         Commands::Listen => listen(params).await?,
     }
-
 
     Ok(())
 }

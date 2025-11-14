@@ -1,6 +1,6 @@
+use crate::protocol::out_data_messages::ActionType;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use crate::protocol::out_data_messages::ActionType;
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
@@ -77,7 +77,7 @@ impl From<RequestSubType> for i32 {
 }
 
 #[derive(Default, Clone, Debug, Serialize)]
-pub(crate) struct MqttMessage {
+pub struct MqttMessage {
     pub req_type: RequestType,
     pub seq_id: u32,
     pub req_sub_type: RequestSubType,
@@ -153,7 +153,14 @@ impl From<MqttMessage> for Vec<u8> {
     }
 }
 
-pub(crate) fn make_action_message(seq_id: u32, agent_id: u32, session_token: &str, obj_id: &str, act_type: ActionType, value: u32) -> MqttMessage {
+pub(crate) fn make_action_message(
+    seq_id: u32,
+    agent_id: u32,
+    session_token: &str,
+    obj_id: &str,
+    act_type: ActionType,
+    value: u32,
+) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Action,
         seq_id,
@@ -167,7 +174,12 @@ pub(crate) fn make_action_message(seq_id: u32, agent_id: u32, session_token: &st
     }
 }
 
-pub(crate) fn make_login_message(req_id: u32, user: &str, password: &str, agent_id: u32) -> MqttMessage {
+pub(crate) fn make_login_message(
+    req_id: u32,
+    user: &str,
+    password: &str,
+    agent_id: u32,
+) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Login,
         seq_id: req_id,
@@ -191,7 +203,12 @@ pub(crate) fn make_ping_message(seq_id: u32, agent_id: u32, session_token: &str)
     }
 }
 
-pub(crate) fn make_subscribe_message(seq_id: u32, agent_id: u32, session_token: &str, device: &str) -> MqttMessage {
+pub(crate) fn make_subscribe_message(
+    seq_id: u32,
+    agent_id: u32,
+    session_token: &str,
+    device: &str,
+) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Subscribe,
         seq_id,
@@ -203,7 +220,13 @@ pub(crate) fn make_subscribe_message(seq_id: u32, agent_id: u32, session_token: 
     }
 }
 
-pub fn make_status_message(seq_id: u32, agent_id: u32, session_token: &str, device: &str, level: u8) -> MqttMessage {
+pub fn make_status_message(
+    seq_id: u32,
+    agent_id: u32,
+    session_token: &str,
+    device: &str,
+    level: u8,
+) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Status,
         seq_id,

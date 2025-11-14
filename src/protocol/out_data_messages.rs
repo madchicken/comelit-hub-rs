@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
 pub(crate) enum ObjectType {
     Other = 1,
-    Blind = 2,
+    WindowCovering = 2,
     Light = 3,
     Irrigation = 4,
     Thermostat = 9,
@@ -22,7 +23,7 @@ impl From<i32> for ObjectType {
     fn from(value: i32) -> Self {
         match value {
             1 => Self::Other,
-            2 => Self::Blind,
+            2 => Self::WindowCovering,
             3 => Self::Light,
             4 => Self::Irrigation,
             9 => Self::Thermostat,
@@ -41,7 +42,7 @@ impl From<ObjectType> for i32 {
     fn from(value: ObjectType) -> Self {
         match value {
             ObjectType::Other => 1,
-            ObjectType::Blind => 2,
+            ObjectType::WindowCovering => 2,
             ObjectType::Light => 3,
             ObjectType::Irrigation => 4,
             ObjectType::Thermostat => 9,
@@ -124,20 +125,20 @@ impl From<ObjectSubtype> for i32 {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(into = "i32", from = "String")]
-pub(crate) enum DeviceStatus {
+pub enum DeviceStatus {
     #[default]
-    On = 0,
-    Off = 1,
+    Off = 0,
+    On = 1,
     Running = 2,
 }
 
 impl From<i32> for DeviceStatus {
     fn from(value: i32) -> Self {
         match value {
-            0 => Self::On,
-            1 => Self::Off,
+            0 => Self::Off,
+            1 => Self::On,
             2 => Self::Running,
             _ => Self::Off, // Default case
         }
@@ -147,8 +148,8 @@ impl From<i32> for DeviceStatus {
 impl From<&str> for DeviceStatus {
     fn from(value: &str) -> Self {
         match value {
-            "0" => Self::On,
-            "1" => Self::Off,
+            "0" => Self::Off,
+            "1" => Self::On,
             "2" => Self::Running,
             _ => Self::Off, // Default case
         }
@@ -164,8 +165,8 @@ impl From<String> for DeviceStatus {
 impl From<DeviceStatus> for i32 {
     fn from(value: DeviceStatus) -> Self {
         match value {
-            DeviceStatus::On => 0,
-            DeviceStatus::Off => 1,
+            DeviceStatus::Off => 0,
+            DeviceStatus::On => 1,
             DeviceStatus::Running => 2,
         }
     }
@@ -174,8 +175,8 @@ impl From<DeviceStatus> for i32 {
 impl From<DeviceStatus> for &str {
     fn from(value: DeviceStatus) -> Self {
         match value {
-            DeviceStatus::On => "0",
-            DeviceStatus::Off => "1",
+            DeviceStatus::Off => "0",
+            DeviceStatus::On => "1",
             DeviceStatus::Running => "2",
         }
     }
@@ -184,16 +185,16 @@ impl From<DeviceStatus> for &str {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "String")]
 enum ThermoSeason {
-    SUMMER = 0,
-    WINTER = 1,
+    Summer = 0,
+    Winter = 1,
 }
 
 impl From<i32> for ThermoSeason {
     fn from(value: i32) -> Self {
         match value {
-            0 => Self::SUMMER,
-            1 => Self::WINTER,
-            _ => Self::SUMMER, // Default case
+            0 => Self::Summer,
+            1 => Self::Winter,
+            _ => Self::Summer, // Default case
         }
     }
 }
@@ -201,8 +202,8 @@ impl From<i32> for ThermoSeason {
 impl From<ThermoSeason> for i32 {
     fn from(value: ThermoSeason) -> Self {
         match value {
-            ThermoSeason::SUMMER => 0,
-            ThermoSeason::WINTER => 1,
+            ThermoSeason::Summer => 0,
+            ThermoSeason::Winter => 1,
         }
     }
 }
@@ -210,8 +211,8 @@ impl From<ThermoSeason> for i32 {
 impl From<ThermoSeason> for &str {
     fn from(value: ThermoSeason) -> Self {
         match value {
-            ThermoSeason::SUMMER => "0",
-            ThermoSeason::WINTER => "1",
+            ThermoSeason::Summer => "0",
+            ThermoSeason::Winter => "1",
         }
     }
 }
@@ -219,9 +220,9 @@ impl From<ThermoSeason> for &str {
 impl From<String> for ThermoSeason {
     fn from(value: String) -> Self {
         match value.as_str() {
-            "0" => Self::SUMMER,
-            "1" => Self::WINTER,
-            _ => Self::SUMMER, // Default case
+            "0" => Self::Summer,
+            "1" => Self::Winter,
+            _ => Self::Summer, // Default case
         }
     }
 }
@@ -298,7 +299,7 @@ impl From<ClimaMode> for i32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "u32", from = "u32")]
-pub(crate) enum ActionType {
+pub enum ActionType {
     Set = 0,
     ClimaMode = 1,
     ClimaSetPoint = 2,
@@ -340,9 +341,8 @@ impl From<ActionType> for u32 {
     }
 }
 
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DeviceData {
+pub struct DeviceData {
     pub(crate) id: String,
     pub(crate) r#type: ObjectType,
     pub(crate) sub_type: ObjectSubtype,
@@ -350,13 +350,13 @@ pub(crate) struct DeviceData {
     sched_lock: Option<String>,
     #[serde(default, rename = "schedZoneStatus")]
     sched_zone_status: Vec<u32>,
-    status: Option<DeviceStatus>,
+    pub(crate) status: Option<DeviceStatus>,
     #[serde(rename = "descrizione")]
-    description: Option<String>,
+    pub(crate) description: Option<String>,
     #[serde(rename = "placeOrder")]
     place_order: Option<String>,
-    num_modulo: Option<String>,
-    num_uscita: Option<String>,
+    num_modulo: Option<u32>,
+    num_uscita: Option<u32>,
     icon_id: Option<String>,
     #[serde(rename = "isProtected")]
     is_protected: Option<DeviceStatus>,
@@ -371,36 +371,36 @@ pub(crate) struct DeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OtherDeviceData {
+pub struct OtherDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     tempo_uscita: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LightDeviceData {
+pub struct LightDeviceData {
     #[serde(flatten)]
-    data: DeviceData,
+    pub data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BlindDeviceData {
+pub struct WindowCoveringDeviceData {
     #[serde(flatten)]
-    data: DeviceData,
-    open_status: Option<DeviceStatus>,
-    position: Option<String>,
+    pub data: DeviceData,
+    pub open_status: Option<DeviceStatus>,
+    pub position: Option<String>,
     #[serde(rename = "openTime")]
-    open_time: Option<String>,
+    pub open_time: Option<String>,
     #[serde(rename = "closeTime")]
-    close_time: Option<String>,
+    pub close_time: Option<String>,
     #[serde(rename = "preferPosition")]
-    prefer_position: Option<String>,
+    pub prefer_position: Option<String>,
     #[serde(rename = "enablePreferPosition")]
-    enable_prefer_position: Option<DeviceStatus>,
+    pub enable_prefer_position: Option<DeviceStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OutletDeviceData {
+pub struct OutletDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     instant_power: String,
@@ -408,14 +408,14 @@ pub(crate) struct OutletDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct IrrigationDeviceData {
+pub struct IrrigationDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_snake_case)]
-pub(crate) struct ThermostatDeviceData {
+pub struct ThermostatDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     num_ingresso: Option<u32>,
@@ -499,7 +499,7 @@ pub(crate) struct ThermostatDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SupplierDeviceData {
+pub struct SupplierDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     label_value: Option<String>,
@@ -516,31 +516,32 @@ pub(crate) struct SupplierDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct AgentDeviceData {
+pub struct AgentDeviceData {
     pub(crate) agent_id: u32,
     #[serde(rename = "descrizione")]
     pub(crate) description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DoorDeviceData {
+pub struct DoorDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BellDeviceData {
+pub struct BellDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum HomeDeviceData {
+#[allow(clippy::large_enum_variant)]
+pub enum HomeDeviceData {
     Agent(AgentDeviceData),
     Data(DeviceData),
     Other(OtherDeviceData),
     Light(LightDeviceData),
-    Blind(BlindDeviceData),
+    WindowCovering(WindowCoveringDeviceData),
     Outlet(OutletDeviceData),
     Irrigation(IrrigationDeviceData),
     Thermostat(ThermostatDeviceData),
@@ -556,7 +557,7 @@ impl HomeDeviceData {
             HomeDeviceData::Data(o) => o.id.clone(),
             HomeDeviceData::Other(o) => o.data.id.clone(),
             HomeDeviceData::Light(o) => o.data.id.clone(),
-            HomeDeviceData::Blind(o) => o.data.id.clone(),
+            HomeDeviceData::WindowCovering(o) => o.data.id.clone(),
             HomeDeviceData::Outlet(o) => o.data.id.clone(),
             HomeDeviceData::Irrigation(o) => o.data.id.clone(),
             HomeDeviceData::Thermostat(o) => o.data.id.clone(),
@@ -574,20 +575,23 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             let other_data = serde_json::from_value::<OtherDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Other(other_data)]
         }
-        ObjectType::Blind => {
-            let blind_data = serde_json::from_value::<BlindDeviceData>(value.clone()).unwrap();
-            vec![HomeDeviceData::Blind(blind_data)]
+        ObjectType::WindowCovering => {
+            let blind_data =
+                serde_json::from_value::<WindowCoveringDeviceData>(value.clone()).unwrap();
+            vec![HomeDeviceData::WindowCovering(blind_data)]
         }
         ObjectType::Light => {
             let light_data = serde_json::from_value::<LightDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Light(light_data)]
         }
         ObjectType::Irrigation => {
-            let irrigation_data = serde_json::from_value::<IrrigationDeviceData>(value.clone()).unwrap();
+            let irrigation_data =
+                serde_json::from_value::<IrrigationDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Irrigation(irrigation_data)]
         }
         ObjectType::Thermostat => {
-            let thermostat_data = serde_json::from_value::<ThermostatDeviceData>(value.clone()).unwrap();
+            let thermostat_data =
+                serde_json::from_value::<ThermostatDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Thermostat(thermostat_data)]
         }
         ObjectType::Outlet => {
@@ -595,19 +599,26 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             vec![HomeDeviceData::Outlet(outlet_data)]
         }
         ObjectType::PowerSupplier => {
-            let supplier_data = serde_json::from_value::<SupplierDeviceData>(value.clone()).unwrap();
+            let supplier_data =
+                serde_json::from_value::<SupplierDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Supplier(supplier_data)]
         }
         ObjectType::Agent => {
             let agent_data = serde_json::from_value::<AgentDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Agent(agent_data)]
         }
-        ObjectType::Zone => {
-            data.elements.iter().flat_map(|v| {
-                println!("Zone {} found, reading element inside: {:?}", data.description.as_ref().unwrap_or(&"None".to_string()), v);
+        ObjectType::Zone => data
+            .elements
+            .iter()
+            .flat_map(|v| {
+                debug!(
+                    "Zone {} found, reading element inside: {:?}",
+                    data.description.as_ref().unwrap_or(&"None".to_string()),
+                    v
+                );
                 device_data_to_home_device(v.clone())
-            }).collect::<Vec<HomeDeviceData>>()
-        }
+            })
+            .collect::<Vec<HomeDeviceData>>(),
         ObjectType::VipElement => {
             let other_data = serde_json::from_value::<BellDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Bell(other_data)]
