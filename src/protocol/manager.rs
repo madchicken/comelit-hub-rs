@@ -1,6 +1,5 @@
 use crate::protocol::messages::{MqttResponseMessage};
 use dashmap::DashMap;
-use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::oneshot::Sender;
 use tokio::sync::oneshot;

@@ -566,8 +566,8 @@ impl ComelitClient {
         self.send_action(id, ActionType::Set, if on { 1 } else { 0 }).await
     }
 
-    pub async fn set_blind_position(&self, id: &str, position: u32) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::SetBlindPosition, position).await
+    pub async fn toggle_blind_position(&self, id: &str, position: u8) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::SetBlindPosition, if position > 0 { 1 } else { 0 }).await
     }
 
     // async setTemperature(id: string, temperature: number): Promise<boolean> {
