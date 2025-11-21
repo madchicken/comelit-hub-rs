@@ -182,9 +182,118 @@ impl From<DeviceStatus> for &str {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(into = "i32", from = "String")]
+pub enum PowerStatus {
+    #[default]
+    Stopped = 0,
+    Down = 1,
+    Up = 2,
+}
+
+impl From<i32> for PowerStatus {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => Self::Stopped,
+            1 => Self::Down,
+            2 => Self::Up,
+            _ => Self::Stopped, // Default case
+        }
+    }
+}
+
+impl From<&str> for PowerStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::Stopped,
+            "1" => Self::Down,
+            "2" => Self::Up,
+            _ => Self::Stopped, // Default case
+        }
+    }
+}
+
+impl From<String> for PowerStatus {
+    fn from(value: String) -> Self {
+        PowerStatus::from(value.as_str())
+    }
+}
+
+impl From<PowerStatus> for i32 {
+    fn from(value: PowerStatus) -> Self {
+        match value {
+            PowerStatus::Stopped => 0,
+            PowerStatus::Down => 1,
+            PowerStatus::Up => 2,
+        }
+    }
+}
+
+impl From<PowerStatus> for &str {
+    fn from(value: PowerStatus) -> Self {
+        match value {
+            PowerStatus::Stopped => "0",
+            PowerStatus::Down => "1",
+            PowerStatus::Up => "2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(into = "i32", from = "String")]
+pub enum OpenStatus {
+    Closed = 0,
+    #[default]
+    Open = 1,
+}
+
+impl From<i32> for OpenStatus {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => Self::Closed,
+            1 => Self::Open,
+            _ => Self::Open, // Default case
+        }
+    }
+}
+
+impl From<&str> for OpenStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::Closed,
+            "1" => Self::Open,
+            _ => Self::Open, // Default case
+        }
+    }
+}
+
+impl From<String> for OpenStatus {
+    fn from(value: String) -> Self {
+        OpenStatus::from(value.as_str())
+    }
+}
+
+impl From<OpenStatus> for i32 {
+    fn from(value: OpenStatus) -> Self {
+        match value {
+            OpenStatus::Closed => 0,
+            OpenStatus::Open => 1,
+        }
+    }
+}
+
+impl From<OpenStatus> for &str {
+    fn from(value: OpenStatus) -> Self {
+        match value {
+            OpenStatus::Closed => "0",
+            OpenStatus::Open => "1",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "String")]
-enum ThermoSeason {
+pub enum ThermoSeason {
     Summer = 0,
     Winter = 1,
 }
@@ -229,7 +338,7 @@ impl From<String> for ThermoSeason {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "String")]
-enum ClimaMode {
+pub enum ClimaMode {
     None = 0,
     Auto = 1,
     Manual = 2,
@@ -298,7 +407,7 @@ impl From<ClimaMode> for i32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(into = "u32", from = "u32")]
+#[serde(into = "i32", from = "i32")]
 pub enum ActionType {
     Set = 0,
     ClimaMode = 1,
@@ -310,8 +419,8 @@ pub enum ActionType {
     SetBlindPosition = 52,
 }
 
-impl From<u32> for ActionType {
-    fn from(value: u32) -> Self {
+impl From<i32> for ActionType {
+    fn from(value: i32) -> Self {
         match value {
             0 => Self::Set,
             1 => Self::ClimaMode,
@@ -326,7 +435,7 @@ impl From<u32> for ActionType {
     }
 }
 
-impl From<ActionType> for u32 {
+impl From<ActionType> for i32 {
     fn from(value: ActionType) -> Self {
         match value {
             ActionType::Set => 0,
@@ -355,8 +464,6 @@ pub struct DeviceData {
     pub(crate) description: Option<String>,
     #[serde(rename = "placeOrder")]
     place_order: Option<String>,
-    num_modulo: Option<u32>,
-    num_uscita: Option<u32>,
     icon_id: Option<String>,
     #[serde(rename = "isProtected")]
     is_protected: Option<DeviceStatus>,
@@ -365,7 +472,7 @@ pub struct DeviceData {
     #[serde(rename = "placeId")]
     place_id: Option<String>,
     #[serde(rename = "powerst")]
-    power_status: Option<DeviceStatus>,
+    pub power_status: Option<PowerStatus>,
     #[serde(default)]
     elements: Vec<Value>,
 }
@@ -387,7 +494,7 @@ pub struct LightDeviceData {
 pub struct WindowCoveringDeviceData {
     #[serde(flatten)]
     pub data: DeviceData,
-    pub open_status: Option<DeviceStatus>,
+    pub open_status: Option<OpenStatus>,
     pub position: Option<String>,
     #[serde(rename = "openTime")]
     pub open_time: Option<String>,

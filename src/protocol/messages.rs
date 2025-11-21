@@ -103,9 +103,9 @@ pub struct MqttMessage {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail_level: Option<u8>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub act_params: Vec<u32>,
+    pub act_params: Vec<i32>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub act_type: Option<u32>,
+    pub act_type: Option<i32>,
 }
 
 #[derive(Default, Clone, Debug, Deserialize)]
@@ -159,7 +159,7 @@ pub(crate) fn make_action_message(
     session_token: &str,
     obj_id: &str,
     act_type: ActionType,
-    value: u32,
+    value: i32,
 ) -> MqttMessage {
     MqttMessage {
         req_type: RequestType::Action,

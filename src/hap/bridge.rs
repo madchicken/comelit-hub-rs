@@ -1,7 +1,15 @@
-use crate::hap::accessories::ComelitAccessory;
-use rand::Rng;
-use std::sync::Arc;
-
+use crate::hap::accessories::{ComelitAccessory, WindowCoveringConfig};
+use crate::protocol::client::ROOT_ID;
+use crate::protocol::{
+    client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
+    credentials::get_secrets,
+    out_data_messages::HomeDeviceData,
+};
+use crate::{
+    hap::accessories::{ComelitLightbulbAccessory, ComelitWindowCoveringAccessory},
+    protocol::out_data_messages::{LightDeviceData, WindowCoveringDeviceData},
+};
+use anyhow::{Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use hap::{
@@ -10,19 +18,11 @@ use hap::{
     server::{IpServer, Server},
     storage::{FileStorage, Storage},
 };
-use tracing::{debug, error, info};
-use crate::{
-    hap::accessories::{ComelitLightbulbAccessory, ComelitWindowCoveringAccessory},
-    protocol::out_data_messages::{LightDeviceData, WindowCoveringDeviceData},
-};
-use anyhow::{Context, Result};
+use rand::Rng;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::signal;
-use crate::protocol::client::ROOT_ID;
-use crate::protocol::{
-    client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
-    credentials::get_secrets,
-    out_data_messages::HomeDeviceData,
-};
+use tracing::{error, info, warn};
 
 #[derive(Default)]
 struct Updater {
@@ -33,7 +33,6 @@ struct Updater {
 #[async_trait]
 impl StatusUpdate for Updater {
     async fn status_update(&self, device: &HomeDeviceData) {
-        debug!("Status update: {:?}", device);
         match device {
             HomeDeviceData::Agent(_) => {}
             HomeDeviceData::Data(_) => {}
@@ -43,23 +42,31 @@ impl StatusUpdate for Updater {
                     accessory.update(device).await.unwrap_or_else(|e| {
                         error!("Failed to update light accessory {}: {}", accessory.id(), e);
                     });
+                } else {
+                    warn!("Received update for unknown light device");
                 }
             }
             HomeDeviceData::WindowCovering(_) => {
                 if let Some(accessory) = self.coverings.get(&device.id()) {
                     accessory.update(device).await.unwrap_or_else(|e| {
-                        error!("Failed to update window covering accessory {}: {}", accessory.id(), e);
+                        error!(
+                            "Failed to update window covering accessory {}: {}",
+                            accessory.id(),
+                            e
+                        );
                     })
+                } else {
+                    warn!("Received update for unknown window covering device");
                 }
             }
-            HomeDeviceData::Outlet(outlet_device_data) => {}
-            HomeDeviceData::Irrigation(irrigation_device_data) => {}
-            HomeDeviceData::Thermostat(thermostat_device_data) => {}
+            HomeDeviceData::Outlet(_outlet_device_data) => {}
+            HomeDeviceData::Irrigation(_irrigation_device_data) => {}
+            HomeDeviceData::Thermostat(_thermostat_device_data) => {}
             HomeDeviceData::Supplier(supplier_device_data) => {
                 info!("Received update for supplier {supplier_device_data:?}");
             }
-            HomeDeviceData::Bell(bell_device_data) => {}
-            HomeDeviceData::Door(door_device_data) => {}
+            HomeDeviceData::Bell(_bell_device_data) => {}
+            HomeDeviceData::Door(_door_device_data) => {}
         }
     }
 }
@@ -67,24 +74,24 @@ impl StatusUpdate for Updater {
 fn generate_setup_uri(pincode: &str, category: u64, setup_id: &str) -> String {
     // Rimuove i '-' e converte in numero
     let value_low_str = pincode.replace('-', "");
-    let value_low = u64::from_str_radix(&value_low_str, 10).unwrap_or(0);
+    let value_low = value_low_str.parse::<u64>().unwrap_or(0);
 
     let version = 0;
     let reserved = 0;
     let flag = 2;
     let mut payload: u64 = 0;
 
-    payload = payload | (version & 0x7);
-    payload = payload << 4;
-    payload = payload | (reserved & 0xf);
+    payload |= version & 0x7;
+    payload <<= 4;
+    payload |= reserved & 0xf;
 
-    payload = payload << 8;
-    payload = payload | (category & 0xff);
+    payload <<= 8;
+    payload |= category & 0xff;
 
-    payload = payload << 4;
-    payload = payload | (flag & 0xf);
-    payload = payload << 27u64;
-    payload = payload | (u64::from(value_low) & 0x07ff_ffff);
+    payload <<= 4;
+    payload |= flag & 0xf;
+    payload <<= 27u64;
+    payload |= value_low & 0x07ff_ffff;
 
     // Converte in base36 e uppercase
     let mut encoded_payload = base36_encode(payload).to_uppercase();
@@ -94,7 +101,7 @@ fn generate_setup_uri(pincode: &str, category: u64, setup_id: &str) -> String {
         encoded_payload.insert(0, '0');
     }
 
-    format!("X-HM://{}{}", encoded_payload, setup_id)
+    format!("X-HM://{encoded_payload}{setup_id}")
 }
 
 fn base36_encode(mut num: u64) -> String {
@@ -161,17 +168,17 @@ pub async fn start_bridge(
         Err(_) => {
             info!("Creating new config");
             let device_id: [u8; 6] = client.mac_address.as_bytes()[..6].try_into()?;
-            let mut rng = rand::thread_rng();
+            let mut rng = rand::rng();
             let pin = loop {
                 if let Ok(pin) = Pin::new([
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
-                    rng.gen_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
+                    rng.random_range(0..10),
                 ]) {
                     break pin;
                 } else {
@@ -213,9 +220,7 @@ pub async fn start_bridge(
     for light in lights.iter().take(1) {
         info!("Adding light device: {}", light.data.id);
         i += 1;
-        match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server)
-            .await
-        {
+        match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server).await {
             Ok(accessory) => {
                 info!("Light {} added to the hub", accessory.id());
                 updater.lights.insert(accessory.id().to_string(), accessory);
@@ -240,6 +245,10 @@ pub async fn start_bridge(
             covering.clone(),
             client.clone(),
             &server,
+            WindowCoveringConfig {
+                closing_time: Duration::from_secs(30),
+                opening_time: Duration::from_secs(30),
+            },
         )
         .await
         {

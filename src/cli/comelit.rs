@@ -5,7 +5,9 @@ use comelit_hub_rs::protocol::client::{
     ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID, State, StatusUpdate,
 };
 use comelit_hub_rs::protocol::credentials::get_secrets;
-use comelit_hub_rs::protocol::out_data_messages::{ActionType, HomeDeviceData, LightDeviceData};
+use comelit_hub_rs::protocol::out_data_messages::{
+    ActionType, DeviceData, HomeDeviceData, LightDeviceData,
+};
 use comelit_hub_rs::protocol::scanner::Scanner;
 use crossterm::event::Event::Key;
 use crossterm::{event, terminal};
@@ -67,13 +69,14 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
     let index = client.fetch_index().await?;
     client.subscribe(ROOT_ID).await?;
     info!("Subscribed to index updates");
-    let root_info = client.info(ROOT_ID, 2).await?;
-    let lights: Vec<LightDeviceData> = index.into_iter().filter_map(|(_, v)| {
-        match v {
+    let _root_info = client.info::<DeviceData>(ROOT_ID, 2).await?;
+    let _lights: Vec<LightDeviceData> = index
+        .into_iter()
+        .filter_map(|(_, v)| match v {
             HomeDeviceData::Light(l) => Some(l),
-            _ => None
-        }
-    }).collect();
+            _ => None,
+        })
+        .collect();
 
     println!("Press 'q' to quit");
     println!("Press 'f' to fetch the house index");
@@ -102,7 +105,7 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         }
                     }
                     event::KeyCode::Char('i') => {
-                        if client.info(ROOT_ID, 2).await.is_ok() {
+                        if client.info::<DeviceData>(ROOT_ID, 2).await.is_ok() {
                             println!("Info received");
                         } else {
                             error!("Info error");

@@ -1,16 +1,19 @@
-use std::sync::{Arc};
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use futures::FutureExt;
+use hap::characteristic::HapCharacteristic;
 use hap::{
     accessory::{AccessoryInformation, lightbulb::LightbulbAccessory},
     characteristic::AsyncCharacteristicCallbacks,
     server::{IpServer, Server},
 };
-use hap::characteristic::HapCharacteristic;
 use serde_json::Value;
 use tracing::{debug, error, info};
 
+use crate::hap::accessories::comelit_accessory::ComelitAccessory;
+use crate::protocol::out_data_messages::HomeDeviceData;
+use crate::protocol::out_data_messages::HomeDeviceData::Light;
 use crate::{
     hap::accessories::AccessoryPointer,
     protocol::{
@@ -18,9 +21,6 @@ use crate::{
         out_data_messages::{ActionType, DeviceStatus, LightDeviceData},
     },
 };
-use crate::hap::accessories::comelit_accessory::ComelitAccessory;
-use crate::protocol::out_data_messages::HomeDeviceData;
-use crate::protocol::out_data_messages::HomeDeviceData::Light;
 
 pub(crate) struct ComelitLightbulbAccessory {
     lightbulb_accessory: AccessoryPointer,
@@ -47,12 +47,17 @@ impl ComelitLightbulbAccessory {
                 ..Default::default()
             },
         )
-            .context("Cannot create lightbulb accessory")?;
+        .context("Cannot create lightbulb accessory")?;
 
+        lightbulb_accessory.lightbulb.brightness = None; // Disable brightness
+        lightbulb_accessory.lightbulb.color_temperature = None; // Disable brightness
         info!("Created lightbulb accessory: {:?}", light_data);
+        let power_status =
+            Value::Bool(light_data.data.status.unwrap_or_default() == DeviceStatus::On);
         lightbulb_accessory
             .lightbulb
-            .power_state.set_value(Value::Bool(light_data.data.status.unwrap_or_default() == DeviceStatus::On))
+            .power_state
+            .set_value(power_status.clone())
             .await
             .context("Cannot set initial power state for lightbulb")?;
 
@@ -65,34 +70,43 @@ impl ComelitLightbulbAccessory {
         })
     }
 
-    pub async fn setup_read(id: &str, client: Arc<ComelitClient>, lightbulb_accessory: &mut LightbulbAccessory) {
+    pub async fn setup_read(
+        id: &str,
+        client: Arc<ComelitClient>,
+        lightbulb_accessory: &mut LightbulbAccessory,
+    ) {
         let id = id.to_string();
         lightbulb_accessory
             .lightbulb
-            .power_state.on_read_async(Some(move || {
-            info!("Lightbulb read {} from lightbulb", id);
-            let client = client.clone();
-            let id = id.clone();
-            async move {
-                if let Ok(statuses) = client.info(id.as_str(), 1).await {
-                    if let Some(first) = statuses.first() {
-                        debug!("Read internal status for lightbulb {}: {:?}", id, first);
-                        let status = first.status.as_ref().unwrap();
-                        Ok(Some(*status == DeviceStatus::On))
+            .power_state
+            .on_read_async(Some(move || {
+                info!("Lightbulb read {} from lightbulb", id);
+                let client = client.clone();
+                let id = id.clone();
+                async move {
+                    if let Ok(statuses) = client.info::<LightDeviceData>(id.as_str(), 1).await {
+                        if let Some(first) = statuses.first() {
+                            debug!("Read internal status for lightbulb {}: {:?}", id, first);
+                            let status = first.data.status.as_ref().unwrap();
+                            Ok(Some(*status == DeviceStatus::On))
+                        } else {
+                            error!("No status returned for lightbulb {}", id);
+                            Ok(None)
+                        }
                     } else {
-                        error!("No status returned for lightbulb {}", id);
+                        error!("Failed to read power state for lightbulb {}", id);
                         Ok(None)
                     }
-                } else {
-                    error!("Failed to read power state for lightbulb {}", id);
-                    Ok(None)
                 }
-            }
                 .boxed()
-        }));
+            }));
     }
 
-    pub async fn setup_update(id: &str, client: Arc<ComelitClient>, lightbulb_accessory: &mut LightbulbAccessory) {
+    pub async fn setup_update(
+        id: &str,
+        client: Arc<ComelitClient>,
+        lightbulb_accessory: &mut LightbulbAccessory,
+    ) {
         let id = id.to_string();
         lightbulb_accessory
             .lightbulb
@@ -105,26 +119,26 @@ impl ComelitLightbulbAccessory {
                 let c = client.clone();
                 let id = id.clone();
                 async move {
-                    if new_val != current_val && c.send_action(id.as_str(), ActionType::Set, if new_val { 1 } else { 0 })
-                        .await
-                        .is_err()
+                    if new_val != current_val
+                        && c.send_action(id.as_str(), ActionType::Set, if new_val { 1 } else { 0 })
+                            .await
+                            .is_err()
                     {
                         error!("Failed to update power state for lightbulb {}", id);
                     }
                     Ok(())
                 }
-                    .boxed()
+                .boxed()
             }));
     }
 }
 
 impl ComelitAccessory for ComelitLightbulbAccessory {
-
     fn id(&self) -> &str {
         self.id.as_str()
     }
 
-    async fn update(&self, data: &HomeDeviceData) -> Result<()>{
+    async fn update(&self, data: &HomeDeviceData) -> Result<()> {
         if let Light(light_data) = data {
             let id = self.id();
             if let Some(state) = light_data.data.status.as_ref() {
