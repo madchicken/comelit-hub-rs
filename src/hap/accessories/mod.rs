@@ -1,7 +1,9 @@
-mod lightbulb;
-mod window_covering;
-mod comelit_accessory;
 mod cached_value;
+mod comelit_accessory;
+mod lightbulb;
+mod state;
+mod thermostat;
+mod window_covering;
 
 use std::sync::Arc;
 
@@ -10,6 +12,7 @@ use hap::accessory::HapAccessory;
 
 pub(crate) use lightbulb::ComelitLightbulbAccessory;
 pub(crate) use window_covering::ComelitWindowCoveringAccessory;
-pub type AccessoryPointer = Arc<Mutex<Box<dyn HapAccessory>>>;
-pub use comelit_accessory::ComelitAccessory;
-pub use window_covering::WindowCoveringConfig;
+pub(crate) type AccessoryPointer = Arc<Mutex<Box<dyn HapAccessory>>>;
+pub(crate) use comelit_accessory::ComelitAccessory;
+pub(crate) use thermostat::ComelitThermostatAccessory;
+pub(crate) use window_covering::WindowCoveringConfig;

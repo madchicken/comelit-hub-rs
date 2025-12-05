@@ -187,16 +187,16 @@ impl From<DeviceStatus> for &str {
 pub enum PowerStatus {
     #[default]
     Stopped = 0,
-    Down = 1,
-    Up = 2,
+    Off = 1,
+    On = 2,
 }
 
 impl From<i32> for PowerStatus {
     fn from(value: i32) -> Self {
         match value {
             0 => Self::Stopped,
-            1 => Self::Down,
-            2 => Self::Up,
+            1 => Self::Off,
+            2 => Self::On,
             _ => Self::Stopped, // Default case
         }
     }
@@ -206,8 +206,8 @@ impl From<&str> for PowerStatus {
     fn from(value: &str) -> Self {
         match value {
             "0" => Self::Stopped,
-            "1" => Self::Down,
-            "2" => Self::Up,
+            "1" => Self::Off,
+            "2" => Self::On,
             _ => Self::Stopped, // Default case
         }
     }
@@ -223,8 +223,8 @@ impl From<PowerStatus> for i32 {
     fn from(value: PowerStatus) -> Self {
         match value {
             PowerStatus::Stopped => 0,
-            PowerStatus::Down => 1,
-            PowerStatus::Up => 2,
+            PowerStatus::Off => 1,
+            PowerStatus::On => 2,
         }
     }
 }
@@ -233,8 +233,8 @@ impl From<PowerStatus> for &str {
     fn from(value: PowerStatus) -> Self {
         match value {
             PowerStatus::Stopped => "0",
-            PowerStatus::Down => "1",
-            PowerStatus::Up => "2",
+            PowerStatus::Off => "1",
+            PowerStatus::On => "2",
         }
     }
 }
@@ -291,10 +291,11 @@ impl From<OpenStatus> for &str {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 #[serde(into = "i32", from = "String")]
 pub enum ThermoSeason {
     Summer = 0,
+    #[default]
     Winter = 1,
 }
 
@@ -336,9 +337,10 @@ impl From<String> for ThermoSeason {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(into = "i32", from = "String")]
 pub enum ClimaMode {
+    #[default]
     None = 0,
     Auto = 1,
     Manual = 2,
@@ -402,6 +404,72 @@ impl From<ClimaMode> for i32 {
             ClimaMode::SemiMan => 4,
             ClimaMode::OffAuto => 5,
             ClimaMode::OffManual => 6,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(into = "i32", from = "String")]
+pub enum ClimaOnOff {
+    OffThermo = 0,
+    OnThermo = 1,
+    OffHumi = 2,
+    OnHumi = 3,
+    #[default]
+    Off = 4,
+    On = 5,
+}
+
+impl From<String> for ClimaOnOff {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "0" => ClimaOnOff::OffThermo,
+            "1" => ClimaOnOff::OnThermo,
+            "2" => ClimaOnOff::OffHumi,
+            "3" => ClimaOnOff::OnHumi,
+            "4" => ClimaOnOff::Off,
+            "5" => ClimaOnOff::On,
+            _ => ClimaOnOff::Off, // Default case
+        }
+    }
+}
+
+impl From<ClimaOnOff> for &str {
+    fn from(value: ClimaOnOff) -> Self {
+        match value {
+            ClimaOnOff::OffThermo => "0",
+            ClimaOnOff::OnThermo => "1",
+            ClimaOnOff::OffHumi => "2",
+            ClimaOnOff::OnHumi => "3",
+            ClimaOnOff::Off => "4",
+            ClimaOnOff::On => "5",
+        }
+    }
+}
+
+impl From<i32> for ClimaOnOff {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => ClimaOnOff::OffThermo,
+            1 => ClimaOnOff::OnThermo,
+            2 => ClimaOnOff::OffHumi,
+            3 => ClimaOnOff::OnHumi,
+            4 => ClimaOnOff::Off,
+            5 => ClimaOnOff::On,
+            _ => ClimaOnOff::Off, // Default case
+        }
+    }
+}
+
+impl From<ClimaOnOff> for i32 {
+    fn from(value: ClimaOnOff) -> Self {
+        match value {
+            ClimaOnOff::OffThermo => 0,
+            ClimaOnOff::OnThermo => 1,
+            ClimaOnOff::OffHumi => 2,
+            ClimaOnOff::OnHumi => 3,
+            ClimaOnOff::Off => 4,
+            ClimaOnOff::On => 5,
         }
     }
 }
@@ -524,85 +592,87 @@ pub struct IrrigationDeviceData {
 #[allow(non_snake_case)]
 pub struct ThermostatDeviceData {
     #[serde(flatten)]
-    data: DeviceData,
-    num_ingresso: Option<u32>,
-    num_moduloIE: Option<String>,
-    num_uscitaIE: Option<String>,
-    num_moduloI: Option<String>,
-    num_uscitaI: Option<String>,
-    num_moduloE: Option<String>,
-    num_uscitaE: Option<String>,
-    num_moduloI_ana: Option<String>,
-    num_uscitaI_ana: Option<String>,
-    num_moduloE_ana: Option<String>,
-    num_uscitaE_ana: Option<String>,
-    num_moduloUD: Option<String>,
-    num_uscitaUD: Option<String>,
-    num_moduloU: Option<String>,
-    num_uscitaU: Option<String>,
-    num_moduloD: Option<String>,
-    num_uscitaD: Option<String>,
-    num_moduloU_ana: Option<String>,
-    num_uscitaU_ana: Option<String>,
-    num_moduloD_ana: Option<String>,
-    num_uscitaD_ana: Option<String>,
-    night_mode: Option<String>,
-    soglia_man_inv: Option<String>,
-    soglia_man_est: Option<String>,
-    soglia_man_notte_inv: Option<String>,
-    soglia_man_notte_est: Option<String>,
-    soglia_semiauto: Option<String>,
-    soglia_auto_inv: Option<String>,
-    soglia_auto_est: Option<String>,
-    out_enable_inv: Option<DeviceStatus>,
-    out_enable_est: Option<DeviceStatus>,
-    dir_enable_inv: Option<DeviceStatus>,
-    dir_enable_est: Option<DeviceStatus>,
-    heatAutoFanDisable: Option<DeviceStatus>,
-    coolAutoFanDisable: Option<DeviceStatus>,
-    heatSwingDisable: Option<DeviceStatus>,
-    coolSwingDisable: Option<DeviceStatus>,
-    out_type_inv: Option<String>,
-    out_type_est: Option<String>,
-    temp_base_inv: Option<String>,
-    temp_base_est: Option<String>,
-    out_enable_umi: Option<String>,
-    out_enable_deumi: Option<String>,
-    dir_enable_umi: Option<String>,
-    dir_enable_deumi: Option<String>,
-    humAutoFanDisable: Option<String>,
-    dehumAutoFanDisable: Option<String>,
-    humSwingDisable: Option<String>,
-    dehumSwingDisable: Option<String>,
-    out_type_umi: Option<String>,
-    out_type_deumi: Option<String>,
-    soglia_man_umi: Option<String>,
-    soglia_man_deumi: Option<String>,
-    soglia_man_notte_umi: Option<String>,
-    soglia_man_notte_deumi: Option<String>,
-    night_mode_umi: Option<String>,
-    soglia_semiauto_umi: Option<String>,
-    umi_base_umi: Option<String>,
-    umi_base_deumi: Option<String>,
-    coolLimitMax: Option<String>,
-    coolLimitMin: Option<String>,
-    heatLimitMax: Option<String>,
-    heatLimitMin: Option<String>,
-    viewOnly: Option<String>,
-    temperatura: Option<String>,
-    auto_man: Option<ClimaMode>,
-    est_inv: Option<ThermoSeason>,
-    soglia_attiva: Option<String>,
-    out_value_inv: Option<String>,
-    out_value_est: Option<String>,
-    dir_out_inv: Option<String>,
-    dir_out_est: Option<String>,
-    semiauto_enabled: Option<String>,
-    umidita: Option<String>,
-    auto_man_umi: Option<ClimaMode>,
-    deumi_umi: Option<String>,
-    soglia_attiva_umi: Option<String>,
-    semiauto_umi_enabled: Option<String>,
+    pub(crate) data: DeviceData,
+    pub(crate) num_ingresso: Option<u32>,
+    pub(crate) num_moduloIE: Option<String>,
+    pub(crate) num_uscitaIE: Option<String>,
+    pub(crate) num_moduloI: Option<String>,
+    pub(crate) num_uscitaI: Option<String>,
+    pub(crate) num_moduloE: Option<String>,
+    pub(crate) num_uscitaE: Option<String>,
+    pub(crate) num_moduloI_ana: Option<String>,
+    pub(crate) num_uscitaI_ana: Option<String>,
+    pub(crate) num_moduloE_ana: Option<String>,
+    pub(crate) num_uscitaE_ana: Option<String>,
+    pub(crate) num_moduloUD: Option<String>,
+    pub(crate) num_uscitaUD: Option<String>,
+    pub(crate) num_moduloU: Option<String>,
+    pub(crate) num_uscitaU: Option<String>,
+    pub(crate) num_moduloD: Option<String>,
+    pub(crate) num_uscitaD: Option<String>,
+    pub(crate) num_moduloU_ana: Option<String>,
+    pub(crate) num_uscitaU_ana: Option<String>,
+    pub(crate) num_moduloD_ana: Option<String>,
+    pub(crate) num_uscitaD_ana: Option<String>,
+    pub(crate) night_mode: Option<String>,
+    pub(crate) soglia_man_inv: Option<String>,
+    pub(crate) soglia_man_est: Option<String>,
+    pub(crate) soglia_man_notte_inv: Option<String>,
+    pub(crate) soglia_man_notte_est: Option<String>,
+    pub(crate) soglia_semiauto: Option<String>,
+    pub(crate) soglia_auto_inv: Option<String>,
+    pub(crate) soglia_auto_est: Option<String>,
+    pub(crate) out_enable_inv: Option<DeviceStatus>,
+    pub(crate) out_enable_est: Option<DeviceStatus>,
+    pub(crate) dir_enable_inv: Option<DeviceStatus>,
+    pub(crate) dir_enable_est: Option<DeviceStatus>,
+    pub(crate) heatAutoFanDisable: Option<DeviceStatus>,
+    pub(crate) coolAutoFanDisable: Option<DeviceStatus>,
+    pub(crate) heatSwingDisable: Option<DeviceStatus>,
+    pub(crate) coolSwingDisable: Option<DeviceStatus>,
+    pub(crate) out_type_inv: Option<String>,
+    pub(crate) out_type_est: Option<String>,
+    pub(crate) temp_base_inv: Option<String>,
+    pub(crate) temp_base_est: Option<String>,
+    pub(crate) out_enable_umi: Option<String>,
+    pub(crate) out_enable_deumi: Option<String>,
+    pub(crate) dir_enable_umi: Option<String>,
+    pub(crate) dir_enable_deumi: Option<String>,
+    pub(crate) humAutoFanDisable: Option<String>,
+    pub(crate) dehumAutoFanDisable: Option<String>,
+    pub(crate) humSwingDisable: Option<String>,
+    pub(crate) dehumSwingDisable: Option<String>,
+    pub(crate) out_type_umi: Option<String>,
+    pub(crate) out_type_deumi: Option<String>,
+    pub(crate) soglia_man_umi: Option<String>,
+    pub(crate) soglia_man_deumi: Option<String>,
+    pub(crate) soglia_man_notte_umi: Option<String>,
+    pub(crate) soglia_man_notte_deumi: Option<String>,
+    pub(crate) night_mode_umi: Option<String>,
+    pub(crate) soglia_semiauto_umi: Option<String>,
+    pub(crate) umi_base_umi: Option<String>,
+    pub(crate) umi_base_deumi: Option<String>,
+    pub(crate) coolLimitMax: Option<String>,
+    pub(crate) coolLimitMin: Option<String>,
+    pub(crate) heatLimitMax: Option<String>,
+    pub(crate) heatLimitMin: Option<String>,
+    pub(crate) viewOnly: Option<String>,
+    #[serde(rename = "temperatura")]
+    pub(crate) temperature: Option<String>,
+    pub(crate) auto_man: Option<ClimaMode>,
+    pub(crate) est_inv: Option<ThermoSeason>,
+    pub(crate) soglia_attiva: Option<String>,
+    pub(crate) out_value_inv: Option<String>,
+    pub(crate) out_value_est: Option<String>,
+    pub(crate) dir_out_inv: Option<String>,
+    pub(crate) dir_out_est: Option<String>,
+    pub(crate) semiauto_enabled: Option<String>,
+    #[serde(rename = "umidita")]
+    pub(crate) humidity: Option<String>,
+    pub(crate) auto_man_umi: Option<ClimaMode>,
+    pub(crate) deumi_umi: Option<String>,
+    pub(crate) soglia_attiva_umi: Option<String>,
+    pub(crate) semiauto_umi_enabled: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -671,6 +741,28 @@ impl HomeDeviceData {
             HomeDeviceData::Supplier(o) => o.data.id.clone(),
             HomeDeviceData::Bell(o) => o.data.id.clone(),
             HomeDeviceData::Door(o) => o.data.id.clone(),
+        }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            HomeDeviceData::Agent(o) => o.description.clone(),
+            HomeDeviceData::Data(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::Other(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Light(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::WindowCovering(o) => {
+                o.data.description.clone().unwrap_or(o.data.id.clone())
+            }
+            HomeDeviceData::Outlet(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Irrigation(o) => {
+                o.data.description.clone().unwrap_or(o.data.id.clone())
+            }
+            HomeDeviceData::Thermostat(o) => {
+                o.data.description.clone().unwrap_or(o.data.id.clone())
+            }
+            HomeDeviceData::Supplier(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Bell(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Door(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
         }
     }
 }

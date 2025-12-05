@@ -1,8 +1,7 @@
-use crate::protocol::out_data_messages::{HomeDeviceData};
 use anyhow::Result;
 
-pub trait ComelitAccessory {
-    fn id(&self) -> &str;
+pub trait ComelitAccessory<T> {
+    fn get_comelit_id(&self) -> &str;
 
-    fn update(&self, data: &HomeDeviceData) -> impl Future<Output = Result<()>>;
+    fn update(&mut self, data: &T) -> impl Future<Output = Result<()>>;
 }

@@ -5,10 +5,10 @@ use crate::protocol::messages::{
     make_login_message, make_ping_message, make_status_message, make_subscribe_message,
 };
 use crate::protocol::out_data_messages::{
-    ActionType, AgentDeviceData, ClimaMode, HomeDeviceData, ThermoSeason,
+    ActionType, AgentDeviceData, ClimaMode, ClimaOnOff, HomeDeviceData, ThermoSeason,
     device_data_to_home_device,
 };
-use crate::protocol::scanner::{ComelitHUB, Scanner};
+use crate::protocol::scanner::{ComelitHUB, SCAN_PORT, Scanner};
 use async_trait::async_trait;
 use dashmap::DashMap;
 use derive_builder::Builder;
@@ -78,12 +78,13 @@ impl ComelitOptions {
 
     async fn get_hub_info(&self) -> Result<Option<ComelitHUB>, ComelitClientError> {
         if let Some(host) = &self.host {
-            let hub = Scanner::scan_address(host)
+            info!("Scanning address {host} at port {SCAN_PORT}");
+            let hub = Scanner::scan_address(host, None)
                 .await
                 .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
             Ok(hub)
         } else {
-            let devices = Scanner::scan()
+            let devices = Scanner::scan(Some(Duration::from_secs(2)))
                 .await
                 .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
             if devices.is_empty() {
@@ -325,7 +326,6 @@ impl ComelitClient {
                                         }
                                     }
                                     manager.remove_pending_requests();
-                                    drop(manager);
                                 }
                                 Err(e) => error!("Failed to parse response: {:?}", e),
                             }
@@ -591,12 +591,16 @@ impl ComelitClient {
         .await
     }
 
-    async fn set_temperature(&self, id: &str, temperature: i32) -> Result<(), ComelitClientError> {
+    pub async fn set_thermostat_temperature(
+        &self,
+        id: &str,
+        temperature: i32,
+    ) -> Result<(), ComelitClientError> {
         self.send_action(id, ActionType::ClimaSetPoint, temperature)
             .await
     }
 
-    async fn switch_thermostat_mode(
+    pub async fn set_thermostat_mode(
         &self,
         id: &str,
         mode: ClimaMode,
@@ -605,7 +609,7 @@ impl ComelitClient {
             .await
     }
 
-    async fn switch_thermostat_season(
+    pub async fn set_thermostat_season(
         &self,
         id: &str,
         mode: ThermoSeason,
@@ -613,6 +617,15 @@ impl ComelitClient {
         self.send_action(id, ActionType::SwitchSeason, mode.into())
             .await
     }
+
+    pub async fn toggle_thermostat_status(
+        &self,
+        id: &str,
+        mode: ClimaOnOff,
+    ) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::Set, mode.into()).await
+    }
+
     //
     // async setHumidity(id: string, humidity: number): Promise<boolean> {
     // return this.sendAction(id, ACTION_TYPE.UMI_SETPOINT, humidity);
@@ -626,7 +639,4 @@ impl ComelitClient {
     // return this.sendAction(id, ACTION_TYPE.SET, mode);
     // }
     //
-    // async toggleThermostatStatus(id: string, mode: ClimaOnOff): Promise<boolean> {
-    // return this.sendAction(id, ACTION_TYPE.SET, mode);
-    // }
 }

@@ -1,10 +1,12 @@
-use crate::hap::accessories::{ComelitAccessory, WindowCoveringConfig};
+use crate::hap::accessories::{ComelitAccessory, ComelitThermostatAccessory, WindowCoveringConfig};
 use crate::protocol::client::ROOT_ID;
+use crate::protocol::out_data_messages::ThermostatDeviceData;
 use crate::protocol::{
     client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
     credentials::get_secrets,
     out_data_messages::HomeDeviceData,
 };
+use crate::settings::Settings;
 use crate::{
     hap::accessories::{ComelitLightbulbAccessory, ComelitWindowCoveringAccessory},
     protocol::out_data_messages::{LightDeviceData, WindowCoveringDeviceData},
@@ -28,6 +30,7 @@ use tracing::{error, info, warn};
 struct Updater {
     lights: DashMap<String, ComelitLightbulbAccessory>,
     coverings: DashMap<String, ComelitWindowCoveringAccessory>,
+    thermostats: DashMap<String, ComelitThermostatAccessory>,
 }
 
 #[async_trait]
@@ -37,21 +40,25 @@ impl StatusUpdate for Updater {
             HomeDeviceData::Agent(_) => {}
             HomeDeviceData::Data(_) => {}
             HomeDeviceData::Other(_) => {}
-            HomeDeviceData::Light(_) => {
-                if let Some(accessory) = self.lights.get(&device.id()) {
-                    accessory.update(device).await.unwrap_or_else(|e| {
-                        error!("Failed to update light accessory {}: {}", accessory.id(), e);
+            HomeDeviceData::Light(data) => {
+                if let Some(mut accessory) = self.lights.get_mut(&device.id()) {
+                    accessory.update(data).await.unwrap_or_else(|e| {
+                        error!(
+                            "Failed to update light accessory {}: {}",
+                            accessory.get_comelit_id(),
+                            e
+                        );
                     });
                 } else {
                     warn!("Received update for unknown light device");
                 }
             }
-            HomeDeviceData::WindowCovering(_) => {
-                if let Some(accessory) = self.coverings.get(&device.id()) {
-                    accessory.update(device).await.unwrap_or_else(|e| {
+            HomeDeviceData::WindowCovering(data) => {
+                if let Some(mut accessory) = self.coverings.get_mut(&device.id()) {
+                    accessory.update(data).await.unwrap_or_else(|e| {
                         error!(
                             "Failed to update window covering accessory {}: {}",
-                            accessory.id(),
+                            accessory.get_comelit_id(),
                             e
                         );
                     })
@@ -61,7 +68,19 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::Outlet(_outlet_device_data) => {}
             HomeDeviceData::Irrigation(_irrigation_device_data) => {}
-            HomeDeviceData::Thermostat(_thermostat_device_data) => {}
+            HomeDeviceData::Thermostat(data) => {
+                if let Some(mut accessory) = self.thermostats.get_mut(&device.id()) {
+                    accessory.update(data).await.unwrap_or_else(|e| {
+                        error!(
+                            "Failed to update thermostat accessory {}: {}",
+                            device.id(),
+                            e
+                        );
+                    })
+                } else {
+                    warn!("Received update for unknown thermostat device");
+                }
+            }
             HomeDeviceData::Supplier(supplier_device_data) => {
                 info!("Received update for supplier {supplier_device_data:?}");
             }
@@ -127,6 +146,7 @@ pub async fn start_bridge(
     password: &str,
     host: Option<String>,
     port: Option<u16>,
+    settings: Settings,
 ) -> Result<()> {
     let (mqtt_user, mqtt_password) = get_secrets();
     let options = ComelitOptions::builder()
@@ -207,6 +227,21 @@ pub async fn start_bridge(
         .fetch_index()
         .await
         .context("Failed to fetch index")?;
+
+    // index.clone().into_iter().for_each(|(_, v)| match v {
+    //     HomeDeviceData::Agent(agent_device_data) => todo!(),
+    //     HomeDeviceData::Data(device_data) => todo!(),
+    //     HomeDeviceData::Other(other_device_data) => todo!(),
+    //     HomeDeviceData::Light(light_device_data) => todo!(),
+    //     HomeDeviceData::WindowCovering(window_covering_device_data) => todo!(),
+    //     HomeDeviceData::Outlet(outlet_device_data) => todo!(),
+    //     HomeDeviceData::Irrigation(irrigation_device_data) => todo!(),
+    //     HomeDeviceData::Thermostat(thermostat_device_data) => todo!(),
+    //     HomeDeviceData::Supplier(supplier_device_data) => todo!(),
+    //     HomeDeviceData::Bell(bell_device_data) => todo!(),
+    //     HomeDeviceData::Door(door_device_data) => todo!(),
+    // });
+
     let lights: Vec<LightDeviceData> = index
         .clone()
         .into_iter()
@@ -217,19 +252,25 @@ pub async fn start_bridge(
         .collect();
 
     let mut i: u64 = 1;
-    for light in lights.iter().take(1) {
-        info!("Adding light device: {}", light.data.id);
-        i += 1;
-        match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server).await {
-            Ok(accessory) => {
-                info!("Light {} added to the hub", accessory.id());
-                updater.lights.insert(accessory.id().to_string(), accessory);
-            }
-            Err(err) => error!("Failed to add light device: {}", err),
-        };
+
+    if settings.mount_lights.unwrap_or_default() {
+        for light in lights.iter().take(1) {
+            i += 1;
+            info!("Adding light device: {} with id {i}", light.data.id);
+            match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server).await {
+                Ok(accessory) => {
+                    info!("Light {} added to the hub", accessory.get_comelit_id());
+                    updater
+                        .lights
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add light device: {}", err),
+            };
+        }
     }
 
     let window_coverings: Vec<WindowCoveringDeviceData> = index
+        .clone()
         .into_iter()
         .filter_map(|(_, v)| match v {
             HomeDeviceData::WindowCovering(covering) => Some(covering),
@@ -237,29 +278,58 @@ pub async fn start_bridge(
         })
         .collect();
 
-    for covering in window_coverings.iter().take(1) {
-        info!("Adding light device: {}", covering.data.id);
-        i += 1;
-        match ComelitWindowCoveringAccessory::new(
-            i,
-            covering.clone(),
-            client.clone(),
-            &server,
-            WindowCoveringConfig {
-                closing_time: Duration::from_secs(30),
-                opening_time: Duration::from_secs(30),
-            },
-        )
-        .await
-        {
-            Ok(accessory) => {
-                info!("Window covering {} added to the hub", accessory.id());
-                updater
-                    .coverings
-                    .insert(accessory.id().to_string(), accessory);
-            }
-            Err(err) => error!("Failed to add light device: {}", err),
-        };
+    if settings.mount_window_covering.unwrap_or_default() {
+        for covering in window_coverings.iter().take(1) {
+            i += 1;
+            info!("Adding light device: {} with id {i}", covering.data.id);
+            match ComelitWindowCoveringAccessory::new(
+                i,
+                covering.clone(),
+                client.clone(),
+                &server,
+                WindowCoveringConfig {
+                    closing_time: Duration::from_secs(30),
+                    opening_time: Duration::from_secs(30),
+                },
+            )
+            .await
+            {
+                Ok(accessory) => {
+                    info!(
+                        "Window covering {} added to the hub",
+                        accessory.get_comelit_id()
+                    );
+                    updater
+                        .coverings
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add light device: {}", err),
+            };
+        }
+    }
+
+    let thermostats: Vec<ThermostatDeviceData> = index
+        .clone()
+        .into_iter()
+        .filter_map(|(_, v)| match v {
+            HomeDeviceData::Thermostat(thermostat) => Some(thermostat),
+            _ => None,
+        })
+        .collect();
+
+    if settings.mount_thermo.unwrap_or_default() {
+        for thermo in thermostats.iter().take(1) {
+            i += 1;
+            info!("Adding thermostat device: {} with id {i}", thermo.data.id);
+            match ComelitThermostatAccessory::new(i, thermo, client.clone(), &server).await {
+                Ok(accessory) => {
+                    updater
+                        .thermostats
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add thermostat device: {}", err),
+            };
+        }
     }
 
     info!("Starting HAP bridge server...");

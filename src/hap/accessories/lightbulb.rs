@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use futures::FutureExt;
 use hap::characteristic::HapCharacteristic;
 use hap::{
@@ -12,8 +12,6 @@ use serde_json::Value;
 use tracing::{debug, error, info};
 
 use crate::hap::accessories::comelit_accessory::ComelitAccessory;
-use crate::protocol::out_data_messages::HomeDeviceData;
-use crate::protocol::out_data_messages::HomeDeviceData::Light;
 use crate::{
     hap::accessories::AccessoryPointer,
     protocol::{
@@ -46,8 +44,7 @@ impl ComelitLightbulbAccessory {
                 name,
                 ..Default::default()
             },
-        )
-        .context("Cannot create lightbulb accessory")?;
+        )?;
 
         lightbulb_accessory.lightbulb.brightness = None; // Disable brightness
         lightbulb_accessory.lightbulb.color_temperature = None; // Disable brightness
@@ -58,8 +55,7 @@ impl ComelitLightbulbAccessory {
             .lightbulb
             .power_state
             .set_value(power_status.clone())
-            .await
-            .context("Cannot set initial power state for lightbulb")?;
+            .await?;
 
         Self::setup_update(device_id.as_str(), client.clone(), &mut lightbulb_accessory).await;
         Self::setup_read(device_id.as_str(), client.clone(), &mut lightbulb_accessory).await;
@@ -133,36 +129,34 @@ impl ComelitLightbulbAccessory {
     }
 }
 
-impl ComelitAccessory for ComelitLightbulbAccessory {
-    fn id(&self) -> &str {
+impl ComelitAccessory<LightDeviceData> for ComelitLightbulbAccessory {
+    fn get_comelit_id(&self) -> &str {
         self.id.as_str()
     }
 
-    async fn update(&self, data: &HomeDeviceData) -> Result<()> {
-        if let Light(light_data) = data {
-            let id = self.id();
-            if let Some(state) = light_data.data.status.as_ref() {
-                let mut accessory = self.lightbulb_accessory.lock().await;
-                let service = accessory.get_mut_service(hap::HapType::Lightbulb).unwrap();
-                let power_state = service
-                    .get_mut_characteristic(hap::HapType::PowerState)
-                    .unwrap();
-                if power_state
-                    .set_value(Value::Bool(*state == DeviceStatus::On))
-                    .await
-                    .is_err()
-                {
-                    error!("Failed to update power state for device {id}");
-                } else {
-                    info!(
-                        "Updated power state for device {id}: {:?}",
-                        if *state == DeviceStatus::On {
-                            "On"
-                        } else {
-                            "Off"
-                        }
-                    );
-                }
+    async fn update(&mut self, light_data: &LightDeviceData) -> Result<()> {
+        let id = self.get_comelit_id();
+        if let Some(state) = light_data.data.status.as_ref() {
+            let mut accessory = self.lightbulb_accessory.lock().await;
+            let service = accessory.get_mut_service(hap::HapType::Lightbulb).unwrap();
+            let power_state = service
+                .get_mut_characteristic(hap::HapType::PowerState)
+                .unwrap();
+            if power_state
+                .set_value(Value::Bool(*state == DeviceStatus::On))
+                .await
+                .is_err()
+            {
+                error!("Failed to update power state for device {id}");
+            } else {
+                info!(
+                    "Updated power state for device {id}: {:?}",
+                    if *state == DeviceStatus::On {
+                        "On"
+                    } else {
+                        "Off"
+                    }
+                );
             }
         }
         Ok(())

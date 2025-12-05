@@ -14,7 +14,7 @@ use tracing::{info, warn};
 
 use crate::hap::accessories::ComelitAccessory;
 use crate::protocol::client::ComelitClientError;
-use crate::protocol::out_data_messages::{HomeDeviceData, PowerStatus};
+use crate::protocol::out_data_messages::PowerStatus;
 use crate::{
     hap::accessories::AccessoryPointer,
     protocol::{client::ComelitClient, out_data_messages::WindowCoveringDeviceData},
@@ -117,7 +117,7 @@ impl ComelitWindowCoveringAccessory {
             .power_status
             .clone()
             .unwrap_or_default()
-            == PowerStatus::Up;
+            == PowerStatus::On;
 
         let state = Arc::new(State::new(position, moving, opening));
 
@@ -244,67 +244,65 @@ impl ComelitWindowCoveringAccessory {
     }
 }
 
-impl ComelitAccessory for ComelitWindowCoveringAccessory {
-    fn id(&self) -> &str {
+impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccessory {
+    fn get_comelit_id(&self) -> &str {
         &self.data.data.id
     }
 
-    async fn update(&self, window_covering: &HomeDeviceData) -> Result<()> {
-        if let HomeDeviceData::WindowCovering(window_covering_data) = window_covering {
-            if let Some(status) = window_covering_data.open_status.as_ref() {
-                let mut accessory = self.accessory.lock().await;
-                let service = accessory
-                    .get_mut_service(hap::HapType::WindowCovering)
-                    .unwrap();
-                let position_characteristic = service
-                    .get_mut_characteristic(hap::HapType::CurrentPosition)
-                    .unwrap();
+    async fn update(&mut self, window_covering_data: &WindowCoveringDeviceData) -> Result<()> {
+        if let Some(status) = window_covering_data.open_status.as_ref() {
+            let mut accessory = self.accessory.lock().await;
+            let service = accessory
+                .get_mut_service(hap::HapType::WindowCovering)
+                .unwrap();
+            let position_characteristic = service
+                .get_mut_characteristic(hap::HapType::CurrentPosition)
+                .unwrap();
 
-                position_characteristic
-                    .set_value(Value::from(self.state.position.load(Ordering::Relaxed)))
-                    .await?;
+            position_characteristic
+                .set_value(Value::from(self.state.position.load(Ordering::Relaxed)))
+                .await?;
 
-                let is_moving = window_covering_data
-                    .data
-                    .power_status
-                    .clone()
-                    .unwrap_or_default()
-                    != PowerStatus::Stopped;
+            let is_moving = window_covering_data
+                .data
+                .power_status
+                .clone()
+                .unwrap_or_default()
+                != PowerStatus::Stopped;
 
-                let opening = window_covering_data
-                    .data
-                    .power_status
-                    .clone()
-                    .unwrap_or_default()
-                    == PowerStatus::Up;
+            let opening = window_covering_data
+                .data
+                .power_status
+                .clone()
+                .unwrap_or_default()
+                == PowerStatus::On;
 
-                let position_state_characteristic = service
-                    .get_mut_characteristic(hap::HapType::PositionState)
-                    .unwrap();
+            let position_state_characteristic = service
+                .get_mut_characteristic(hap::HapType::PositionState)
+                .unwrap();
 
-                let value = match (is_moving, opening) {
-                    (true, true) => Value::from(1),
-                    (true, false) => Value::from(0),
-                    (false, true) => Value::from(2),
-                    (false, false) => Value::from(2),
-                };
+            let value = match (is_moving, opening) {
+                (true, true) => Value::from(1),
+                (true, false) => Value::from(0),
+                (false, true) => Value::from(2),
+                (false, false) => Value::from(2),
+            };
 
-                position_state_characteristic.set_value(value).await?;
+            position_state_characteristic.set_value(value).await?;
 
-                let target_position_characteristic = service
-                    .get_mut_characteristic(hap::HapType::TargetPosition)
-                    .unwrap();
-                target_position_characteristic
-                    .set_value(Value::from(
-                        self.state.target_position.load(Ordering::Relaxed),
-                    ))
-                    .await?;
+            let target_position_characteristic = service
+                .get_mut_characteristic(hap::HapType::TargetPosition)
+                .unwrap();
+            target_position_characteristic
+                .set_value(Value::from(
+                    self.state.target_position.load(Ordering::Relaxed),
+                ))
+                .await?;
 
-                info!(
-                    "Updated window covering {} position to {:?}",
-                    self.data.data.id, status
-                );
-            }
+            info!(
+                "Updated window covering {} position to {:?}",
+                self.data.data.id, status
+            );
         }
         Ok(())
     }

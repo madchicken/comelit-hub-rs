@@ -179,7 +179,7 @@ async fn main() -> Result<(), ComelitClientError> {
     match &params.command {
         Commands::Scan => {
             if let Some(host) = params.host {
-                let hub = Scanner::scan_address(host.as_str())
+                let hub = Scanner::scan_address(host.as_str(), Some(Duration::from_secs(5)))
                     .await
                     .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 if let Some(hub) = hub {
@@ -188,7 +188,7 @@ async fn main() -> Result<(), ComelitClientError> {
                     info!("No hub found at {}", host);
                 }
             } else {
-                let hubs = Scanner::scan()
+                let hubs = Scanner::scan(Some(Duration::from_secs(5)))
                     .await
                     .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 for hub in hubs {

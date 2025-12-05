@@ -97,16 +97,16 @@ impl From<&[u8]> for ComelitHUB {
     }
 }
 
-const SCAN_PORT: &str = "24199";
+pub const SCAN_PORT: &str = "24199";
 
 pub struct Scanner;
 
 impl Scanner {
-    pub async fn scan() -> Result<Vec<ComelitHUB>, std::io::Error> {
+    pub async fn scan(timeout: Option<Duration>) -> Result<Vec<ComelitHUB>, std::io::Error> {
         let socket = UdpSocket::bind("0.0.0.0:34254")?;
 
         // Set the read timeout to 1 second
-        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+        socket.set_read_timeout(timeout)?;
         socket.set_broadcast(true)?;
 
         let buf: Vec<u8> = vec![b'S', b'C', b'A', b'N', 0, 0, 0, 0, 0, 0xff, 0xff, 0xff];
@@ -147,11 +147,14 @@ impl Scanner {
         Ok(result)
     }
 
-    pub async fn scan_address(address: &str) -> Result<Option<ComelitHUB>, io::Error> {
+    pub async fn scan_address(
+        address: &str,
+        timeout: Option<Duration>,
+    ) -> Result<Option<ComelitHUB>, io::Error> {
         let socket = UdpSocket::bind("0.0.0.0:34254")?;
 
         // Set the read timeout to 1 second
-        socket.set_read_timeout(Some(Duration::from_secs(2)))?;
+        socket.set_read_timeout(timeout)?;
         let buf: Vec<u8> = vec![b'I', b'N', b'F', b'O', 0, 0, 0, 0, 0, 0, 0, 0];
         socket.send_to(&buf, format!("{address}:{SCAN_PORT}"))?;
         let mut data = vec![0u8; MAX_DATAGRAM_SIZE];
