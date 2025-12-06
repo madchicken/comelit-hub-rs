@@ -10,7 +10,7 @@ use hap::{
     server::{IpServer, Server},
     service::{
         HapService, accessory_information::AccessoryInformationService,
-        humidifier_dehumidifier::HumidifierDehumidifierService, thermostat::ThermostatService,
+        thermostat::ThermostatService,
     },
 };
 use serde::{
@@ -38,8 +38,6 @@ struct ComelitThermostat {
     pub accessory_information: AccessoryInformationService,
     /// Thermostat service.
     pub thermostat: ThermostatService,
-    /// Dehumidifier service.
-    pub dehumidifier: HumidifierDehumidifierService,
 }
 
 impl HapAccessory for ComelitThermostat {
@@ -64,19 +62,11 @@ impl HapAccessory for ComelitThermostat {
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        vec![
-            &self.accessory_information,
-            &self.thermostat,
-            &self.dehumidifier,
-        ]
+        vec![&self.accessory_information, &self.thermostat]
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
-        vec![
-            &mut self.accessory_information,
-            &mut self.thermostat,
-            &mut self.dehumidifier,
-        ]
+        vec![&mut self.accessory_information, &mut self.thermostat]
     }
 }
 
@@ -106,20 +96,10 @@ impl ComelitThermostat {
         thermostat_sensor.target_relative_humidity = None;
         thermostat_sensor.set_primary(true);
 
-        let humi_id = thermostat_sensor.get_characteristics().len() as u64;
-        let mut dehumidifier_sensor =
-            HumidifierDehumidifierService::new(1 + thermo_id + humi_id + 1, id);
-        dehumidifier_sensor.lock_physical_controls = None;
-        dehumidifier_sensor.relative_humidity_humidifier_threshold = None;
-        dehumidifier_sensor.rotation_speed = None;
-        dehumidifier_sensor.swing_mode = None;
-        dehumidifier_sensor.current_water_level = None;
-
         Ok(Self {
             id,
             accessory_information,
             thermostat: thermostat_sensor,
-            dehumidifier: dehumidifier_sensor,
         })
     }
 }
@@ -144,7 +124,7 @@ async fn set_values(accessory: AccessoryPointer, data: &ThermostatDeviceData) ->
     thermostat_sensor
         .get_mut_characteristic(HapType::CurrentHeatingCoolingState)
         .unwrap()
-        .set_value(Value::from(state.heating_cooling_state))
+        .set_value(Value::from(state.heating_cooling_state as u8))
         .await?;
 
     thermostat_sensor
@@ -226,7 +206,7 @@ impl ComelitThermostatAccessory {
         accessory
             .thermostat
             .current_heating_cooling_state
-            .set_value(Value::from(state.heating_cooling_state))
+            .set_value(Value::from(state.heating_cooling_state as u8))
             .await?;
 
         accessory
@@ -299,28 +279,6 @@ impl ComelitThermostatAccessory {
                 }
                 .boxed()
             }));
-
-        accessory
-            .dehumidifier
-            .active
-            .set_value(Value::from(
-                state.target_heating_cooling_state == TargetHeatingCoolingState::Cool,
-            ))
-            .await?;
-
-        accessory
-            .dehumidifier
-            .current_relative_humidity
-            .set_value(Value::from(state.humidity))
-            .await?;
-
-        accessory
-            .dehumidifier
-            .relative_humidity_dehumidifier_threshold
-            .as_mut()
-            .unwrap()
-            .set_value(Value::from(state.target_humidity))
-            .await?;
 
         Ok(Self {
             thermostat_accessory: server.add_accessory(accessory).await?,

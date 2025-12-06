@@ -8,7 +8,7 @@ pub(crate) struct ThermostatState {
     pub(crate) humidity: f32,
     pub(crate) target_temperature: f32,
     pub(crate) target_humidity: f32,
-    pub(crate) heating_cooling_state: u8,
+    pub(crate) heating_cooling_state: TargetHeatingCoolingState,
     pub(crate) target_heating_cooling_state: TargetHeatingCoolingState,
 }
 
@@ -44,22 +44,12 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             .parse::<f32>()
             .unwrap();
 
-        let on_off_state = data.data.power_status.clone().unwrap_or_default();
-        let season = data.est_inv.clone().unwrap_or_default();
-        let heating_cooling_state = if on_off_state == PowerStatus::Stopped {
-            0
-        } else if season == ThermoSeason::Summer {
-            1
-        } else {
-            2
-        };
-
         let auto_man = data.auto_man.clone().unwrap_or_default();
         let is_off = auto_man == ClimaMode::OffAuto || auto_man == ClimaMode::OffManual;
         let is_auto = auto_man == ClimaMode::Auto;
         let is_winter = data.est_inv.clone().unwrap_or_default() == ThermoSeason::Winter;
 
-        let target_heating_cooling_state = if is_off {
+        let heating_cooling_state = if is_off {
             TargetHeatingCoolingState::Off
         } else if is_winter {
             TargetHeatingCoolingState::Heat
@@ -68,6 +58,8 @@ impl From<&ThermostatDeviceData> for ThermostatState {
         } else {
             TargetHeatingCoolingState::Cool
         };
+
+        let target_heating_cooling_state = heating_cooling_state;
 
         Self {
             temperature,

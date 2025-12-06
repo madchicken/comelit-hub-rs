@@ -1,4 +1,7 @@
-use crate::hap::accessories::{ComelitAccessory, ComelitThermostatAccessory, WindowCoveringConfig};
+use crate::hap::accessories::{
+    ComelitAccessory, ComelitDehumidifierAccessory, ComelitThermostatAccessory,
+    WindowCoveringConfig,
+};
 use crate::protocol::client::ROOT_ID;
 use crate::protocol::out_data_messages::ThermostatDeviceData;
 use crate::protocol::{
@@ -20,7 +23,6 @@ use hap::{
     server::{IpServer, Server},
     storage::{FileStorage, Storage},
 };
-use rand::Rng;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -31,6 +33,7 @@ struct Updater {
     lights: DashMap<String, ComelitLightbulbAccessory>,
     coverings: DashMap<String, ComelitWindowCoveringAccessory>,
     thermostats: DashMap<String, ComelitThermostatAccessory>,
+    dehumidifiers: DashMap<String, ComelitDehumidifierAccessory>,
 }
 
 #[async_trait]
@@ -76,9 +79,18 @@ impl StatusUpdate for Updater {
                             device.id(),
                             e
                         );
-                    })
+                    });
+                    if let Some(mut accessory) = self.dehumidifiers.get_mut(&device.id()) {
+                        accessory.update(data).await.unwrap_or_else(|e| {
+                            error!(
+                                "Failed to update dehumidifier accessory {}: {}",
+                                device.id(),
+                                e
+                            );
+                        })
+                    }
                 } else {
-                    warn!("Received update for unknown thermostat device");
+                    warn!("Received update for unknown thermostat/dehumidifier device");
                 }
             }
             HomeDeviceData::Supplier(supplier_device_data) => {
@@ -188,18 +200,8 @@ pub async fn start_bridge(
         Err(_) => {
             info!("Creating new config");
             let device_id: [u8; 6] = client.mac_address.as_bytes()[..6].try_into()?;
-            let mut rng = rand::rng();
             let pin = loop {
-                if let Ok(pin) = Pin::new([
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                    rng.random_range(0..10),
-                ]) {
+                if let Ok(pin) = Pin::new(settings.pairing_code) {
                     break pin;
                 } else {
                     continue;
@@ -328,6 +330,16 @@ pub async fn start_bridge(
                         .insert(accessory.get_comelit_id().to_string(), accessory);
                 }
                 Err(err) => error!("Failed to add thermostat device: {}", err),
+            };
+            i += 1;
+            info!("Adding dehumidifier device: {} with id {i}", thermo.data.id);
+            match ComelitDehumidifierAccessory::new(i, thermo, client.clone(), &server).await {
+                Ok(accessory) => {
+                    updater
+                        .dehumidifiers
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add dehumidifier device: {}", err),
             };
         }
     }
