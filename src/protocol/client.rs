@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tokio::sync::RwLock;
 use tokio::time::sleep;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
 pub const ROOT_ID: &str = "GEN#17#13#1";
@@ -289,12 +289,14 @@ impl ComelitClient {
                             );
                             match serde_json::from_slice::<MqttResponseMessage>(&publish.payload) {
                                 Ok(response) => {
-                                    let manager = request_manager.clone();
                                     match response.req_type {
                                         RequestType::Status => {
                                             if response.seq_id.is_some() {
-                                                if !manager.complete_request(&response).await {
-                                                    info!(
+                                                if !request_manager
+                                                    .complete_request(&response)
+                                                    .await
+                                                {
+                                                    warn!(
                                                         "Response for unknown request: {:?}",
                                                         response
                                                     );
@@ -317,15 +319,20 @@ impl ComelitClient {
                                             info!("Ping response received");
                                         }
                                         _ => {
-                                            if !manager.complete_request(&response).await {
+                                            if request_manager.complete_request(&response).await {
                                                 info!(
+                                                    "Request {} completed successfully",
+                                                    response.seq_id.unwrap()
+                                                );
+                                            } else {
+                                                warn!(
                                                     "Response for unknown request: {:?}",
                                                     response
                                                 );
                                             }
                                         }
                                     }
-                                    manager.remove_pending_requests();
+                                    request_manager.remove_pending_requests();
                                 }
                                 Err(e) => error!("Failed to parse response: {:?}", e),
                             }
@@ -379,7 +386,7 @@ impl ComelitClient {
 
             debug!("Start waiting for response");
             // Wait for the response with timeout
-            let timeout = Duration::from_secs(5);
+            let timeout = Duration::from_secs(10);
             let start = Instant::now();
             // waiting loop for the response
             'inner: loop {
@@ -396,7 +403,7 @@ impl ComelitClient {
                     break 'inner;
                 }
 
-                tokio::time::sleep(Duration::from_millis(10)).await;
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
 
             // Extract the response
@@ -415,7 +422,7 @@ impl ComelitClient {
                             }
                         }
                     } else {
-                        debug!("Received response");
+                        debug!("Received response for request {}", payload.seq_id);
                         return Ok(response);
                     }
                 }
@@ -626,10 +633,11 @@ impl ComelitClient {
         self.send_action(id, ActionType::Set, mode.into()).await
     }
 
-    //
-    // async setHumidity(id: string, humidity: number): Promise<boolean> {
-    // return this.sendAction(id, ACTION_TYPE.UMI_SETPOINT, humidity);
-    // }
+    pub async fn set_humidity(&self, id: &str, humidity: i32) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::UmiSetpoint, humidity)
+            .await
+    }
+
     //
     // async switchHumidifierMode(id: string, mode: ClimaMode): Promise<boolean> {
     // return this.sendAction(id, ACTION_TYPE.SWITCH_UMI_MODE, parseInt(mode));

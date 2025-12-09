@@ -1,6 +1,4 @@
-use crate::protocol::out_data_messages::{
-    ClimaMode, PowerStatus, ThermoSeason, ThermostatDeviceData,
-};
+use crate::protocol::out_data_messages::{ClimaMode, ThermoSeason, ThermostatDeviceData};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ThermostatState {

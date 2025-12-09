@@ -1,8 +1,8 @@
-use crate::protocol::messages::{MqttResponseMessage};
+use crate::protocol::messages::MqttResponseMessage;
 use dashmap::DashMap;
 use std::time::Instant;
-use tokio::sync::oneshot::Sender;
 use tokio::sync::oneshot;
+use tokio::sync::oneshot::Sender;
 
 pub(crate) struct TimedRequest {
     ts: Instant,
@@ -30,18 +30,29 @@ impl RequestManager {
 
     pub async fn add_request(&self, id: u32) -> oneshot::Receiver<MqttResponseMessage> {
         let (tx, rx) = oneshot::channel();
-        self.pending.insert(id, TimedRequest { sender: tx, ts: Instant::now() });
+        self.pending.insert(
+            id,
+            TimedRequest {
+                sender: tx,
+                ts: Instant::now(),
+            },
+        );
         rx
     }
 
     pub fn remove_pending_requests(&self) {
-        self.pending.iter().filter(|i| i.value().ts.elapsed().as_secs() > self.timeout).for_each(|i| {
-            self.pending.remove(i.key());
-        });
+        self.pending
+            .iter()
+            .filter(|i| i.value().ts.elapsed().as_secs() > self.timeout)
+            .for_each(|i| {
+                self.pending.remove(i.key());
+            });
     }
 
     pub async fn complete_request(&self, response: &MqttResponseMessage) -> bool {
-        if let Some((_, sender)) = self.pending.remove(&response.seq_id.unwrap()) {
+        if let Some(seq_id) = response.seq_id
+            && let Some((_, sender)) = self.pending.remove(&seq_id)
+        {
             sender.sender.send(response.clone()).is_ok()
         } else {
             false

@@ -6,7 +6,7 @@ use futures::FutureExt;
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
-    characteristic::{AsyncCharacteristicCallbacks, HapCharacteristic},
+    characteristic::AsyncCharacteristicCallbacks,
     server::{IpServer, Server},
     service::{
         HapService, accessory_information::AccessoryInformationService,
@@ -92,8 +92,6 @@ impl ComelitThermostat {
         debug!("Thermostat ID: {}", thermo_id);
         let mut thermostat_sensor = ThermostatService::new(1 + thermo_id + 1, id);
         thermostat_sensor.cooling_threshold_temperature = None;
-        thermostat_sensor.current_relative_humidity = None;
-        thermostat_sensor.target_relative_humidity = None;
         thermostat_sensor.set_primary(true);
 
         Ok(Self {
@@ -131,6 +129,18 @@ async fn set_values(accessory: AccessoryPointer, data: &ThermostatDeviceData) ->
         .get_mut_characteristic(HapType::TargetHeatingCoolingState)
         .unwrap()
         .set_value(Value::from(state.target_heating_cooling_state as u8))
+        .await?;
+
+    thermostat_sensor
+        .get_mut_characteristic(HapType::CurrentRelativeHumidity)
+        .unwrap()
+        .set_value(Value::from(state.humidity))
+        .await?;
+
+    thermostat_sensor
+        .get_mut_characteristic(HapType::TargetRelativeHumidity)
+        .unwrap()
+        .set_value(Value::from(state.target_humidity))
         .await?;
 
     Ok(())
@@ -172,18 +182,6 @@ impl ComelitThermostatAccessory {
 
         debug!("Creating thermostat accessory with state: {:?}", state);
 
-        accessory
-            .thermostat
-            .current_temperature
-            .set_value(Value::from(state.temperature))
-            .await?;
-
-        accessory
-            .thermostat
-            .target_temperature
-            .set_value(Value::from(state.target_temperature))
-            .await?;
-
         let client_ = client.clone();
         let comelit_id_ = comelit_id.clone();
         accessory
@@ -203,17 +201,24 @@ impl ComelitThermostatAccessory {
                 .boxed()
             }));
 
+        let client_ = client.clone();
+        let comelit_id_ = comelit_id.clone();
         accessory
             .thermostat
-            .current_heating_cooling_state
-            .set_value(Value::from(state.heating_cooling_state as u8))
-            .await?;
-
-        accessory
-            .thermostat
-            .target_heating_cooling_state
-            .set_value(Value::from(state.target_heating_cooling_state as u8))
-            .await?;
+            .target_relative_humidity
+            .as_mut()
+            .unwrap()
+            .on_update_async(Some(move |prev, new| {
+                let client = client_.clone();
+                let comelit_id = comelit_id_.clone();
+                async move {
+                    debug!("Target humidity updated from {} to {}", prev, new);
+                    let humidity = (new * 10.0) as i32;
+                    client.set_humidity(&comelit_id, humidity).await?;
+                    Ok(())
+                }
+                .boxed()
+            }));
 
         let client = client.clone();
         let comelit_id = comelit_id.clone();
@@ -279,9 +284,11 @@ impl ComelitThermostatAccessory {
                 }
                 .boxed()
             }));
+        let thermostat_accessory = server.add_accessory(accessory).await?;
 
+        set_values(thermostat_accessory.clone(), data).await?;
         Ok(Self {
-            thermostat_accessory: server.add_accessory(accessory).await?,
+            thermostat_accessory,
             id: data.data.id.clone(),
         })
     }
