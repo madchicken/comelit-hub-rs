@@ -14,7 +14,7 @@ dashmap = "7.0.0-rc2"
 derive_builder = "0.20.2"
 futures = "0.3.27"
 futures-util = "0.3.31"
-hap = { git = "ssh://git@github.com/madchicken/hap-rs.git" , branch = "patch" }
+hap = { git = "https://github.com/madchicken/hap-rs" , branch = "patch" }
 #hap = { path = "../hap-rs" }
 mac_address = "1.1.8"
 qr2term = "0.3.3"
