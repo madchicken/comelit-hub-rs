@@ -6,15 +6,14 @@ use comelit_hub_rs::protocol::client::{
 };
 use comelit_hub_rs::protocol::credentials::get_secrets;
 use comelit_hub_rs::protocol::out_data_messages::{
-    ActionType, DeviceData, HomeDeviceData, LightDeviceData,
+    ActionType, DeviceStatus, HomeDeviceData, LightDeviceData,
 };
 use comelit_hub_rs::protocol::scanner::Scanner;
 use crossterm::event::Event::Key;
 use crossterm::{event, terminal};
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tracing::{debug, error, info};
-use tracing_subscriber::EnvFilter;
 
 #[derive(Subcommand, Debug, Default)]
 enum Commands {
@@ -37,13 +36,34 @@ struct Params {
     #[command(subcommand)]
     command: Commands,
 }
-
-struct Updater;
+#[derive(Default)]
+struct Updater {
+    index: Arc<Mutex<HashMap<String, HomeDeviceData>>>,
+}
 
 #[async_trait]
 impl StatusUpdate for Updater {
     async fn status_update(&self, device: &HomeDeviceData) {
+        terminal::disable_raw_mode().unwrap();
         println!("Status update: {device:?}");
+        if let Ok(mut guard) = self.index.lock() {
+            let device = guard.get_mut(&device.id()).unwrap();
+            if let HomeDeviceData::Light(light) = device {
+                light.data.status = light.data.status.clone();
+                light.data.power_status = light.data.power_status.clone();
+            }
+        }
+        terminal::enable_raw_mode().unwrap();
+    }
+}
+
+impl Updater {
+    pub fn get_device(&self, id: &str) -> Option<HomeDeviceData> {
+        if let Ok(guard) = self.index.lock() {
+            guard.get(id).cloned()
+        } else {
+            None
+        }
     }
 }
 
@@ -58,21 +78,26 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
         .host(params.host)
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-    let client = ComelitClient::new(options, Arc::new(Updater)).await?;
+    let updater = Arc::new(Updater::default());
+    let client = ComelitClient::new(options, updater.clone()).await?;
     if let Err(e) = client.login(State::Disconnected).await {
-        error!("Login failed: {}", e);
+        println!("Login failed: {}", e);
         return Err(e);
     } else {
-        info!("Login successful");
+        println!("Login successful");
     }
 
     let index = client.fetch_index().await?;
+    if let Ok(mut guard) = updater.index.lock() {
+        for (id, device) in index.clone().into_iter() {
+            guard.insert(id, device.clone());
+        }
+    }
     client.subscribe(ROOT_ID).await?;
-    info!("Subscribed to index updates");
-    let _root_info = client.info::<DeviceData>(ROOT_ID, 2).await?;
-    let _lights: Vec<LightDeviceData> = index
+    println!("Subscribed to index updates");
+    let lights: Vec<LightDeviceData> = index
         .into_iter()
-        .filter_map(|(_, v)| match v {
+        .filter_map(|(_, device)| match device {
             HomeDeviceData::Light(l) => Some(l),
             _ => None,
         })
@@ -80,16 +105,14 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
 
     println!("Press 'q' to quit");
     println!("Press 'f' to fetch the house index");
-    println!("Press 'i' to fetch the info about ROOT_ID");
-    println!("Press '1' to subscribe to ROOT_ID");
-    println!("Press '2' to subscribe to VIP#APARTMENT");
-    println!("Press '3' to subscribe to VIP#OD#00000100.2");
+    println!("Press 'l' to list ligths");
     println!("Press 'c' to send action to VIP#OD#00000100.2");
     println!("Press 'd' to send action to VIP#APARTMENT");
 
     terminal::enable_raw_mode().unwrap();
     // read keyboard input
     loop {
+        #[allow(clippy::collapsible_if)]
         if event::poll(Duration::default()).unwrap() {
             if let Key(key_event) = event::read().unwrap() {
                 terminal::disable_raw_mode().unwrap();
@@ -99,37 +122,29 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                     }
                     event::KeyCode::Char('f') => {
                         if let Ok(data) = client.fetch_index().await {
-                            debug!("Index {:?}", data);
+                            println!("Index {:?}", data);
                         } else {
-                            error!("Fetch index error");
+                            println!("Fetch index error");
                         }
                     }
-                    event::KeyCode::Char('i') => {
-                        if client.info::<DeviceData>(ROOT_ID, 2).await.is_ok() {
-                            println!("Info received");
-                        } else {
-                            error!("Info error");
-                        }
-                    }
-                    event::KeyCode::Char('1') => {
-                        if client.subscribe(ROOT_ID).await.is_ok() {
-                            println!("Successfully subscribed to ROOT_ID");
-                        } else {
-                            error!("Subscribe error");
-                        }
-                    }
-                    event::KeyCode::Char('2') => {
-                        if client.subscribe("VIP#APARTMENT").await.is_ok() {
-                            println!("Successfully subscribed to VIP#APARTMENT");
-                        } else {
-                            error!("Subscribe error");
-                        }
-                    }
-                    event::KeyCode::Char('3') => {
-                        if client.subscribe("VIP#OD#00000100.2").await.is_ok() {
-                            println!("Successfully subscribed to VIP#OD#00000100.2");
-                        } else {
-                            error!("Subscribe error");
+                    event::KeyCode::Char('l') => {
+                        let lights: Vec<LightDeviceData> = updater
+                            .index
+                            .lock()
+                            .unwrap()
+                            .clone()
+                            .into_iter()
+                            .filter_map(|(_, device)| match device {
+                                HomeDeviceData::Light(l) => Some(l),
+                                _ => None,
+                            })
+                            .collect();
+                        for (i, l) in lights.iter().enumerate() {
+                            println!(
+                                "{i} - Light {}, status: {:?}",
+                                l.data.description.clone().unwrap_or_default(),
+                                l.data.status
+                            );
                         }
                     }
                     event::KeyCode::Char('c') => {
@@ -140,7 +155,7 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         {
                             println!("Successfully sent action to VIP#OD#00000100.2");
                         } else {
-                            error!("Action error");
+                            println!("Action error");
                         }
                     }
                     event::KeyCode::Char('d') => {
@@ -151,7 +166,28 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         {
                             println!("Successfully set action to VIP#APARTMENT");
                         } else {
-                            error!("Action error");
+                            println!("Action error");
+                        }
+                    }
+                    event::KeyCode::Char(c) => {
+                        let number = c.to_digit(10);
+                        if let Some(number) = number {
+                            if let Some(light) = lights.get(number as usize) {
+                                if let Some(device) = updater.get_device(&light.data.id)
+                                    && let HomeDeviceData::Light(light_data) = device
+                                {
+                                    let on = light_data.data.status.clone().unwrap_or_default()
+                                        == DeviceStatus::On;
+                                    println!(
+                                        "Turning {} {}",
+                                        light_data.data.description.unwrap_or_default(),
+                                        if on { "on" } else { "off" }
+                                    );
+                                    client
+                                        .toggle_device_status(light_data.data.id.as_str(), !on)
+                                        .await?;
+                                }
+                            }
                         }
                     }
                     _ => {}
@@ -167,13 +203,6 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
 
 #[tokio::main]
 async fn main() -> Result<(), ComelitClientError> {
-    // Initialize the tracing subscriber
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::from_default_env().add_directive("comelit_hub_rs=info".parse().unwrap()),
-        )
-        .init();
-
     let params = Params::parse();
 
     match &params.command {
@@ -183,16 +212,16 @@ async fn main() -> Result<(), ComelitClientError> {
                     .await
                     .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 if let Some(hub) = hub {
-                    info!("Found hub: {:?}", hub);
+                    println!("Found hub: {:?}", hub);
                 } else {
-                    info!("No hub found at {}", host);
+                    println!("No hub found at {}", host);
                 }
             } else {
                 let hubs = Scanner::scan(Some(Duration::from_secs(5)))
                     .await
                     .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
                 for hub in hubs {
-                    info!("Found hub: {:?}", hub);
+                    println!("Found hub: {:?}", hub);
                 }
             }
         }

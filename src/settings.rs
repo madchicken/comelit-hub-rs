@@ -12,8 +12,8 @@ impl Default for Settings {
     fn default() -> Self {
         Settings {
             pairing_code: [1, 1, 1, 2, 2, 3, 3, 3],
-            mount_lights: None,
-            mount_window_covering: None,
+            mount_lights: Some(true),
+            mount_window_covering: Some(true),
             mount_thermo: Some(true),
         }
     }

@@ -53,7 +53,7 @@ impl ComelitWindowCoveringAccessory {
     pub(crate) async fn new(
         id: u64,
         window_covering_data: WindowCoveringDeviceData,
-        client: Arc<ComelitClient>,
+        client: ComelitClient,
         server: &IpServer,
         config: WindowCoveringConfig,
     ) -> Result<Self> {
@@ -167,7 +167,7 @@ impl ComelitWindowCoveringAccessory {
 
     async fn setup_update_target_position(
         id: &str,
-        client: Arc<ComelitClient>,
+        client: ComelitClient,
         accessory: &mut WindowCoveringAccessory,
         closing_time: Duration,
         opening_time: Duration,

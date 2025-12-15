@@ -1,0 +1,32 @@
+[
+  {
+    "adapter": "CodeLLDB",
+    "label": "run comelit-hub-hap-bridge",
+    "build": {
+      "label": "run comelit-hub-hap-bridge",
+      "command": "cargo",
+      "args": [
+        "build",
+        "--package",
+        "comelit-hub-rs",
+        "--bin",
+        "comelit-hub-hap-bridge"
+      ],
+      "env": {
+        "RUSTC_TOOLCHAIN": "/Users/madchicken/.rustup/toolchains/stable-aarch64-apple-darwin"
+      },
+      "cwd": "/Users/madchicken/Projects/comelit-hub-rs",
+      "use_new_terminal": false,
+      "allow_concurrent_runs": false,
+      "reveal": "always",
+      "reveal_target": "dock",
+      "hide": "never",
+      "tags": [],
+      "shell": "system",
+      "show_summary": false,
+      "show_command": false
+    },
+    "program": "$ZED_WORKTREE_ROOT/target/debug/comelit-hub-bridge --user admin --password admin --host 192.168.0.66",
+    "sourceLanguages": ["rust"]
+  }
+]

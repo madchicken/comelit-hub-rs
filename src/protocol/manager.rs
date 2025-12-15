@@ -3,6 +3,7 @@ use dashmap::DashMap;
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
+use tracing::debug;
 
 pub(crate) struct TimedRequest {
     ts: Instant,
@@ -28,7 +29,7 @@ impl RequestManager {
         }
     }
 
-    pub async fn add_request(&self, id: u32) -> oneshot::Receiver<MqttResponseMessage> {
+    pub fn add_request(&self, id: u32) -> oneshot::Receiver<MqttResponseMessage> {
         let (tx, rx) = oneshot::channel();
         self.pending.insert(
             id,
@@ -41,18 +42,23 @@ impl RequestManager {
     }
 
     pub fn remove_pending_requests(&self) {
-        self.pending
+        let to_remove: Vec<u32> = self.pending
             .iter()
             .filter(|i| i.value().ts.elapsed().as_secs() > self.timeout)
-            .for_each(|i| {
-                self.pending.remove(i.key());
-            });
+            .map(|i| *i.key())
+            .collect();
+        for id in to_remove {
+            debug!("Removing timed out request {}", id);
+            self.pending.remove(&id);
+        }
     }
 
-    pub async fn complete_request(&self, response: &MqttResponseMessage) -> bool {
+    pub fn complete_request(&self, response: &MqttResponseMessage) -> bool {
+        debug!("Complete request: {response:?}");
         if let Some(seq_id) = response.seq_id
             && let Some((_, sender)) = self.pending.remove(&seq_id)
         {
+            debug!("Sending completed message for request: {seq_id}");
             sender.sender.send(response.clone()).is_ok()
         } else {
             false

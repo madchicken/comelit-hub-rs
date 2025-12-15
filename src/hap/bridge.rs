@@ -1,16 +1,14 @@
-use crate::hap::accessories::{ComelitAccessory, ComelitThermostatAccessory, WindowCoveringConfig};
+use crate::hap::accessories::{
+    ComelitAccessory, ComelitLightbulbAccessory, ComelitThermostatAccessory,
+    ComelitWindowCoveringAccessory, WindowCoveringConfig,
+};
 use crate::protocol::client::ROOT_ID;
-use crate::protocol::out_data_messages::ThermostatDeviceData;
 use crate::protocol::{
     client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
     credentials::get_secrets,
     out_data_messages::HomeDeviceData,
 };
 use crate::settings::Settings;
-use crate::{
-    hap::accessories::{ComelitLightbulbAccessory, ComelitWindowCoveringAccessory},
-    protocol::out_data_messages::{LightDeviceData, WindowCoveringDeviceData},
-};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use dashmap::DashMap;
@@ -158,7 +156,7 @@ pub async fn start_bridge(
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
     let updater = Arc::new(Updater::default());
-    let client = Arc::new(ComelitClient::new(options, updater.clone()).await?);
+    let client = ComelitClient::new(options, updater.clone()).await?;
     if let Err(e) = client.login(State::Disconnected).await {
         error!("Login failed: {}", e);
         return Err(e.into());
@@ -169,8 +167,10 @@ pub async fn start_bridge(
     let bridge = BridgeAccessory::new(
         1,
         AccessoryInformation {
-            name: "Comelit Bridge".into(),
-            serial_number: "ABCD1234".into(),
+            name: "Comelit HUB".into(),
+            serial_number: "20003150".into(),
+            manufacturer: "Comelit".into(),
+            model: "COMELIT HUB".into(),
             ..Default::default()
         },
     )?;
@@ -186,7 +186,7 @@ pub async fn start_bridge(
         }
         Err(_) => {
             info!("Creating new config");
-            let device_id: [u8; 6] = client.mac_address.as_bytes()[..6].try_into()?;
+            let device_id: [u8; 6] = client.mac_address().as_bytes()[..6].try_into()?;
             let pin = loop {
                 if let Ok(pin) = Pin::new(settings.pairing_code) {
                     break pin;
@@ -217,116 +217,93 @@ pub async fn start_bridge(
         .await
         .context("Failed to fetch index")?;
 
-    // index.clone().into_iter().for_each(|(_, v)| match v {
-    //     HomeDeviceData::Agent(agent_device_data) => todo!(),
-    //     HomeDeviceData::Data(device_data) => todo!(),
-    //     HomeDeviceData::Other(other_device_data) => todo!(),
-    //     HomeDeviceData::Light(light_device_data) => todo!(),
-    //     HomeDeviceData::WindowCovering(window_covering_device_data) => todo!(),
-    //     HomeDeviceData::Outlet(outlet_device_data) => todo!(),
-    //     HomeDeviceData::Irrigation(irrigation_device_data) => todo!(),
-    //     HomeDeviceData::Thermostat(thermostat_device_data) => todo!(),
-    //     HomeDeviceData::Supplier(supplier_device_data) => todo!(),
-    //     HomeDeviceData::Bell(bell_device_data) => todo!(),
-    //     HomeDeviceData::Door(door_device_data) => todo!(),
-    // });
-
-    let lights: Vec<LightDeviceData> = index
-        .clone()
-        .into_iter()
-        .filter_map(|(_, v)| match v {
-            HomeDeviceData::Light(light) => Some(light),
-            _ => None,
-        })
-        .collect();
+    let Settings {
+        mount_lights,
+        mount_window_covering,
+        mount_thermo,
+        ..
+    } = settings;
 
     let mut i: u64 = 1;
-
-    if settings.mount_lights.unwrap_or_default() {
-        for light in lights.iter().take(1) {
-            i += 1;
-            info!("Adding light device: {} with id {i}", light.data.id);
-            match ComelitLightbulbAccessory::new(i, light.clone(), client.clone(), &server).await {
-                Ok(accessory) => {
-                    info!("Light {} added to the hub", accessory.get_comelit_id());
-                    updater
-                        .lights
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+    for (_, v) in index.clone().into_iter() {
+        match v {
+            HomeDeviceData::Agent(_) => unreachable!("Agent data should not be in the index"),
+            HomeDeviceData::Data(_) => unreachable!("Data should not be in the index"),
+            HomeDeviceData::Other(_other_device_data) => {}
+            HomeDeviceData::Light(light) => {
+                if mount_lights.unwrap_or_default() {
+                    i += 1;
+                    info!("Adding light device: {} with id {i}", light.data.id);
+                    match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
+                        Ok(accessory) => {
+                            info!("Light {} added to the hub", accessory.get_comelit_id());
+                            updater
+                                .lights
+                                .insert(accessory.get_comelit_id().to_string(), accessory);
+                        }
+                        Err(err) => error!("Failed to add light device: {}", err),
+                    };
                 }
-                Err(err) => error!("Failed to add light device: {}", err),
-            };
-        }
-    }
-
-    let window_coverings: Vec<WindowCoveringDeviceData> = index
-        .clone()
-        .into_iter()
-        .filter_map(|(_, v)| match v {
-            HomeDeviceData::WindowCovering(covering) => Some(covering),
-            _ => None,
-        })
-        .collect();
-
-    if settings.mount_window_covering.unwrap_or_default() {
-        for covering in window_coverings.iter().take(1) {
-            i += 1;
-            info!("Adding light device: {} with id {i}", covering.data.id);
-            match ComelitWindowCoveringAccessory::new(
-                i,
-                covering.clone(),
-                client.clone(),
-                &server,
-                WindowCoveringConfig {
-                    closing_time: Duration::from_secs(30),
-                    opening_time: Duration::from_secs(30),
-                },
-            )
-            .await
-            {
-                Ok(accessory) => {
-                    info!(
-                        "Window covering {} added to the hub",
-                        accessory.get_comelit_id()
-                    );
-                    updater
-                        .coverings
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+            }
+            HomeDeviceData::WindowCovering(covering) => {
+                if mount_window_covering.unwrap_or_default() {
+                    i += 1;
+                    info!("Adding light device: {} with id {i}", covering.data.id);
+                    match ComelitWindowCoveringAccessory::new(
+                        i,
+                        covering.clone(),
+                        client.clone(),
+                        &server,
+                        WindowCoveringConfig {
+                            closing_time: Duration::from_secs(30),
+                            opening_time: Duration::from_secs(30),
+                        },
+                    )
+                    .await
+                    {
+                        Ok(accessory) => {
+                            info!(
+                                "Window covering {} added to the hub",
+                                accessory.get_comelit_id()
+                            );
+                            updater
+                                .coverings
+                                .insert(accessory.get_comelit_id().to_string(), accessory);
+                        }
+                        Err(err) => error!("Failed to add light device: {}", err),
+                    };
                 }
-                Err(err) => error!("Failed to add light device: {}", err),
-            };
-        }
-    }
-
-    let thermostats: Vec<ThermostatDeviceData> = index
-        .clone()
-        .into_iter()
-        .filter_map(|(_, v)| match v {
-            HomeDeviceData::Thermostat(thermostat) => Some(thermostat),
-            _ => None,
-        })
-        .collect();
-
-    if settings.mount_thermo.unwrap_or_default() {
-        for thermo in thermostats.iter().take(1) {
-            i += 1;
-            info!("Adding thermostat device: {} with id {i}", thermo.data.id);
-            match ComelitThermostatAccessory::new(i, thermo, client.clone(), &server).await {
-                Ok(accessory) => {
-                    updater
-                        .thermostats
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+            }
+            HomeDeviceData::Outlet(_outlet_device_data) => {}
+            HomeDeviceData::Irrigation(_irrigation_device_data) => {}
+            HomeDeviceData::Thermostat(thermo) => {
+                if mount_thermo.unwrap_or_default() {
+                    i += 1;
+                    info!("Adding thermostat device: {} with id {i}", thermo.data.id);
+                    match ComelitThermostatAccessory::new(i, &thermo, client.clone(), &server).await
+                    {
+                        Ok(accessory) => {
+                            updater
+                                .thermostats
+                                .insert(accessory.get_comelit_id().to_string(), accessory);
+                        }
+                        Err(err) => error!("Failed to add thermostat device: {}", err),
+                    };
                 }
-                Err(err) => error!("Failed to add thermostat device: {}", err),
-            };
+            }
+            HomeDeviceData::Supplier(_supplier_device_data) => {}
+            HomeDeviceData::Bell(_bell_device_data) => {}
+            HomeDeviceData::Door(_door_device_data) => {}
         }
     }
 
     info!("Starting HAP bridge server...");
     let handle = server.run_handle();
-    let setup_id = "";
+    let setup_id = "XYZK"; // some random string
     info!("PIN for the Bridge accessory is: {pin}, setup ID: {setup_id}");
     let uri = generate_setup_uri(pin.to_string().as_str(), 2, setup_id);
     qr2term::print_qr(uri)?;
+    info!("Subscribing to root device updates...");
     client.subscribe(ROOT_ID).await?;
 
     let ctrl_c = async {
@@ -349,7 +326,6 @@ pub async fn start_bridge(
     tokio::select! {
         res = handle => {
             client
-                .as_ref()
                 .disconnect()
                 .await
                 .context("Failed to disconnect client")?;
@@ -358,7 +334,6 @@ pub async fn start_bridge(
         _ = ctrl_c => {
             info!("signal received, starting graceful shutdown");
             client
-                .as_ref()
                 .disconnect()
                 .await
                 .context("Failed to disconnect client")?;
@@ -367,7 +342,6 @@ pub async fn start_bridge(
         _ = terminate => {
             info!("signal received, starting graceful shutdown");
             client
-                .as_ref()
                 .disconnect()
                 .await
                 .context("Failed to disconnect client")?;

@@ -4,7 +4,7 @@ use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
-pub(crate) enum ObjectType {
+pub enum ObjectType {
     Other = 1,
     WindowCovering = 2,
     Light = 3,
@@ -59,7 +59,7 @@ impl From<ObjectType> for i32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
-pub(crate) enum ObjectSubtype {
+pub enum ObjectSubtype {
     Unknown = -1,
     Generic = 0,
     DigitalLight = 1,
@@ -519,17 +519,23 @@ impl From<ActionType> for i32 {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InnerDeviceData {
+    pub id: String,
+    pub data: Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeviceData {
-    pub(crate) id: String,
-    pub(crate) r#type: ObjectType,
-    pub(crate) sub_type: ObjectSubtype,
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
     sched_status: Option<DeviceStatus>,
     sched_lock: Option<String>,
     #[serde(default, rename = "schedZoneStatus")]
     sched_zone_status: Vec<u32>,
-    pub(crate) status: Option<DeviceStatus>,
+    pub status: Option<DeviceStatus>,
     #[serde(rename = "descrizione")]
-    pub(crate) description: Option<String>,
+    pub description: Option<String>,
     #[serde(rename = "placeOrder")]
     place_order: Option<String>,
     icon_id: Option<String>,
@@ -767,7 +773,7 @@ impl HomeDeviceData {
     }
 }
 
-pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
+pub(crate) fn device_data_to_home_device(value: Value, level: u8) -> Vec<HomeDeviceData> {
     let data = serde_json::from_value::<DeviceData>(value.clone()).unwrap();
     match data.r#type {
         ObjectType::Other => {
@@ -811,11 +817,15 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             .iter()
             .flat_map(|v| {
                 debug!(
-                    "Zone {} found, reading element inside: {:?}",
+                    "Zone {} found, reading element inside",
                     data.description.as_ref().unwrap_or(&"None".to_string()),
-                    v
                 );
-                device_data_to_home_device(v.clone())
+                if level == 1 {
+                    let inner = serde_json::from_value::<InnerDeviceData>(v.clone()).unwrap();
+                    device_data_to_home_device(inner.data, level)
+                } else {
+                    device_data_to_home_device(v.clone(), level)
+                }
             })
             .collect::<Vec<HomeDeviceData>>(),
         ObjectType::VipElement => {

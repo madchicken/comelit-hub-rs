@@ -1,8 +1,7 @@
-use std::sync::Arc;
-
 use anyhow::Result;
 
 use futures::FutureExt;
+use hap::characteristic::HapCharacteristic;
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
@@ -114,21 +113,9 @@ async fn set_values(accessory: AccessoryPointer, data: &ThermostatDeviceData) ->
         .await?;
 
     thermostat_sensor
-        .get_mut_characteristic(HapType::TargetTemperature)
-        .unwrap()
-        .set_value(Value::from(state.target_temperature))
-        .await?;
-
-    thermostat_sensor
         .get_mut_characteristic(HapType::CurrentHeatingCoolingState)
         .unwrap()
         .set_value(Value::from(state.heating_cooling_state as u8))
-        .await?;
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::TargetHeatingCoolingState)
-        .unwrap()
-        .set_value(Value::from(state.target_heating_cooling_state as u8))
         .await?;
 
     thermostat_sensor
@@ -138,11 +125,22 @@ async fn set_values(accessory: AccessoryPointer, data: &ThermostatDeviceData) ->
         .await?;
 
     thermostat_sensor
+        .get_mut_characteristic(HapType::TargetTemperature)
+        .unwrap()
+        .set_value(Value::from(state.target_temperature))
+        .await?;
+
+    thermostat_sensor
+        .get_mut_characteristic(HapType::TargetHeatingCoolingState)
+        .unwrap()
+        .set_value(Value::from(state.target_heating_cooling_state as u8))
+        .await?;
+
+    thermostat_sensor
         .get_mut_characteristic(HapType::TargetRelativeHumidity)
         .unwrap()
         .set_value(Value::from(state.target_humidity))
         .await?;
-
     Ok(())
 }
 
@@ -168,7 +166,7 @@ impl ComelitThermostatAccessory {
     pub async fn new(
         id: u64,
         data: &ThermostatDeviceData,
-        client: Arc<ComelitClient>,
+        client: ComelitClient,
         server: &IpServer,
     ) -> Result<Self> {
         let name = data
@@ -181,6 +179,39 @@ impl ComelitThermostatAccessory {
         let state = ThermostatState::from(data);
 
         debug!("Creating thermostat accessory with state: {:?}", state);
+        accessory
+            .thermostat
+            .current_temperature
+            .set_value(Value::from(state.temperature))
+            .await?;
+
+        accessory
+            .thermostat
+            .target_temperature
+            .set_value(Value::from(state.target_temperature))
+            .await?;
+
+        accessory
+            .thermostat
+            .current_heating_cooling_state
+            .set_value(Value::from(state.heating_cooling_state as u8))
+            .await?;
+
+        accessory
+            .thermostat
+            .current_relative_humidity
+            .as_mut()
+            .unwrap()
+            .set_value(Value::from(state.humidity))
+            .await?;
+
+        accessory
+            .thermostat
+            .target_relative_humidity
+            .as_mut()
+            .unwrap()
+            .set_value(Value::from(state.target_humidity))
+            .await?;
 
         let client_ = client.clone();
         let comelit_id_ = comelit_id.clone();
@@ -200,6 +231,10 @@ impl ComelitThermostatAccessory {
                 }
                 .boxed()
             }));
+        accessory
+            .thermostat
+            .target_temperature
+            .set_event_notifications(Some(false));
 
         let client_ = client.clone();
         let comelit_id_ = comelit_id.clone();
@@ -219,15 +254,21 @@ impl ComelitThermostatAccessory {
                 }
                 .boxed()
             }));
+        accessory
+            .thermostat
+            .target_relative_humidity
+            .as_mut()
+            .unwrap()
+            .set_event_notifications(Some(false));
 
-        let client = client.clone();
-        let comelit_id = comelit_id.clone();
+        let client_ = client.clone();
+        let comelit_id_ = comelit_id.clone();
         accessory
             .thermostat
             .target_heating_cooling_state
             .on_update_async(Some(move |prev: u8, new: u8| {
-                let client = client.clone();
-                let comelit_id = comelit_id.clone();
+                let client = client_.clone();
+                let comelit_id = comelit_id_.clone();
                 async move {
                     debug!(
                         "Target heating cooling state updated from {} to {}",
@@ -284,11 +325,9 @@ impl ComelitThermostatAccessory {
                 }
                 .boxed()
             }));
-        let thermostat_accessory = server.add_accessory(accessory).await?;
 
-        set_values(thermostat_accessory.clone(), data).await?;
         Ok(Self {
-            thermostat_accessory,
+            thermostat_accessory: server.add_accessory(accessory).await?,
             id: data.data.id.clone(),
         })
     }
