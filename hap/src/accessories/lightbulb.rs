@@ -12,13 +12,10 @@ use hap::{
 use serde_json::Value;
 use tracing::{debug, error, info};
 
-use crate::hap::accessories::comelit_accessory::ComelitAccessory;
-use crate::hap::accessories::state::light::LightState;
-use crate::protocol::out_data_messages::DeviceStatus;
-use crate::{
-    hap::accessories::AccessoryPointer,
-    protocol::{client::ComelitClient, out_data_messages::LightDeviceData},
-};
+use crate::accessories::AccessoryPointer;
+use crate::accessories::comelit_accessory::ComelitAccessory;
+use crate::accessories::state::light::LightState;
+use comelit_hub_rs::{ComelitClient, DeviceStatus, LightDeviceData};
 
 pub(crate) struct ComelitLightbulbAccessory {
     lightbulb_accessory: AccessoryPointer,

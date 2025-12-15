@@ -1,7 +1,13 @@
+mod accessories;
+mod bridge;
+mod settings;
+
+pub use bridge::start_bridge;
+
 use anyhow::Result;
 use clap::Parser;
 use clap_derive::Parser;
-use comelit_hub_rs::{hap::start_bridge, settings::Settings};
+use settings::Settings;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]

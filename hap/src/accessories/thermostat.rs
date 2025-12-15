@@ -19,16 +19,11 @@ use serde::{
 use serde_json::Value;
 use tracing::{debug, error};
 
-use crate::{
-    hap::accessories::{
-        AccessoryPointer, ComelitAccessory,
-        state::thermostat::{TargetHeatingCoolingState, ThermostatState},
-    },
-    protocol::{
-        client::ComelitClient,
-        out_data_messages::{ClimaMode, ClimaOnOff, ThermoSeason, ThermostatDeviceData},
-    },
+use crate::accessories::{
+    AccessoryPointer, ComelitAccessory,
+    state::thermostat::{TargetHeatingCoolingState, ThermostatState},
 };
+use comelit_hub_rs::{ClimaMode, ClimaOnOff, ComelitClient, ThermoSeason, ThermostatDeviceData};
 
 #[derive(Debug)]
 struct ComelitThermostat {

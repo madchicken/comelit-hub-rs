@@ -1,36 +1,16 @@
 [package]
-name = "comelit-hub-rs"
+name = "comelit-rs"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
-anyhow = "1.0.72"
-async-trait = "0.1.89"
-base64 = { version = "0.22.1" }
-clap = "4.5.34"
-clap_derive = "4.5.32"
-crossterm = "0.29.0"
-dashmap = "7.0.0-rc2"
-derive_builder = "0.20.2"
-futures = "0.3.27"
-futures-util = "0.3.31"
-# hap = { git = "https://github.com/madchicken/hap-rs" , branch = "patch" }
-hap = { path = "../hap-rs" }
-mac_address = "1.1.8"
-qr2term = "0.3.3"
-rand = "0.9.2"
-rumqttc = { version = "0.25.0" }
-serde = { version = "1.0.219", features = ["derive"] }
-serde_json = { version = "1.0.140" }
-thiserror = "2.0.12"
-tokio = { version = "1.44.1", features = ["full"] }
-tracing = "0.1.41"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-uuid = { version = "1.16.0", features = ["v4"] }
+[workspace]
+members = [
+    "client",
+    "hap",
+    "tui",
+]
 
-[[bin]]
-name = "comelit-hub-hap-bridge"
-path = "src/cli/hap-bridge.rs"
-[[bin]]
-name = "comelit-hub-cli"
-path = "src/cli/comelit.rs"
+[lib]
+name = "comelit_hub"
+version = "0.1.0"
+edition = "2024"

@@ -146,7 +146,7 @@ pub trait StatusUpdate {
 impl ComelitClient {
     pub async fn new(
         options: ComelitOptions,
-        observer: Arc<dyn StatusUpdate + Sync + Send>,
+        observer: Option<Arc<dyn StatusUpdate + Sync + Send>>,
     ) -> Result<Self, ComelitClientError> {
         let hub = options.get_hub_info().await?;
         if let Some(hub) = hub {
@@ -312,7 +312,7 @@ impl ComelitClient {
         mut event_loop: EventLoop,
         request_manager: Arc<RequestManager>,
         response_topic: String,
-        observer: Arc<dyn StatusUpdate + Sync + Send>,
+        observer: Option<Arc<dyn StatusUpdate + Sync + Send>>,
     ) {
         tokio::spawn(async move {
             info!("Starting event loop");
@@ -354,7 +354,9 @@ impl ComelitClient {
                                                         "Received new data from server: {:?}",
                                                         device
                                                     );
-                                                    observer.status_update(device).await;
+                                                    if let Some(observer) = &observer {
+                                                        observer.status_update(device).await;
+                                                    }
                                                 }
                                             }
                                         }

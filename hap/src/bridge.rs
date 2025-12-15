@@ -1,16 +1,15 @@
-use crate::hap::accessories::{
+use crate::accessories::{
     ComelitAccessory, ComelitLightbulbAccessory, ComelitThermostatAccessory,
     ComelitWindowCoveringAccessory, WindowCoveringConfig,
-};
-use crate::protocol::client::ROOT_ID;
-use crate::protocol::{
-    client::{ComelitClient, ComelitClientError, ComelitOptions, State, StatusUpdate},
-    credentials::get_secrets,
-    out_data_messages::HomeDeviceData,
 };
 use crate::settings::Settings;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
+use comelit_hub_rs::ROOT_ID;
+use comelit_hub_rs::{
+    ComelitClient, ComelitClientError, ComelitOptions, HomeDeviceData, State, StatusUpdate,
+    get_secrets,
+};
 use dashmap::DashMap;
 use hap::{
     Config, MacAddress, Pin,
@@ -156,7 +155,7 @@ pub async fn start_bridge(
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
     let updater = Arc::new(Updater::default());
-    let client = ComelitClient::new(options, updater.clone()).await?;
+    let client = ComelitClient::new(options, Some(updater.clone())).await?;
     if let Err(e) = client.login(State::Disconnected).await {
         error!("Login failed: {}", e);
         return Err(e.into());

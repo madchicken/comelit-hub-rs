@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicBool;
 
-use crate::protocol::out_data_messages::{DeviceStatus, LightDeviceData};
+use comelit_hub_rs::{DeviceStatus, LightDeviceData};
 
 #[derive(Debug)]
 pub(crate) struct LightState {

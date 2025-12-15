@@ -1,14 +1,12 @@
 use async_trait::async_trait;
 use clap::Parser;
 use clap_derive::{Parser, Subcommand};
-use comelit_hub_rs::protocol::client::{
+use comelit_hub_rs::Scanner;
+use comelit_hub_rs::get_secrets;
+use comelit_hub_rs::{ActionType, DeviceStatus, HomeDeviceData, LightDeviceData};
+use comelit_hub_rs::{
     ComelitClient, ComelitClientError, ComelitOptions, ROOT_ID, State, StatusUpdate,
 };
-use comelit_hub_rs::protocol::credentials::get_secrets;
-use comelit_hub_rs::protocol::out_data_messages::{
-    ActionType, DeviceStatus, HomeDeviceData, LightDeviceData,
-};
-use comelit_hub_rs::protocol::scanner::Scanner;
 use crossterm::event::Event::Key;
 use crossterm::{event, terminal};
 use std::collections::HashMap;
@@ -36,6 +34,7 @@ struct Params {
     #[command(subcommand)]
     command: Commands,
 }
+
 #[derive(Default)]
 struct Updater {
     index: Arc<Mutex<HashMap<String, HomeDeviceData>>>,
@@ -79,7 +78,7 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
     let updater = Arc::new(Updater::default());
-    let client = ComelitClient::new(options, updater.clone()).await?;
+    let client = ComelitClient::new(options, Some(updater.clone())).await?;
     if let Err(e) = client.login(State::Disconnected).await {
         println!("Login failed: {}", e);
         return Err(e);

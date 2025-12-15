@@ -1,4 +1,4 @@
-use crate::protocol::out_data_messages::{ClimaMode, ThermoSeason, ThermostatDeviceData};
+use comelit_hub_rs::{ClimaMode, ThermoSeason, ThermostatDeviceData};
 
 #[derive(Debug, Clone)]
 pub(crate) struct ThermostatState {

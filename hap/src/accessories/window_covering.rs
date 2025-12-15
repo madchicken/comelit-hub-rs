@@ -12,13 +12,8 @@ use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::time::Duration;
 use tracing::{info, warn};
 
-use crate::hap::accessories::ComelitAccessory;
-use crate::protocol::client::ComelitClientError;
-use crate::protocol::out_data_messages::PowerStatus;
-use crate::{
-    hap::accessories::AccessoryPointer,
-    protocol::{client::ComelitClient, out_data_messages::WindowCoveringDeviceData},
-};
+use crate::accessories::{AccessoryPointer, ComelitAccessory};
+use comelit_hub_rs::{ComelitClient, ComelitClientError, PowerStatus, WindowCoveringDeviceData};
 
 pub struct WindowCoveringConfig {
     pub closing_time: Duration,
