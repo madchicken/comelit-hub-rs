@@ -1,6 +1,6 @@
 use comelit_hub_rs::{ClimaMode, ThermoSeason, ThermostatDeviceData};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ThermostatState {
     pub(crate) temperature: f32,
     pub(crate) humidity: f32,
@@ -70,9 +70,10 @@ impl From<&ThermostatDeviceData> for ThermostatState {
     }
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Default)]
 #[repr(u8)]
 pub enum TargetHeatingCoolingState {
+    #[default]
     Off = 0,
     Heat = 1,
     Cool = 2,

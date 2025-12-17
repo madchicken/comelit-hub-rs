@@ -25,7 +25,7 @@ use tracing::{error, info, warn};
 #[derive(Default)]
 struct Updater {
     lights: DashMap<String, ComelitLightbulbAccessory>,
-    coverings: DashMap<String, ComelitWindowCoveringAccessory>,
+    window_coverings: DashMap<String, ComelitWindowCoveringAccessory>,
     thermostats: DashMap<String, ComelitThermostatAccessory>,
 }
 
@@ -50,7 +50,7 @@ impl StatusUpdate for Updater {
                 }
             }
             HomeDeviceData::WindowCovering(data) => {
-                if let Some(mut accessory) = self.coverings.get_mut(&device.id()) {
+                if let Some(mut accessory) = self.window_coverings.get_mut(&device.id()) {
                     accessory.update(data).await.unwrap_or_else(|e| {
                         error!(
                             "Failed to update window covering accessory {}: {}",
@@ -223,76 +223,92 @@ pub async fn start_bridge(
         ..
     } = settings;
 
-    let mut i: u64 = 1;
+    let mut lights = vec![];
+    let mut thermostats = vec![];
+    let mut window_coverings = vec![];
     for (_, v) in index.clone().into_iter() {
         match v {
-            HomeDeviceData::Agent(_) => unreachable!("Agent data should not be in the index"),
-            HomeDeviceData::Data(_) => unreachable!("Data should not be in the index"),
-            HomeDeviceData::Other(_other_device_data) => {}
             HomeDeviceData::Light(light) => {
-                if mount_lights.unwrap_or_default() {
-                    i += 1;
-                    info!("Adding light device: {} with id {i}", light.data.id);
-                    match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
-                        Ok(accessory) => {
-                            info!("Light {} added to the hub", accessory.get_comelit_id());
-                            updater
-                                .lights
-                                .insert(accessory.get_comelit_id().to_string(), accessory);
-                        }
-                        Err(err) => error!("Failed to add light device: {}", err),
-                    };
-                }
+                lights.push(light.clone());
             }
-            HomeDeviceData::WindowCovering(covering) => {
-                if mount_window_covering.unwrap_or_default() {
-                    i += 1;
-                    info!("Adding light device: {} with id {i}", covering.data.id);
-                    match ComelitWindowCoveringAccessory::new(
-                        i,
-                        covering.clone(),
-                        client.clone(),
-                        &server,
-                        WindowCoveringConfig {
-                            closing_time: Duration::from_secs(30),
-                            opening_time: Duration::from_secs(30),
-                        },
-                    )
-                    .await
-                    {
-                        Ok(accessory) => {
-                            info!(
-                                "Window covering {} added to the hub",
-                                accessory.get_comelit_id()
-                            );
-                            updater
-                                .coverings
-                                .insert(accessory.get_comelit_id().to_string(), accessory);
-                        }
-                        Err(err) => error!("Failed to add light device: {}", err),
-                    };
-                }
+            HomeDeviceData::WindowCovering(window_covering) => {
+                window_coverings.push(window_covering.clone());
             }
-            HomeDeviceData::Outlet(_outlet_device_data) => {}
-            HomeDeviceData::Irrigation(_irrigation_device_data) => {}
             HomeDeviceData::Thermostat(thermo) => {
-                if mount_thermo.unwrap_or_default() {
-                    i += 1;
-                    info!("Adding thermostat device: {} with id {i}", thermo.data.id);
-                    match ComelitThermostatAccessory::new(i, &thermo, client.clone(), &server).await
-                    {
-                        Ok(accessory) => {
-                            updater
-                                .thermostats
-                                .insert(accessory.get_comelit_id().to_string(), accessory);
-                        }
-                        Err(err) => error!("Failed to add thermostat device: {}", err),
-                    };
-                }
+                thermostats.push(thermo.clone());
             }
-            HomeDeviceData::Supplier(_supplier_device_data) => {}
-            HomeDeviceData::Bell(_bell_device_data) => {}
-            HomeDeviceData::Door(_door_device_data) => {}
+            _ => {}
+        }
+    }
+    lights.sort_by_key(|l| l.data.id.clone());
+    window_coverings.sort_by_key(|wc| wc.data.id.clone());
+    thermostats.sort_by_key(|t| t.data.id.clone());
+
+    let mut i: u64 = 1;
+    for light in lights {
+        if mount_lights.unwrap_or_default() {
+            i += 1;
+            info!("Adding light device: {} with id {i}", light.data.id);
+            match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
+                Ok(accessory) => {
+                    info!("Light {} added to the hub", accessory.get_comelit_id());
+                    updater
+                        .lights
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add light device: {}", err),
+            }
+        }
+    }
+
+    for window_covering in window_coverings {
+        if mount_window_covering.unwrap_or_default() {
+            i += 1;
+            info!(
+                "Adding window covering device: {} with id {i}",
+                window_covering.data.id
+            );
+            match ComelitWindowCoveringAccessory::new(
+                i,
+                &window_covering,
+                client.clone(),
+                &server,
+                WindowCoveringConfig {
+                    closing_time: Duration::from_secs(30),
+                    opening_time: Duration::from_secs(30),
+                },
+            )
+            .await
+            {
+                Ok(accessory) => {
+                    info!(
+                        "Window covering {} added to the hub",
+                        accessory.get_comelit_id()
+                    );
+                    updater
+                        .window_coverings
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add window covering device: {}", err),
+            }
+        }
+    }
+
+    for thermostat in thermostats {
+        if mount_thermo.unwrap_or_default() {
+            i += 1;
+            info!(
+                "Adding thermostat device: {} with id {i}",
+                thermostat.data.id
+            );
+            match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server).await {
+                Ok(accessory) => {
+                    updater
+                        .thermostats
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add thermostat device: {}", err),
+            };
         }
     }
 

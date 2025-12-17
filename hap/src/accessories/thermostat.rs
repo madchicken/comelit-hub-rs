@@ -1,12 +1,15 @@
+use std::sync::{Arc, Mutex};
+
 use anyhow::Result;
 
 use futures::FutureExt;
-use hap::characteristic::HapCharacteristic;
+use hap::characteristic::{CharacteristicCallbacks, HapCharacteristic};
+use hap::server::Server;
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
     characteristic::AsyncCharacteristicCallbacks,
-    server::{IpServer, Server},
+    server::IpServer,
     service::{
         HapService, accessory_information::AccessoryInformationService,
         thermostat::ThermostatService,
@@ -17,10 +20,10 @@ use serde::{
     ser::{SerializeStruct, Serializer},
 };
 use serde_json::Value;
-use tracing::{debug, error};
+use tracing::{debug, info};
 
 use crate::accessories::{
-    AccessoryPointer, ComelitAccessory,
+    ComelitAccessory,
     state::thermostat::{TargetHeatingCoolingState, ThermostatState},
 };
 use comelit_hub_rs::{ClimaMode, ClimaOnOff, ComelitClient, ThermoSeason, ThermostatDeviceData};
@@ -96,52 +99,9 @@ impl ComelitThermostat {
     }
 }
 
-async fn set_values(accessory: AccessoryPointer, data: &ThermostatDeviceData) -> Result<()> {
-    let mut guard = accessory.lock().await;
-    let thermostat_sensor = guard.get_mut_service(HapType::Thermostat).unwrap();
-    let state = ThermostatState::from(data);
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::CurrentTemperature)
-        .unwrap()
-        .set_value(Value::from(state.temperature))
-        .await?;
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::CurrentHeatingCoolingState)
-        .unwrap()
-        .set_value(Value::from(state.heating_cooling_state as u8))
-        .await?;
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::CurrentRelativeHumidity)
-        .unwrap()
-        .set_value(Value::from(state.humidity))
-        .await?;
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::TargetTemperature)
-        .unwrap()
-        .set_value(Value::from(state.target_temperature))
-        .await?;
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::TargetHeatingCoolingState)
-        .unwrap()
-        .set_value(Value::from(state.target_heating_cooling_state as u8))
-        .await?;
-
-    thermostat_sensor
-        .get_mut_characteristic(HapType::TargetRelativeHumidity)
-        .unwrap()
-        .set_value(Value::from(state.target_humidity))
-        .await?;
-    Ok(())
-}
-
 pub(crate) struct ComelitThermostatAccessory {
-    thermostat_accessory: AccessoryPointer,
     id: String,
+    state: Arc<Mutex<ThermostatState>>,
 }
 
 impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
@@ -150,9 +110,14 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
     }
 
     async fn update(&mut self, thermostat_data: &ThermostatDeviceData) -> Result<()> {
-        set_values(self.thermostat_accessory.clone(), thermostat_data)
-            .await
-            .unwrap_or_else(|e| error!("Error updating thermostat: {}", e));
+        let mut state = self.state.lock().unwrap();
+        let new_state = ThermostatState::from(thermostat_data);
+        state.heating_cooling_state = new_state.heating_cooling_state;
+        state.temperature = new_state.temperature;
+        state.target_temperature = new_state.target_temperature;
+        state.humidity = new_state.humidity;
+        state.target_humidity = new_state.target_humidity;
+        state.target_heating_cooling_state = new_state.target_heating_cooling_state;
         Ok(())
     }
 }
@@ -172,13 +137,24 @@ impl ComelitThermostatAccessory {
         let comelit_id = data.data.id.clone();
         let mut accessory = ComelitThermostat::new(id, name.as_str()).await?;
         let state = ThermostatState::from(data);
+        let arc_state = Arc::new(Mutex::new(ThermostatState::from(data)));
 
-        debug!("Creating thermostat accessory with state: {:?}", state);
+        info!("Creating thermostat accessory with state: {:?}", state);
+
         accessory
             .thermostat
             .current_temperature
             .set_value(Value::from(state.temperature))
             .await?;
+
+        let arc_state_clone = Arc::clone(&arc_state);
+        accessory
+            .thermostat
+            .current_temperature
+            .on_read(Some(move || {
+                let state = arc_state_clone.lock().unwrap();
+                Ok(Some(state.temperature))
+            }));
 
         accessory
             .thermostat
@@ -186,11 +162,44 @@ impl ComelitThermostatAccessory {
             .set_value(Value::from(state.target_temperature))
             .await?;
 
+        let arc_state_clone = Arc::clone(&arc_state);
+        accessory
+            .thermostat
+            .target_temperature
+            .on_read(Some(move || {
+                let state = arc_state_clone.lock().unwrap();
+                Ok(Some(state.target_temperature))
+            }));
+
         accessory
             .thermostat
             .current_heating_cooling_state
             .set_value(Value::from(state.heating_cooling_state as u8))
             .await?;
+
+        let arc_state_clone = Arc::clone(&arc_state);
+        accessory
+            .thermostat
+            .current_heating_cooling_state
+            .on_read(Some(move || {
+                let state = arc_state_clone.lock().unwrap();
+                Ok(Some(state.heating_cooling_state as u8))
+            }));
+
+        accessory
+            .thermostat
+            .target_heating_cooling_state
+            .set_value(Value::from(state.target_heating_cooling_state as u8))
+            .await?;
+
+        let arc_state_clone = Arc::clone(&arc_state);
+        accessory
+            .thermostat
+            .target_heating_cooling_state
+            .on_read(Some(move || {
+                let state = arc_state_clone.lock().unwrap();
+                Ok(Some(state.target_heating_cooling_state as u8))
+            }));
 
         accessory
             .thermostat
@@ -200,6 +209,17 @@ impl ComelitThermostatAccessory {
             .set_value(Value::from(state.humidity))
             .await?;
 
+        let arc_state_clone = Arc::clone(&arc_state);
+        accessory
+            .thermostat
+            .current_relative_humidity
+            .as_mut()
+            .unwrap()
+            .on_read(Some(move || {
+                let state = arc_state_clone.lock().unwrap();
+                Ok(Some(state.humidity))
+            }));
+
         accessory
             .thermostat
             .target_relative_humidity
@@ -208,112 +228,134 @@ impl ComelitThermostatAccessory {
             .set_value(Value::from(state.target_humidity))
             .await?;
 
-        let client_ = client.clone();
-        let comelit_id_ = comelit_id.clone();
-        accessory
-            .thermostat
-            .target_temperature
-            .on_update_async(Some(move |prev, new| {
-                let client = client_.clone();
-                let comelit_id = comelit_id_.clone();
-                async move {
-                    debug!("Target temperature updated from {} to {}", prev, new);
-                    let temperature = (new * 10.0) as i32;
-                    client
-                        .set_thermostat_temperature(&comelit_id, temperature)
-                        .await?;
-                    Ok(())
-                }
-                .boxed()
-            }));
-        accessory
-            .thermostat
-            .target_temperature
-            .set_event_notifications(Some(false));
-
-        let client_ = client.clone();
-        let comelit_id_ = comelit_id.clone();
+        let arc_state_clone = Arc::clone(&arc_state);
         accessory
             .thermostat
             .target_relative_humidity
             .as_mut()
             .unwrap()
-            .on_update_async(Some(move |prev, new| {
+            .on_read(Some(move || {
+                let state = arc_state_clone.lock().unwrap();
+                Ok(Some(state.target_humidity))
+            }));
+
+        let client_ = client.clone();
+        let comelit_id_ = comelit_id.clone();
+        let state_ = Arc::clone(&arc_state);
+        accessory
+            .thermostat
+            .target_temperature
+            .on_update_async(Some(move |_, new| {
                 let client = client_.clone();
                 let comelit_id = comelit_id_.clone();
+                let state = state_.clone();
                 async move {
-                    debug!("Target humidity updated from {} to {}", prev, new);
-                    let humidity = (new * 10.0) as i32;
-                    client.set_humidity(&comelit_id, humidity).await?;
+                    let prev = state.lock().unwrap().target_temperature;
+                    if prev != new {
+                        debug!("Target temperature updated from {} to {}", prev, new);
+                        let temperature = (new * 10.0) as i32;
+                        client
+                            .set_thermostat_temperature(&comelit_id, temperature)
+                            .await?;
+                    }
                     Ok(())
                 }
                 .boxed()
             }));
+
+        let client_ = client.clone();
+        let comelit_id_ = comelit_id.clone();
+        let state_ = Arc::clone(&arc_state);
         accessory
             .thermostat
             .target_relative_humidity
             .as_mut()
             .unwrap()
-            .set_event_notifications(Some(false));
+            .on_update_async(Some(move |_prev, new| {
+                let client = client_.clone();
+                let comelit_id = comelit_id_.clone();
+                let state = state_.clone();
+                async move {
+                    let prev = state.lock().unwrap().target_humidity;
+                    if prev != new {
+                        debug!("Target humidity updated from {} to {}", prev, new);
+                        let humidity = (new * 10.0) as i32;
+                        client.set_humidity(&comelit_id, humidity).await?;
+                    }
+                    Ok(())
+                }
+                .boxed()
+            }));
 
         let client_ = client.clone();
         let comelit_id_ = comelit_id.clone();
+        let state_ = Arc::clone(&arc_state);
         accessory
             .thermostat
             .target_heating_cooling_state
-            .on_update_async(Some(move |prev: u8, new: u8| {
+            .on_update_async(Some(move |_prev: u8, new: u8| {
                 let client = client_.clone();
                 let comelit_id = comelit_id_.clone();
+                let state = state_.clone();
                 async move {
-                    debug!(
-                        "Target heating cooling state updated from {} to {}",
-                        prev, new
-                    );
+                    let prev = state.lock().unwrap().target_heating_cooling_state as u8;
+                    if prev != new {
+                        debug!(
+                            "Target heating cooling state updated from {} to {}",
+                            prev, new
+                        );
 
-                    client
-                        .toggle_thermostat_status(
-                            comelit_id.as_str(),
-                            if TargetHeatingCoolingState::Off as u8 == new {
-                                ClimaOnOff::OffThermo
-                            } else {
-                                ClimaOnOff::OnThermo
-                            },
-                        )
-                        .await?;
-
-                    if prev == TargetHeatingCoolingState::Auto as u8
-                        && new != TargetHeatingCoolingState::Off as u8
-                    {
-                        // if in AUTO mode, switch to MANUAL here
                         client
-                            .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual)
+                            .toggle_thermostat_status(
+                                comelit_id.as_str(),
+                                if TargetHeatingCoolingState::Off as u8 == new {
+                                    ClimaOnOff::OffThermo
+                                } else {
+                                    ClimaOnOff::OnThermo
+                                },
+                            )
                             .await?;
-                    }
 
-                    let state = TargetHeatingCoolingState::from(new);
-                    match state {
-                        TargetHeatingCoolingState::Auto => {
+                        if prev == TargetHeatingCoolingState::Auto as u8
+                            && new != TargetHeatingCoolingState::Off as u8
+                        {
+                            // if in AUTO mode, switch to MANUAL here
                             client
-                                .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto)
+                                .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual)
                                 .await?;
                         }
-                        TargetHeatingCoolingState::Cool => {
-                            client
-                                .set_thermostat_season(comelit_id.as_str(), ThermoSeason::Summer)
-                                .await?;
-                        }
-                        TargetHeatingCoolingState::Heat => {
-                            client
-                                .set_thermostat_season(comelit_id.as_str(), ThermoSeason::Winter)
-                                .await?;
-                        }
-                        TargetHeatingCoolingState::Off => {
-                            client
-                                .toggle_thermostat_status(
-                                    comelit_id.as_str(),
-                                    ClimaOnOff::OffThermo,
-                                )
-                                .await?;
+
+                        let state = TargetHeatingCoolingState::from(new);
+                        match state {
+                            TargetHeatingCoolingState::Auto => {
+                                client
+                                    .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto)
+                                    .await?;
+                            }
+                            TargetHeatingCoolingState::Cool => {
+                                client
+                                    .set_thermostat_season(
+                                        comelit_id.as_str(),
+                                        ThermoSeason::Summer,
+                                    )
+                                    .await?;
+                            }
+                            TargetHeatingCoolingState::Heat => {
+                                client
+                                    .set_thermostat_season(
+                                        comelit_id.as_str(),
+                                        ThermoSeason::Winter,
+                                    )
+                                    .await?;
+                            }
+                            TargetHeatingCoolingState::Off => {
+                                client
+                                    .toggle_thermostat_status(
+                                        comelit_id.as_str(),
+                                        ClimaOnOff::OffThermo,
+                                    )
+                                    .await?;
+                            }
                         }
                     }
                     Ok(())
@@ -321,9 +363,10 @@ impl ComelitThermostatAccessory {
                 .boxed()
             }));
 
+        server.add_accessory(accessory).await?;
         Ok(Self {
-            thermostat_accessory: server.add_accessory(accessory).await?,
             id: data.data.id.clone(),
+            state: arc_state,
         })
     }
 }
