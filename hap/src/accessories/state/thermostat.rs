@@ -28,7 +28,7 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             .unwrap();
 
         let target_temperature = data
-            .soglia_attiva
+            .active_threshold
             .clone()
             .unwrap_or_default()
             .parse::<f32>()
@@ -36,7 +36,7 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             / 10.0;
 
         let target_humidity = data
-            .soglia_attiva_umi
+            .humi_active_threshold
             .clone()
             .unwrap_or_default()
             .parse::<f32>()
@@ -45,7 +45,7 @@ impl From<&ThermostatDeviceData> for ThermostatState {
         let auto_man = data.auto_man.clone().unwrap_or_default();
         let is_off = auto_man == ClimaMode::OffAuto || auto_man == ClimaMode::OffManual;
         let is_auto = auto_man == ClimaMode::Auto;
-        let is_winter = data.est_inv.clone().unwrap_or_default() == ThermoSeason::Winter;
+        let is_winter = data.season.clone().unwrap_or_default() == ThermoSeason::Winter;
 
         let heating_cooling_state = if is_off {
             TargetHeatingCoolingState::Off

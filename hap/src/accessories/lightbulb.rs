@@ -28,12 +28,8 @@ impl ComelitLightbulbAccessory {
         client: ComelitClient,
         server: &IpServer,
     ) -> Result<Self> {
-        let device_id = light_data.data.id.clone();
-        let name = light_data
-            .data
-            .description
-            .clone()
-            .unwrap_or(device_id.clone());
+        let device_id = light_data.id.clone();
+        let name = light_data.description.clone().unwrap_or(device_id.clone());
 
         let mut lightbulb_accessory = LightbulbAccessory::new(
             id,
@@ -136,7 +132,7 @@ impl ComelitAccessory<LightDeviceData> for ComelitLightbulbAccessory {
 
     async fn update(&mut self, light_data: &LightDeviceData) -> Result<()> {
         let id = self.get_comelit_id();
-        let is_on = light_data.data.status.clone().unwrap_or_default() == DeviceStatus::On;
+        let is_on = light_data.status.clone().unwrap_or_default() == DeviceStatus::On;
         self.state.on.store(is_on, Ordering::Release);
         info!(
             "Updated power state for device {id}: {:?}",

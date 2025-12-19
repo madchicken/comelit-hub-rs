@@ -240,15 +240,15 @@ pub async fn start_bridge(
             _ => {}
         }
     }
-    lights.sort_by_key(|l| l.data.id.clone());
-    window_coverings.sort_by_key(|wc| wc.data.id.clone());
-    thermostats.sort_by_key(|t| t.data.id.clone());
+    lights.sort_by_key(|l| l.id.clone());
+    window_coverings.sort_by_key(|wc| wc.id.clone());
+    thermostats.sort_by_key(|t| t.id.clone());
 
     let mut i: u64 = 1;
     for light in lights {
         if mount_lights.unwrap_or_default() {
             i += 1;
-            info!("Adding light device: {} with id {i}", light.data.id);
+            info!("Adding light device: {} with id {i}", light.id);
             match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
                 Ok(accessory) => {
                     info!("Light {} added to the hub", accessory.get_comelit_id());
@@ -266,7 +266,7 @@ pub async fn start_bridge(
             i += 1;
             info!(
                 "Adding window covering device: {} with id {i}",
-                window_covering.data.id
+                window_covering.id
             );
             match ComelitWindowCoveringAccessory::new(
                 i,
@@ -297,10 +297,7 @@ pub async fn start_bridge(
     for thermostat in thermostats {
         if mount_thermo.unwrap_or_default() {
             i += 1;
-            info!(
-                "Adding thermostat device: {} with id {i}",
-                thermostat.data.id
-            );
+            info!("Adding thermostat device: {} with id {i}", thermostat.id);
             match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server).await {
                 Ok(accessory) => {
                     updater

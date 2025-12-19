@@ -126,23 +126,60 @@ impl From<ObjectSubtype> for i32 {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(into = "i32", from = "String")]
+#[serde(into = "u8", from = "String")]
+#[repr(u8)]
+pub enum WindowCoveringStatus {
+    #[default]
+    Stopped = 0,
+    GoingUp = 1,
+    GoingDown = 2,
+}
+
+impl From<WindowCoveringStatus> for u8 {
+    fn from(value: WindowCoveringStatus) -> Self {
+        match value {
+            WindowCoveringStatus::Stopped => 0,
+            WindowCoveringStatus::GoingUp => 1,
+            WindowCoveringStatus::GoingDown => 2,
+        }
+    }
+}
+
+impl From<&str> for WindowCoveringStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::Stopped,
+            "1" => Self::GoingUp,
+            "2" => Self::GoingDown,
+            _ => Self::Stopped, // Default case
+        }
+    }
+}
+
+impl From<String> for WindowCoveringStatus {
+    fn from(value: String) -> Self {
+        WindowCoveringStatus::from(value.as_str())
+    }
+}
+
+impl From<WindowCoveringStatus> for &str {
+    fn from(value: WindowCoveringStatus) -> Self {
+        match value {
+            WindowCoveringStatus::Stopped => "0",
+            WindowCoveringStatus::GoingUp => "1",
+            WindowCoveringStatus::GoingDown => "2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(into = "u8", from = "String")]
+#[repr(u8)]
 pub enum DeviceStatus {
     #[default]
     Off = 0,
     On = 1,
     Running = 2,
-}
-
-impl From<i32> for DeviceStatus {
-    fn from(value: i32) -> Self {
-        match value {
-            0 => Self::Off,
-            1 => Self::On,
-            2 => Self::Running,
-            _ => Self::Off, // Default case
-        }
-    }
 }
 
 impl From<&str> for DeviceStatus {
@@ -162,7 +199,7 @@ impl From<String> for DeviceStatus {
     }
 }
 
-impl From<DeviceStatus> for i32 {
+impl From<DeviceStatus> for u8 {
     fn from(value: DeviceStatus) -> Self {
         match value {
             DeviceStatus::Off => 0,
@@ -183,23 +220,13 @@ impl From<DeviceStatus> for &str {
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
-#[serde(into = "i32", from = "String")]
+#[serde(into = "u8", from = "String")]
+#[repr(u8)]
 pub enum PowerStatus {
     #[default]
     Stopped = 0,
     Off = 1,
     On = 2,
-}
-
-impl From<i32> for PowerStatus {
-    fn from(value: i32) -> Self {
-        match value {
-            0 => Self::Stopped,
-            1 => Self::Off,
-            2 => Self::On,
-            _ => Self::Stopped, // Default case
-        }
-    }
 }
 
 impl From<&str> for PowerStatus {
@@ -219,7 +246,7 @@ impl From<String> for PowerStatus {
     }
 }
 
-impl From<PowerStatus> for i32 {
+impl From<PowerStatus> for u8 {
     fn from(value: PowerStatus) -> Self {
         match value {
             PowerStatus::Stopped => 0,
@@ -241,14 +268,15 @@ impl From<PowerStatus> for &str {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(into = "i32", from = "String")]
+#[repr(u8)]
 pub enum OpenStatus {
     Closed = 0,
     #[default]
     Open = 1,
 }
 
-impl From<i32> for OpenStatus {
-    fn from(value: i32) -> Self {
+impl From<u8> for OpenStatus {
+    fn from(value: u8) -> Self {
         match value {
             0 => Self::Closed,
             1 => Self::Open,
@@ -560,24 +588,36 @@ pub struct OtherDeviceData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LightDeviceData {
-    #[serde(flatten)]
-    pub data: DeviceData,
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
+    #[serde(rename = "powerst")]
+    pub power_status: Option<PowerStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WindowCoveringDeviceData {
-    #[serde(flatten)]
-    pub data: DeviceData,
-    pub open_status: Option<OpenStatus>,
-    pub position: Option<String>,
-    #[serde(rename = "openTime")]
-    pub open_time: Option<String>,
-    #[serde(rename = "closeTime")]
-    pub close_time: Option<String>,
-    #[serde(rename = "preferPosition")]
-    pub prefer_position: Option<String>,
-    #[serde(rename = "enablePreferPosition")]
-    pub enable_prefer_position: Option<DeviceStatus>,
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
+    #[serde(rename = "powerst")]
+    pub power_status: Option<WindowCoveringStatus>,
+    // pub open_status: Option<OpenStatus>,
+    // pub position: Option<String>,
+    // #[serde(rename = "openTime")]
+    // pub open_time: Option<String>,
+    // #[serde(rename = "closeTime")]
+    // pub close_time: Option<String>,
+    // #[serde(rename = "preferPosition")]
+    // pub prefer_position: Option<String>,
+    // #[serde(rename = "enablePreferPosition")]
+    // pub enable_prefer_position: Option<DeviceStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -597,88 +637,23 @@ pub struct IrrigationDeviceData {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_snake_case)]
 pub struct ThermostatDeviceData {
-    #[serde(flatten)]
-    pub data: DeviceData,
-    pub num_ingresso: Option<u32>,
-    pub num_moduloIE: Option<String>,
-    pub num_uscitaIE: Option<String>,
-    pub num_moduloI: Option<String>,
-    pub num_uscitaI: Option<String>,
-    pub num_moduloE: Option<String>,
-    pub num_uscitaE: Option<String>,
-    pub num_moduloI_ana: Option<String>,
-    pub num_uscitaI_ana: Option<String>,
-    pub num_moduloE_ana: Option<String>,
-    pub num_uscitaE_ana: Option<String>,
-    pub num_moduloUD: Option<String>,
-    pub num_uscitaUD: Option<String>,
-    pub num_moduloU: Option<String>,
-    pub num_uscitaU: Option<String>,
-    pub num_moduloD: Option<String>,
-    pub num_uscitaD: Option<String>,
-    pub num_moduloU_ana: Option<String>,
-    pub num_uscitaU_ana: Option<String>,
-    pub num_moduloD_ana: Option<String>,
-    pub num_uscitaD_ana: Option<String>,
-    pub night_mode: Option<String>,
-    pub soglia_man_inv: Option<String>,
-    pub soglia_man_est: Option<String>,
-    pub soglia_man_notte_inv: Option<String>,
-    pub soglia_man_notte_est: Option<String>,
-    pub soglia_semiauto: Option<String>,
-    pub soglia_auto_inv: Option<String>,
-    pub soglia_auto_est: Option<String>,
-    pub out_enable_inv: Option<DeviceStatus>,
-    pub out_enable_est: Option<DeviceStatus>,
-    pub dir_enable_inv: Option<DeviceStatus>,
-    pub dir_enable_est: Option<DeviceStatus>,
-    pub heatAutoFanDisable: Option<DeviceStatus>,
-    pub coolAutoFanDisable: Option<DeviceStatus>,
-    pub heatSwingDisable: Option<DeviceStatus>,
-    pub coolSwingDisable: Option<DeviceStatus>,
-    pub out_type_inv: Option<String>,
-    pub out_type_est: Option<String>,
-    pub temp_base_inv: Option<String>,
-    pub temp_base_est: Option<String>,
-    pub out_enable_umi: Option<String>,
-    pub out_enable_deumi: Option<String>,
-    pub dir_enable_umi: Option<String>,
-    pub dir_enable_deumi: Option<String>,
-    pub humAutoFanDisable: Option<String>,
-    pub dehumAutoFanDisable: Option<String>,
-    pub humSwingDisable: Option<String>,
-    pub dehumSwingDisable: Option<String>,
-    pub out_type_umi: Option<String>,
-    pub out_type_deumi: Option<String>,
-    pub soglia_man_umi: Option<String>,
-    pub soglia_man_deumi: Option<String>,
-    pub soglia_man_notte_umi: Option<String>,
-    pub soglia_man_notte_deumi: Option<String>,
-    pub night_mode_umi: Option<String>,
-    pub soglia_semiauto_umi: Option<String>,
-    pub umi_base_umi: Option<String>,
-    pub umi_base_deumi: Option<String>,
-    pub coolLimitMax: Option<String>,
-    pub coolLimitMin: Option<String>,
-    pub heatLimitMax: Option<String>,
-    pub heatLimitMin: Option<String>,
-    pub viewOnly: Option<String>,
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
     #[serde(rename = "temperatura")]
     pub temperature: Option<String>,
     pub auto_man: Option<ClimaMode>,
-    pub est_inv: Option<ThermoSeason>,
-    pub soglia_attiva: Option<String>,
-    pub out_value_inv: Option<String>,
-    pub out_value_est: Option<String>,
-    pub dir_out_inv: Option<String>,
-    pub dir_out_est: Option<String>,
-    pub semiauto_enabled: Option<String>,
+    #[serde(rename = "est_inv")]
+    pub season: Option<ThermoSeason>,
+    #[serde(rename = "soglia_attiva")]
+    pub active_threshold: Option<String>,
     #[serde(rename = "umidita")]
     pub humidity: Option<String>,
-    pub auto_man_umi: Option<ClimaMode>,
-    pub deumi_umi: Option<String>,
-    pub soglia_attiva_umi: Option<String>,
-    pub semiauto_umi_enabled: Option<String>,
+    #[serde(rename = "soglia_attiva_umi")]
+    pub humi_active_threshold: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -739,11 +714,11 @@ impl HomeDeviceData {
             HomeDeviceData::Agent(o) => o.agent_id.to_string(),
             HomeDeviceData::Data(o) => o.id.clone(),
             HomeDeviceData::Other(o) => o.data.id.clone(),
-            HomeDeviceData::Light(o) => o.data.id.clone(),
-            HomeDeviceData::WindowCovering(o) => o.data.id.clone(),
+            HomeDeviceData::Light(o) => o.id.clone(),
+            HomeDeviceData::WindowCovering(o) => o.id.clone(),
             HomeDeviceData::Outlet(o) => o.data.id.clone(),
             HomeDeviceData::Irrigation(o) => o.data.id.clone(),
-            HomeDeviceData::Thermostat(o) => o.data.id.clone(),
+            HomeDeviceData::Thermostat(o) => o.id.clone(),
             HomeDeviceData::Supplier(o) => o.data.id.clone(),
             HomeDeviceData::Bell(o) => o.data.id.clone(),
             HomeDeviceData::Door(o) => o.data.id.clone(),
@@ -755,17 +730,13 @@ impl HomeDeviceData {
             HomeDeviceData::Agent(o) => o.description.clone(),
             HomeDeviceData::Data(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Other(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
-            HomeDeviceData::Light(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
-            HomeDeviceData::WindowCovering(o) => {
-                o.data.description.clone().unwrap_or(o.data.id.clone())
-            }
+            HomeDeviceData::Light(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::WindowCovering(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Outlet(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
             HomeDeviceData::Irrigation(o) => {
                 o.data.description.clone().unwrap_or(o.data.id.clone())
             }
-            HomeDeviceData::Thermostat(o) => {
-                o.data.description.clone().unwrap_or(o.data.id.clone())
-            }
+            HomeDeviceData::Thermostat(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Supplier(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
             HomeDeviceData::Bell(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
             HomeDeviceData::Door(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),

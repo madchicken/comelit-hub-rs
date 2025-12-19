@@ -33,9 +33,8 @@ impl ComelitWindowCoveringAccessory {
         server: &IpServer,
         config: WindowCoveringConfig,
     ) -> Result<Self> {
-        let device_id = window_covering_data.data.id.clone();
+        let device_id = window_covering_data.id.clone();
         let name = window_covering_data
-            .data
             .description
             .clone()
             .unwrap_or(device_id.clone());
@@ -143,8 +142,14 @@ impl ComelitWindowCoveringAccessory {
             .window_covering
             .target_position
             .on_update_async(Some(move |_, new_pos| {
+                // For blinds/shades/awnings, a value of 0 indicates a position that permits the least light and a value
+                // of 100 indicates a position that allows most light.
+                // This means:
+                // 0   -> FULLY CLOSED
+                // 100 -> FULLY OPENED
+
                 let state = state.clone();
-                let c = client.clone();
+                let client = client.clone();
                 let id = id.to_string();
                 async move {
                     let WindowCoveringState {position, moving, .. } = {
@@ -159,6 +164,7 @@ impl ComelitWindowCoveringAccessory {
 
                     info!("Current position for the window covering {id} set to {position}, {new_pos}");
                     let id = id.clone();
+                    // if the new position is greater the blind is opening
                     let opening = position > new_pos;
                     let delta = Duration::from_secs((if position > new_pos {
                         (opening_time.as_secs_f32() / 100f32) * (position - new_pos) as f32
@@ -171,9 +177,11 @@ impl ComelitWindowCoveringAccessory {
                     // Check if we are already moving
                     if moving {
                         info!("Previous position change for window covering {} is still in progress, stopping it", id);
-                        c.toggle_device_status(&id, true).await?; // stop the device
+                        client.toggle_device_status(&id, true).await?; // stop the device
                         let mut state = state.lock().unwrap();
                         state.moving = false;
+                        state.position_state = PositionState::Stopped as u8;
+                        state.target_position = new_pos;
                     }
                     // Now move it in the new position
                     let id1 = id.clone();
@@ -184,20 +192,22 @@ impl ComelitWindowCoveringAccessory {
                             state.moving = true;
                             state.opening = opening;
                             state.position_state = if opening { PositionState::MovingUp as u8 } else { PositionState::MovingDown as u8 };
+                            state.target_position = new_pos;
                         }
                         // start moving
-                        c.toggle_device_status(&id1, false).await?;
+                        client.toggle_device_status(&id1, false).await?;
                         // sleep for the required time
                         tokio::time::sleep(delta).await;
-                        info!("Timeout reached when setting blind position for window covering {}", id1);
+                        info!("Window covering {id1} reached the requested position {new_pos}");
                         // stop moving
-                        c.toggle_device_status(&id1, true).await?;
+                        client.toggle_device_status(&id1, true).await?;
                         {
                             let mut state = state1.lock().unwrap();
-                            state.position = position;
+                            state.position = new_pos;
                             state.moving = false;
                             state.opening = false;
                             state.position_state = PositionState::Stopped as u8;
+                            state.target_position = new_pos;
                         }
                         Ok::<(), ComelitClientError>(())
                     };
@@ -233,17 +243,18 @@ impl ComelitWindowCoveringAccessory {
 
 impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccessory {
     fn get_comelit_id(&self) -> &str {
-        &self.data.data.id
+        &self.data.id
     }
 
     async fn update(&mut self, window_covering_data: &WindowCoveringDeviceData) -> Result<()> {
-        if let Some(status) = window_covering_data.open_status.as_ref() {
+        if let Some(status) = window_covering_data.power_status.as_ref() {
             let new_state = WindowCoveringState::from(window_covering_data);
             let mut state = self.state.lock().unwrap();
-            *state = new_state;
+            state.moving = new_state.moving;
+            state.opening = new_state.opening;
             info!(
                 "Updated window covering {} position to {:?}",
-                self.data.data.id, status
+                self.data.id, status
             );
         }
         Ok(())

@@ -129,12 +129,8 @@ impl ComelitThermostatAccessory {
         client: ComelitClient,
         server: &IpServer,
     ) -> Result<Self> {
-        let name = data
-            .data
-            .description
-            .clone()
-            .unwrap_or(data.data.id.clone());
-        let comelit_id = data.data.id.clone();
+        let name = data.description.clone().unwrap_or(data.id.clone());
+        let comelit_id = data.id.clone();
         let mut accessory = ComelitThermostat::new(id, name.as_str()).await?;
         let state = ThermostatState::from(data);
         let arc_state = Arc::new(Mutex::new(ThermostatState::from(data)));
@@ -365,7 +361,7 @@ impl ComelitThermostatAccessory {
 
         server.add_accessory(accessory).await?;
         Ok(Self {
-            id: data.data.id.clone(),
+            id: data.id.clone(),
             state: arc_state,
         })
     }

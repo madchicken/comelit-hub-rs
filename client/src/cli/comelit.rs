@@ -9,15 +9,20 @@ use comelit_hub_rs::{
 };
 use crossterm::event::Event::Key;
 use crossterm::{event, terminal};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-#[derive(Subcommand, Debug, Default)]
+#[derive(Subcommand, Debug, Default, Clone)]
 enum Commands {
     Scan,
     #[default]
     Listen,
+    Info {
+        #[arg(long)]
+        id: String,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -48,8 +53,8 @@ impl StatusUpdate for Updater {
         if let Ok(mut guard) = self.index.lock() {
             let device = guard.get_mut(&device.id()).unwrap();
             if let HomeDeviceData::Light(light) = device {
-                light.data.status = light.data.status.clone();
-                light.data.power_status = light.data.power_status.clone();
+                light.status = light.status.clone();
+                light.power_status = light.power_status.clone();
             }
         }
         terminal::enable_raw_mode().unwrap();
@@ -141,8 +146,8 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         for (i, l) in lights.iter().enumerate() {
                             println!(
                                 "{i} - Light {}, status: {:?}",
-                                l.data.description.clone().unwrap_or_default(),
-                                l.data.status
+                                l.description.clone().unwrap_or_default(),
+                                l.status
                             );
                         }
                     }
@@ -172,18 +177,18 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         let number = c.to_digit(10);
                         if let Some(number) = number {
                             if let Some(light) = lights.get(number as usize) {
-                                if let Some(device) = updater.get_device(&light.data.id)
+                                if let Some(device) = updater.get_device(&light.id)
                                     && let HomeDeviceData::Light(light_data) = device
                                 {
-                                    let on = light_data.data.status.clone().unwrap_or_default()
+                                    let on = light_data.status.clone().unwrap_or_default()
                                         == DeviceStatus::On;
                                     println!(
                                         "Turning {} {}",
-                                        light_data.data.description.unwrap_or_default(),
+                                        light_data.description.unwrap_or_default(),
                                         if on { "on" } else { "off" }
                                     );
                                     client
-                                        .toggle_device_status(light_data.data.id.as_str(), !on)
+                                        .toggle_device_status(light_data.id.as_str(), !on)
                                         .await?;
                                 }
                             }
@@ -200,11 +205,34 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
     Ok(())
 }
 
+async fn get_device_info(params: Params, id: &str) -> Result<(), ComelitClientError> {
+    let (mqtt_user, mqtt_password) = get_secrets();
+    let options = ComelitOptions::builder()
+        .user(params.user)
+        .password(params.password)
+        .mqtt_user(mqtt_user)
+        .mqtt_password(mqtt_password)
+        .port(params.port)
+        .host(params.host)
+        .build()
+        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+    let updater = Arc::new(Updater::default());
+    let client = ComelitClient::new(options, Some(updater.clone())).await?;
+    if let Err(e) = client.login(State::Disconnected).await {
+        println!("Login failed: {}", e);
+        return Err(e);
+    } else {
+        println!("Login successful");
+    }
+    println!("Device info: {:#?}", client.info::<Value>(id, 1).await?);
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), ComelitClientError> {
     let params = Params::parse();
 
-    match &params.command {
+    match &params.command.clone() {
         Commands::Scan => {
             if let Some(host) = params.host {
                 let hub = Scanner::scan_address(host.as_str(), Some(Duration::from_secs(5)))
@@ -225,6 +253,9 @@ async fn main() -> Result<(), ComelitClientError> {
             }
         }
         Commands::Listen => listen(params).await?,
+        Commands::Info { id } => {
+            get_device_info(params, id).await?;
+        }
     }
 
     Ok(())
