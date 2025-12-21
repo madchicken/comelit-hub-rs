@@ -13,12 +13,15 @@ use async_trait::async_trait;
 use dashmap::DashMap;
 use derive_builder::Builder;
 use mac_address::get_mac_address;
-use rumqttc::{AsyncClient, Event, EventLoop, MqttOptions, Packet, QoS};
+use rumqttc::{
+    AsyncClient, ConnectionError, Event, EventLoop, MqttOptions, Packet, QoS, StateError,
+};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::RwLock;
+use tokio::task::JoinHandle;
 use tokio::time::{interval, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
@@ -170,7 +173,7 @@ impl ComelitClient {
             mqttoptions.set_credentials(options.mqtt_user, options.mqtt_password);
             mqttoptions.set_max_packet_size(128 * 1024, 128 * 1024);
 
-            let (client, event_loop) = AsyncClient::new(mqttoptions.clone(), 10);
+            let (client, event_loop) = AsyncClient::new(mqttoptions.clone(), 100);
             info!("Connected to MQTT broker at {:?}", mqttoptions);
             let request_manager = Arc::new(RequestManager::new());
             let manager_clone = Arc::clone(&request_manager);
@@ -186,13 +189,15 @@ impl ComelitClient {
             }
             info!("Subscribed to topic: {}", read_topic);
             // Start the event loop in a separate thread
+            request_manager.start();
             let read_topic_clone = read_topic.clone();
             let session = Arc::new(RwLock::new(None));
 
             let client = Arc::new(client);
             let req_id = Arc::new(AtomicU32::new(1));
-            Self::start_event_loop(event_loop, manager_clone, read_topic_clone, observer);
-            Self::start_ping(
+            let _event_loop_task =
+                Self::start_event_loop(event_loop, manager_clone, read_topic_clone, observer);
+            let _ping_task = Self::start_ping(
                 client.clone(),
                 session.clone(),
                 req_id.clone(),
@@ -225,6 +230,7 @@ impl ComelitClient {
     }
 
     pub async fn disconnect(&self) -> Result<(), ComelitClientError> {
+        self.inner.request_manager.stop();
         self.inner
             .client
             .unsubscribe(&self.inner.read_topic)
@@ -247,7 +253,7 @@ impl ComelitClient {
         req_id: Arc<AtomicU32>,
         topic: &str,
         manager: Arc<RequestManager>,
-    ) {
+    ) -> JoinHandle<()> {
         let topic = topic.to_string();
         tokio::spawn(async move {
             info!("Starting ping task");
@@ -304,8 +310,12 @@ impl ComelitClient {
                     }
                 }
                 interval.tick().await;
+                if !manager.is_running() {
+                    info!("Stopping ping thread, request manager is not running");
+                    break;
+                }
             }
-        });
+        })
     }
 
     fn start_event_loop(
@@ -313,11 +323,16 @@ impl ComelitClient {
         request_manager: Arc<RequestManager>,
         response_topic: String,
         observer: Option<Arc<dyn StatusUpdate + Sync + Send>>,
-    ) {
+    ) -> JoinHandle<Result<(), ComelitClientError>> {
         tokio::spawn(async move {
             info!("Starting event loop");
 
             loop {
+                // Check if the event loop is running
+                if !request_manager.is_running() {
+                    break Ok(());
+                }
+
                 // Poll the event loop for incoming messages
                 debug!("Polling event loop");
                 match event_loop.poll().await {
@@ -382,11 +397,29 @@ impl ComelitClient {
                     }
                     Err(e) => {
                         error!("Connection error: {:?}", e);
+                        match e {
+                            ConnectionError::MqttState(StateError::ConnectionAborted) => {
+                                error!("Connection aborted");
+                                request_manager.remove_pending_requests();
+                                break Err(ComelitClientError::Connection(
+                                    "Connection aborted".into(),
+                                ));
+                            }
+                            ConnectionError::ConnectionRefused(connect_return_code) => {
+                                error!("Connection refused: code {}", connect_return_code as u8);
+                                request_manager.remove_pending_requests();
+                                break Err(ComelitClientError::Connection(format!(
+                                    "Connection refused: code {}",
+                                    connect_return_code as u8
+                                )));
+                            }
+                            _ => {}
+                        }
                         sleep(Duration::from_millis(10)).await;
                     }
                 }
             }
-        });
+        })
     }
 
     /// Send a request and wait for the response

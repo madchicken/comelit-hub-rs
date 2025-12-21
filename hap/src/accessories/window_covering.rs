@@ -7,6 +7,7 @@ use hap::{
     server::{IpServer, Server},
 };
 use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{info, warn};
@@ -109,21 +110,44 @@ impl ComelitWindowCoveringAccessory {
         accessory: &mut WindowCoveringAccessory,
         state: Arc<Mutex<WindowCoveringState>>,
     ) {
-        let id = id.to_string();
+        let id_ = id.to_string();
+        let state_ = state.clone();
         accessory
             .window_covering
             .position_state
             .on_read(Some(move || {
-                info!("Window covering POSITION STATE read {}", id);
-                let state = state.lock().unwrap();
+                info!("Window covering POSITION STATE read {}", id_);
+                let state = state_.lock().unwrap();
                 let is_moving = state.moving;
                 let opening = state.opening;
                 match (is_moving, opening) {
-                    (true, true) => Ok(Some(1)),
-                    (true, false) => Ok(Some(0)),
-                    (false, true) => Ok(Some(2)),
-                    (false, false) => Ok(Some(2)),
+                    (true, true) => Ok(Some(PositionState::MovingUp as u8)),
+                    (true, false) => Ok(Some(PositionState::MovingDown as u8)),
+                    (false, true) => Ok(Some(PositionState::Stopped as u8)),
+                    (false, false) => Ok(Some(PositionState::Stopped as u8)),
                 }
+            }));
+
+        let id_ = id.to_string();
+        let state_ = state.clone();
+        accessory
+            .window_covering
+            .current_position
+            .on_read(Some(move || {
+                info!("Window covering POSITION read {}", id_);
+                let state = state_.lock().unwrap();
+                Ok(Some(state.position))
+            }));
+
+        let id_ = id.to_string();
+        let state_ = state.clone();
+        accessory
+            .window_covering
+            .target_position
+            .on_read(Some(move || {
+                info!("Window covering TARGET POSITION read {}", id_);
+                let state = state_.lock().unwrap();
+                Ok(Some(state.target_position))
             }));
     }
 
@@ -152,7 +176,7 @@ impl ComelitWindowCoveringAccessory {
                 let client = client.clone();
                 let id = id.to_string();
                 async move {
-                    let WindowCoveringState {position, moving, .. } = {
+                    let WindowCoveringState { position, moving, position_state, .. } = {
                         let state = state.lock().unwrap();
                         (*state).clone()
                     };
@@ -162,7 +186,6 @@ impl ComelitWindowCoveringAccessory {
                         return Ok(());
                     }
 
-                    info!("Current position for the window covering {id} set to {position}, {new_pos}");
                     let id = id.clone();
                     // if the new position is greater the blind is opening
                     let opening = position > new_pos;
@@ -177,7 +200,7 @@ impl ComelitWindowCoveringAccessory {
                     // Check if we are already moving
                     if moving {
                         info!("Previous position change for window covering {} is still in progress, stopping it", id);
-                        client.toggle_device_status(&id, true).await?; // stop the device
+                        client.toggle_device_status(&id, position_state == PositionState::MovingDown as u8).await?; // stop the device
                         let mut state = state.lock().unwrap();
                         state.moving = false;
                         state.position_state = PositionState::Stopped as u8;
@@ -195,12 +218,13 @@ impl ComelitWindowCoveringAccessory {
                             state.target_position = new_pos;
                         }
                         // start moving
-                        client.toggle_device_status(&id1, false).await?;
+                        info!("Start moving window covering {id1} to position {new_pos}");
+                        client.toggle_device_status(&id1, !opening).await?;
                         // sleep for the required time
                         tokio::time::sleep(delta).await;
                         info!("Window covering {id1} reached the requested position {new_pos}");
                         // stop moving
-                        client.toggle_device_status(&id1, true).await?;
+                        client.toggle_device_status(&id1, opening).await?;
                         {
                             let mut state = state1.lock().unwrap();
                             state.position = new_pos;
@@ -213,23 +237,24 @@ impl ComelitWindowCoveringAccessory {
                     };
 
                     // spawn a task that waits for either the moving to finish or a cancellation
-                    let id2 = id.clone();
                     let state2 = state.clone();
+                    let done = Arc::new(AtomicBool::new(false));
+                    let done_ = done.clone();
                     let cancel_task = async move {
                         loop {
                             {
                                 let state = state2.lock().unwrap();
-                                if !state.moving {
+                                if !state.moving || done_.load(Ordering::Relaxed) {
                                     break;
                                 }
                             }
                             tokio::time::sleep(Duration::from_millis(500)).await;
                         }
-                        info!("Position change for window covering {} was cancelled", id2);
                     };
                     tokio::select! {
                         _ = moving_task => {
                             info!("Window covering {} position change completed", id);
+                            done.store(true, Ordering::Relaxed);
                         }
                         _ = cancel_task => {
                             warn!("Window covering {} was cancelled, stopping it", id);

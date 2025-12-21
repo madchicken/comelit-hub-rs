@@ -1,5 +1,6 @@
 use crate::protocol::messages::MqttResponseMessage;
 use dashmap::DashMap;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 use tokio::sync::oneshot;
 use tokio::sync::oneshot::Sender;
@@ -13,6 +14,7 @@ pub(crate) struct TimedRequest {
 pub(crate) struct RequestManager {
     pending: DashMap<u32, TimedRequest>,
     timeout: u64,
+    running: AtomicBool,
 }
 
 impl Default for RequestManager {
@@ -26,7 +28,20 @@ impl RequestManager {
         Self {
             pending: DashMap::new(),
             timeout: 10,
+            running: AtomicBool::new(false),
         }
+    }
+
+    pub fn start(&self) {
+        self.running.store(true, Ordering::SeqCst);
+    }
+
+    pub fn stop(&self) {
+        self.running.store(false, Ordering::SeqCst);
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running.load(Ordering::SeqCst)
     }
 
     pub fn add_request(&self, id: u32) -> oneshot::Receiver<MqttResponseMessage> {
@@ -42,7 +57,8 @@ impl RequestManager {
     }
 
     pub fn remove_pending_requests(&self) {
-        let to_remove: Vec<u32> = self.pending
+        let to_remove: Vec<u32> = self
+            .pending
             .iter()
             .filter(|i| i.value().ts.elapsed().as_secs() > self.timeout)
             .map(|i| *i.key())

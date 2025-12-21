@@ -14,8 +14,8 @@ derive_builder = "0.20.2"
 futures = "0.3.27"
 futures-util = "0.3.31"
 comelit_hub_rs = { path = "../client" }
-hap = { git = "https://github.com/madchicken/hap-rs" , branch = "patch" }
-#hap = { path = "../hap-rs" }
+#hap = { git = "https://github.com/madchicken/hap-rs" , branch = "patch" }
+hap = { path = "../../hap-rs" }
 mac_address = "1.1.8"
 qr2term = "0.3.3"
 rand = "0.9.2"
