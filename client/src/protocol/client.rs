@@ -247,6 +247,209 @@ impl ComelitClient {
         Ok(())
     }
 
+    pub async fn login(&self, state: State) -> Result<(), ComelitClientError> {
+        let mut state = state.clone();
+        loop {
+            // Get a read lock
+            match state {
+                State::Disconnected => {
+                    info!("Announcing the to HUB");
+                    let response = self
+                        .send_request(make_announce_message(make_id(&self.inner.req_id).await, 0))
+                        .await
+                        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+                    if response.req_result.unwrap_or_default() != 0 {
+                        break Err(ComelitClientError::Login(format!(
+                            "Announce failed: {}",
+                            response.req_result.unwrap_or_default()
+                        )));
+                    }
+                    let out = response.out_data.first().unwrap();
+                    let agent_data =
+                        serde_json::from_value::<AgentDeviceData>(out.clone()).unwrap();
+                    info!("Announce HUB description: {}", agent_data.description);
+                    state = State::Announced(agent_data.agent_id);
+                }
+                State::Announced(agent_id) => {
+                    info!("Logging into the HUB");
+                    let response = self
+                        .send_request(make_login_message(
+                            make_id(&self.inner.req_id).await,
+                            self.inner.user.as_str(),
+                            self.inner.password.as_str(),
+                            agent_id,
+                        ))
+                        .await
+                        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+                    if response.req_result.unwrap_or_default() != 0 {
+                        break Err(ComelitClientError::Login(format!(
+                            "Login failed: {}",
+                            response.message.unwrap_or_default()
+                        )));
+                    }
+                    state = State::Logged(agent_id, response.session_token.unwrap());
+                }
+                State::Logged(agent_id, session_token) => {
+                    info!("Logged in");
+                    self.inner.session.write().await.replace(Session {
+                        session_token: session_token.clone(),
+                        agent_id,
+                    });
+                    break Ok(());
+                }
+            }
+        }
+    }
+
+    pub async fn info<T>(
+        &self,
+        device_id: &str,
+        detail_level: u8,
+    ) -> Result<Vec<T>, ComelitClientError>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let session = self.get_session().await?;
+        let resp = self
+            .send_request(make_status_message(
+                make_id(&self.inner.req_id).await,
+                session.0,
+                session.1.as_str(),
+                device_id,
+                detail_level,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+        Ok(resp
+            .out_data
+            .iter()
+            .map(|out| {
+                debug!("Device info: {}", out);
+                serde_json::from_value::<T>(out.clone()).unwrap()
+            })
+            .collect::<Vec<T>>())
+    }
+
+    pub async fn subscribe(&self, device_id: &str) -> Result<(), ComelitClientError> {
+        let session = self.get_session().await?;
+        let _resp = self
+            .send_request(make_subscribe_message(
+                make_id(&self.inner.req_id).await,
+                session.0,
+                session.1.as_str(),
+                device_id,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn fetch_index(&self) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+        let session = self.get_session().await?;
+        let level = 1;
+        let resp = self
+            .send_request(make_status_message(
+                make_id(&self.inner.req_id).await,
+                session.0,
+                session.1.as_str(),
+                ROOT_ID,
+                level,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+        let index = DashMap::new();
+        for v in resp.out_data.iter() {
+            debug!(
+                "Parsing device data: {}",
+                serde_json::to_string_pretty(v).unwrap()
+            );
+            let devices = device_data_to_home_device(v.clone(), level);
+            for device in devices {
+                index.insert(device.id().clone(), device);
+            }
+        }
+        Ok(index)
+    }
+
+    pub async fn send_action(
+        &self,
+        device_id: &str,
+        action_type: ActionType,
+        value: i32,
+    ) -> Result<(), ComelitClientError> {
+        let session = self.get_session().await?;
+        let _resp = self
+            .send_request(make_action_message(
+                make_id(&self.inner.req_id).await,
+                session.0,
+                session.1.as_str(),
+                device_id,
+                action_type,
+                value,
+            ))
+            .await
+            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+        Ok(())
+    }
+
+    pub async fn toggle_device_status(&self, id: &str, on: bool) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::Set, if on { 1 } else { 0 })
+            .await
+    }
+
+    pub async fn toggle_blind_position(
+        &self,
+        id: &str,
+        position: u8,
+    ) -> Result<(), ComelitClientError> {
+        self.send_action(
+            id,
+            ActionType::SetBlindPosition,
+            if position > 0 { 1 } else { 0 },
+        )
+        .await
+    }
+
+    pub async fn set_thermostat_temperature(
+        &self,
+        id: &str,
+        temperature: i32,
+    ) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::ClimaSetPoint, temperature)
+            .await
+    }
+
+    pub async fn set_thermostat_mode(
+        &self,
+        id: &str,
+        mode: ClimaMode,
+    ) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::SwitchClimaMode, mode.into())
+            .await
+    }
+
+    pub async fn set_thermostat_season(
+        &self,
+        id: &str,
+        mode: ThermoSeason,
+    ) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::SwitchSeason, mode.into())
+            .await
+    }
+
+    pub async fn toggle_thermostat_status(
+        &self,
+        id: &str,
+        mode: ClimaOnOff,
+    ) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::Set, mode.into()).await
+    }
+
+    pub async fn set_humidity(&self, id: &str, humidity: i32) -> Result<(), ComelitClientError> {
+        self.send_action(id, ActionType::UmiSetpoint, humidity)
+            .await
+    }
+
     fn start_ping(
         client: Arc<AsyncClient>,
         session: Arc<RwLock<Option<Session>>>,
@@ -496,103 +699,6 @@ impl ComelitClient {
             .map_err(|e| ComelitClientError::Publish(format!("Failed to publish request: {e}")))
     }
 
-    pub async fn login(&self, state: State) -> Result<(), ComelitClientError> {
-        let mut state = state.clone();
-        loop {
-            // Get a read lock
-            match state {
-                State::Disconnected => {
-                    info!("Announcing the to HUB");
-                    let response = self
-                        .send_request(make_announce_message(make_id(&self.inner.req_id).await, 0))
-                        .await
-                        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-                    if response.req_result.unwrap_or_default() != 0 {
-                        break Err(ComelitClientError::Login(format!(
-                            "Announce failed: {}",
-                            response.req_result.unwrap_or_default()
-                        )));
-                    }
-                    let out = response.out_data.first().unwrap();
-                    let agent_data =
-                        serde_json::from_value::<AgentDeviceData>(out.clone()).unwrap();
-                    info!("Announce HUB description: {}", agent_data.description);
-                    state = State::Announced(agent_data.agent_id);
-                }
-                State::Announced(agent_id) => {
-                    info!("Logging into the HUB");
-                    let response = self
-                        .send_request(make_login_message(
-                            make_id(&self.inner.req_id).await,
-                            self.inner.user.as_str(),
-                            self.inner.password.as_str(),
-                            agent_id,
-                        ))
-                        .await
-                        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-                    if response.req_result.unwrap_or_default() != 0 {
-                        break Err(ComelitClientError::Login(format!(
-                            "Login failed: {}",
-                            response.message.unwrap_or_default()
-                        )));
-                    }
-                    state = State::Logged(agent_id, response.session_token.unwrap());
-                }
-                State::Logged(agent_id, session_token) => {
-                    info!("Logged in");
-                    self.inner.session.write().await.replace(Session {
-                        session_token: session_token.clone(),
-                        agent_id,
-                    });
-                    break Ok(());
-                }
-            }
-        }
-    }
-
-    pub async fn info<T>(
-        &self,
-        device_id: &str,
-        detail_level: u8,
-    ) -> Result<Vec<T>, ComelitClientError>
-    where
-        T: serde::de::DeserializeOwned,
-    {
-        let session = self.get_session().await?;
-        let resp = self
-            .send_request(make_status_message(
-                make_id(&self.inner.req_id).await,
-                session.0,
-                session.1.as_str(),
-                device_id,
-                detail_level,
-            ))
-            .await
-            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-        Ok(resp
-            .out_data
-            .iter()
-            .map(|out| {
-                debug!("Device info: {}", out);
-                serde_json::from_value::<T>(out.clone()).unwrap()
-            })
-            .collect::<Vec<T>>())
-    }
-
-    pub async fn subscribe(&self, device_id: &str) -> Result<(), ComelitClientError> {
-        let session = self.get_session().await?;
-        let _resp = self
-            .send_request(make_subscribe_message(
-                make_id(&self.inner.req_id).await,
-                session.0,
-                session.1.as_str(),
-                device_id,
-            ))
-            .await
-            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-        Ok(())
-    }
-
     async fn get_session(&self) -> Result<(u32, String), ComelitClientError> {
         if let Some(session) = self.inner.session.read().await.as_ref() {
             Ok((session.agent_id, session.session_token.clone()))
@@ -600,120 +706,4 @@ impl ComelitClient {
             Err(ComelitClientError::InvalidState)
         }
     }
-
-    pub async fn fetch_index(&self) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
-        let session = self.get_session().await?;
-        let level = 1;
-        let resp = self
-            .send_request(make_status_message(
-                make_id(&self.inner.req_id).await,
-                session.0,
-                session.1.as_str(),
-                ROOT_ID,
-                level,
-            ))
-            .await
-            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-        let index = DashMap::new();
-        for v in resp.out_data.iter() {
-            debug!(
-                "Parsing device data: {}",
-                serde_json::to_string_pretty(v).unwrap()
-            );
-            let devices = device_data_to_home_device(v.clone(), level);
-            for device in devices {
-                index.insert(device.id().clone(), device);
-            }
-        }
-        Ok(index)
-    }
-
-    pub async fn send_action(
-        &self,
-        device_id: &str,
-        action_type: ActionType,
-        value: i32,
-    ) -> Result<(), ComelitClientError> {
-        let session = self.get_session().await?;
-        let _resp = self
-            .send_request(make_action_message(
-                make_id(&self.inner.req_id).await,
-                session.0,
-                session.1.as_str(),
-                device_id,
-                action_type,
-                value,
-            ))
-            .await
-            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-        Ok(())
-    }
-
-    pub async fn toggle_device_status(&self, id: &str, on: bool) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::Set, if on { 1 } else { 0 })
-            .await
-    }
-
-    pub async fn toggle_blind_position(
-        &self,
-        id: &str,
-        position: u8,
-    ) -> Result<(), ComelitClientError> {
-        self.send_action(
-            id,
-            ActionType::SetBlindPosition,
-            if position > 0 { 1 } else { 0 },
-        )
-        .await
-    }
-
-    pub async fn set_thermostat_temperature(
-        &self,
-        id: &str,
-        temperature: i32,
-    ) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::ClimaSetPoint, temperature)
-            .await
-    }
-
-    pub async fn set_thermostat_mode(
-        &self,
-        id: &str,
-        mode: ClimaMode,
-    ) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::SwitchClimaMode, mode.into())
-            .await
-    }
-
-    pub async fn set_thermostat_season(
-        &self,
-        id: &str,
-        mode: ThermoSeason,
-    ) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::SwitchSeason, mode.into())
-            .await
-    }
-
-    pub async fn toggle_thermostat_status(
-        &self,
-        id: &str,
-        mode: ClimaOnOff,
-    ) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::Set, mode.into()).await
-    }
-
-    pub async fn set_humidity(&self, id: &str, humidity: i32) -> Result<(), ComelitClientError> {
-        self.send_action(id, ActionType::UmiSetpoint, humidity)
-            .await
-    }
-
-    //
-    // async switchHumidifierMode(id: string, mode: ClimaMode): Promise<boolean> {
-    // return this.sendAction(id, ACTION_TYPE.SWITCH_UMI_MODE, parseInt(mode));
-    // }
-    //
-    // async toggleHumidifierStatus(id: string, mode: ClimaOnOff): Promise<boolean> {
-    // return this.sendAction(id, ACTION_TYPE.SET, mode);
-    // }
-    //
 }
