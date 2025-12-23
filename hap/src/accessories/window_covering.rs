@@ -22,7 +22,7 @@ pub struct WindowCoveringConfig {
 }
 
 pub(crate) struct ComelitWindowCoveringAccessory {
-    data: WindowCoveringDeviceData,
+    id: String,
     state: Arc<Mutex<WindowCoveringState>>,
 }
 
@@ -64,12 +64,12 @@ impl ComelitWindowCoveringAccessory {
 
         info!(
             "Setting initial window covering position to {}",
-            state.position
+            state.current_position
         );
         wc_accessory
             .window_covering
             .current_position
-            .set_value(Value::from(state.position))
+            .set_value(Value::from(state.current_position))
             .await
             .context("Cannot set current position")?;
         wc_accessory
@@ -87,7 +87,7 @@ impl ComelitWindowCoveringAccessory {
 
         let state = Arc::new(Mutex::new(state));
 
-        Self::setup_read_position_state(device_id.as_str(), &mut wc_accessory, state.clone()).await;
+        Self::setup_read_characteristics(device_id.as_str(), &mut wc_accessory, state.clone());
         Self::setup_update_target_position(
             device_id.as_str(),
             client.clone(),
@@ -95,17 +95,16 @@ impl ComelitWindowCoveringAccessory {
             config.closing_time,
             config.opening_time,
             state.clone(),
-        )
-        .await;
+        );
 
         server.add_accessory(wc_accessory).await?;
         Ok(Self {
-            data: window_covering_data.clone(),
+            id: device_id.to_string(),
             state,
         })
     }
 
-    async fn setup_read_position_state(
+    fn setup_read_characteristics(
         id: &str,
         accessory: &mut WindowCoveringAccessory,
         state: Arc<Mutex<WindowCoveringState>>,
@@ -136,7 +135,7 @@ impl ComelitWindowCoveringAccessory {
             .on_read(Some(move || {
                 info!("Window covering POSITION read {}", id_);
                 let state = state_.lock().unwrap();
-                Ok(Some(state.position))
+                Ok(Some(state.current_position))
             }));
 
         let id_ = id.to_string();
@@ -151,7 +150,7 @@ impl ComelitWindowCoveringAccessory {
             }));
     }
 
-    async fn setup_update_target_position(
+    fn setup_update_target_position(
         id: &str,
         client: ComelitClient,
         accessory: &mut WindowCoveringAccessory,
@@ -176,9 +175,9 @@ impl ComelitWindowCoveringAccessory {
                 let client = client.clone();
                 let id = id.to_string();
                 async move {
-                    let WindowCoveringState { position, moving, position_state, .. } = {
+                    let WindowCoveringState { current_position: position, moving, position_state, .. } = {
                         let state = state.lock().unwrap();
-                        (*state).clone()
+                        *state
                     };
 
                     if position == new_pos {
@@ -227,7 +226,7 @@ impl ComelitWindowCoveringAccessory {
                         client.toggle_device_status(&id1, opening).await?;
                         {
                             let mut state = state1.lock().unwrap();
-                            state.position = new_pos;
+                            state.current_position = new_pos;
                             state.moving = false;
                             state.opening = false;
                             state.position_state = PositionState::Stopped as u8;
@@ -268,7 +267,7 @@ impl ComelitWindowCoveringAccessory {
 
 impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccessory {
     fn get_comelit_id(&self) -> &str {
-        &self.data.id
+        &self.id
     }
 
     async fn update(&mut self, window_covering_data: &WindowCoveringDeviceData) -> Result<()> {
@@ -279,7 +278,7 @@ impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccesso
             state.opening = new_state.opening;
             info!(
                 "Updated window covering {} position to {:?}",
-                self.data.id, status
+                self.id, status
             );
         }
         Ok(())

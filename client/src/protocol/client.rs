@@ -344,9 +344,11 @@ impl ComelitClient {
         Ok(())
     }
 
-    pub async fn fetch_index(&self) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+    pub async fn fetch_index(
+        &self,
+        level: u8,
+    ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
         let session = self.get_session().await?;
-        let level = 1;
         let resp = self
             .send_request(make_status_message(
                 make_id(&self.inner.req_id).await,
@@ -369,6 +371,24 @@ impl ComelitClient {
             }
         }
         Ok(index)
+    }
+
+    pub async fn fetch_external_devices(
+        &self,
+    ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+        let index = self.fetch_index(2).await?;
+        Ok(index
+            .iter()
+            .filter_map(|v| match v.value() {
+                HomeDeviceData::Bell(bell) => {
+                    Some((v.id().clone(), HomeDeviceData::Bell(bell.clone())))
+                }
+                HomeDeviceData::Door(door) => {
+                    Some((v.id().clone(), HomeDeviceData::Door(door.clone())))
+                }
+                _ => None,
+            })
+            .collect())
     }
 
     pub async fn send_action(
@@ -454,10 +474,10 @@ impl ComelitClient {
         client: Arc<AsyncClient>,
         session: Arc<RwLock<Option<Session>>>,
         req_id: Arc<AtomicU32>,
-        topic: &str,
+        write_topic: &str,
         manager: Arc<RequestManager>,
     ) -> JoinHandle<()> {
-        let topic = topic.to_string();
+        let topic = write_topic.to_string();
         tokio::spawn(async move {
             info!("Starting ping task");
             let state = session.clone();

@@ -22,6 +22,8 @@ enum Commands {
     Info {
         #[arg(long)]
         id: String,
+        #[arg(long, short, default_value = "1")]
+        level: Option<u8>,
     },
 }
 
@@ -91,7 +93,7 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
         println!("Login successful");
     }
 
-    let index = client.fetch_index().await?;
+    let index = client.fetch_index(1).await?;
     if let Ok(mut guard) = updater.index.lock() {
         for (id, device) in index.clone().into_iter() {
             guard.insert(id, device.clone());
@@ -125,7 +127,7 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
                         break println!("Exiting...");
                     }
                     event::KeyCode::Char('f') => {
-                        if let Ok(data) = client.fetch_index().await {
+                        if let Ok(data) = client.fetch_index(1).await {
                             println!("Index {:?}", data);
                         } else {
                             println!("Fetch index error");
@@ -205,7 +207,11 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
     Ok(())
 }
 
-async fn get_device_info(params: Params, id: &str) -> Result<(), ComelitClientError> {
+async fn get_device_info(
+    params: Params,
+    id: &str,
+    level: &Option<u8>,
+) -> Result<(), ComelitClientError> {
     let (mqtt_user, mqtt_password) = get_secrets();
     let options = ComelitOptions::builder()
         .user(params.user)
@@ -224,7 +230,11 @@ async fn get_device_info(params: Params, id: &str) -> Result<(), ComelitClientEr
     } else {
         println!("Login successful");
     }
-    println!("Device info: {:#?}", client.info::<Value>(id, 1).await?);
+    let info = client.info::<Value>(id, level.unwrap_or(1)).await?;
+    println!(
+        "Device info: {}",
+        serde_json::to_string_pretty(&info).unwrap()
+    );
     Ok(())
 }
 
@@ -253,8 +263,8 @@ async fn main() -> Result<(), ComelitClientError> {
             }
         }
         Commands::Listen => listen(params).await?,
-        Commands::Info { id } => {
-            get_device_info(params, id).await?;
+        Commands::Info { id, level } => {
+            get_device_info(params, id, level).await?;
         }
     }
 

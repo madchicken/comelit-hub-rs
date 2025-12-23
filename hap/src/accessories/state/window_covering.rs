@@ -3,13 +3,13 @@ use comelit_hub_rs::{WindowCoveringDeviceData, WindowCoveringStatus};
 const FULLY_OPENED: u8 = 100;
 // const FULLY_CLOSED: u8 = 100;
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct WindowCoveringState {
-    pub position: u8,
-    pub target_position: u8,
-    pub position_state: u8,
-    pub moving: bool,
-    pub opening: bool,
+    pub(crate) current_position: u8,
+    pub(crate) target_position: u8,
+    pub(crate) position_state: u8,
+    pub(crate) moving: bool,
+    pub(crate) opening: bool,
 }
 
 impl From<&WindowCoveringDeviceData> for WindowCoveringState {
@@ -31,7 +31,7 @@ impl From<&WindowCoveringDeviceData> for WindowCoveringState {
             PositionState::Stopped as u8
         };
         WindowCoveringState {
-            position,
+            current_position: position,
             target_position: position,
             position_state,
             moving,

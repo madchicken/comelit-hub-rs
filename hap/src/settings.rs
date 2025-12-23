@@ -6,6 +6,8 @@ pub struct Settings {
     pub mount_lights: Option<bool>,
     pub mount_window_covering: Option<bool>,
     pub mount_thermo: Option<bool>,
+    pub mount_doors: Option<bool>,
+    pub mount_bells: Option<bool>,
 }
 
 impl Default for Settings {
@@ -15,6 +17,8 @@ impl Default for Settings {
             mount_lights: Some(true),
             mount_window_covering: Some(true),
             mount_thermo: Some(true),
+            mount_doors: Some(true),
+            mount_bells: Some(true),
         }
     }
 }

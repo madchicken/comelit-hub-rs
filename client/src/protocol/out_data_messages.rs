@@ -557,22 +557,9 @@ pub struct DeviceData {
     pub id: String,
     pub r#type: ObjectType,
     pub sub_type: ObjectSubtype,
-    sched_status: Option<DeviceStatus>,
-    sched_lock: Option<String>,
-    #[serde(default, rename = "schedZoneStatus")]
-    sched_zone_status: Vec<u32>,
     pub status: Option<DeviceStatus>,
     #[serde(rename = "descrizione")]
     pub description: Option<String>,
-    #[serde(rename = "placeOrder")]
-    place_order: Option<String>,
-    icon_id: Option<String>,
-    #[serde(rename = "isProtected")]
-    is_protected: Option<DeviceStatus>,
-    #[serde(rename = "objectId")]
-    object_id: Option<String>,
-    #[serde(rename = "placeId")]
-    place_id: Option<String>,
     #[serde(rename = "powerst")]
     pub power_status: Option<PowerStatus>,
     #[serde(default)]
@@ -682,8 +669,12 @@ pub struct AgentDeviceData {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DoorDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -721,7 +712,7 @@ impl HomeDeviceData {
             HomeDeviceData::Thermostat(o) => o.id.clone(),
             HomeDeviceData::Supplier(o) => o.data.id.clone(),
             HomeDeviceData::Bell(o) => o.data.id.clone(),
-            HomeDeviceData::Door(o) => o.data.id.clone(),
+            HomeDeviceData::Door(o) => o.id.clone(),
         }
     }
 
@@ -739,7 +730,7 @@ impl HomeDeviceData {
             HomeDeviceData::Thermostat(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Supplier(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
             HomeDeviceData::Bell(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
-            HomeDeviceData::Door(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Door(o) => o.description.clone().unwrap_or(o.id.clone()),
         }
     }
 }

@@ -1,15 +1,15 @@
 use crate::accessories::{
-    ComelitAccessory, ComelitLightbulbAccessory, ComelitThermostatAccessory,
-    ComelitWindowCoveringAccessory, WindowCoveringConfig,
+    ComelitAccessory, ComelitDoorAccessory, ComelitLightbulbAccessory, ComelitThermostatAccessory,
+    ComelitWindowCoveringAccessory, DoorConfig, WindowCoveringConfig,
 };
 use crate::settings::Settings;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use comelit_hub_rs::ROOT_ID;
 use comelit_hub_rs::{
     ComelitClient, ComelitClientError, ComelitOptions, HomeDeviceData, State, StatusUpdate,
     get_secrets,
 };
+use comelit_hub_rs::{DoorDeviceData, ROOT_ID};
 use dashmap::DashMap;
 use hap::{
     Config, MacAddress, Pin,
@@ -27,6 +27,7 @@ struct Updater {
     lights: DashMap<String, ComelitLightbulbAccessory>,
     window_coverings: DashMap<String, ComelitWindowCoveringAccessory>,
     thermostats: DashMap<String, ComelitThermostatAccessory>,
+    doors: DashMap<String, ComelitDoorAccessory>,
 }
 
 #[async_trait]
@@ -81,7 +82,18 @@ impl StatusUpdate for Updater {
                 info!("Received update for supplier {supplier_device_data:?}");
             }
             HomeDeviceData::Bell(_bell_device_data) => {}
-            HomeDeviceData::Door(_door_device_data) => {}
+            HomeDeviceData::Door(door_device_data) => {
+                if let Some(mut accessory) = self.doors.get_mut(&device.id()) {
+                    accessory
+                        .update(door_device_data)
+                        .await
+                        .unwrap_or_else(|e| {
+                            error!("Failed to update door accessory {}: {}", device.id(), e);
+                        });
+                } else {
+                    warn!("Received update for unknown door device");
+                }
+            }
         }
     }
 }
@@ -212,7 +224,13 @@ pub async fn start_bridge(
 
     info!("Fetching device index...");
     let index = client
-        .fetch_index()
+        .fetch_index(1)
+        .await
+        .context("Failed to fetch index")?;
+
+    info!("Fetching device index...");
+    let external_index = client
+        .fetch_external_devices()
         .await
         .context("Failed to fetch index")?;
 
@@ -220,12 +238,15 @@ pub async fn start_bridge(
         mount_lights,
         mount_window_covering,
         mount_thermo,
+        mount_doors,
         ..
     } = settings;
 
     let mut lights = vec![];
     let mut thermostats = vec![];
     let mut window_coverings = vec![];
+    let mut doors = vec![];
+    let mut bells = vec![];
     for (_, v) in index.clone().into_iter() {
         match v {
             HomeDeviceData::Light(light) => {
@@ -240,9 +261,22 @@ pub async fn start_bridge(
             _ => {}
         }
     }
+    for (_, v) in external_index.clone().into_iter() {
+        match v {
+            HomeDeviceData::Door(door) => {
+                doors.push(door.clone());
+            }
+            HomeDeviceData::Bell(bell) => {
+                bells.push(bell.clone());
+            }
+            _ => {}
+        }
+    }
+
     lights.sort_by_key(|l| l.id.clone());
     window_coverings.sort_by_key(|wc| wc.id.clone());
     thermostats.sort_by_key(|t| t.id.clone());
+    doors.sort_by_key(|t| t.id.clone());
 
     let mut i: u64 = 1;
     for light in lights {
@@ -302,6 +336,35 @@ pub async fn start_bridge(
                 Ok(accessory) => {
                     updater
                         .thermostats
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add thermostat device: {}", err),
+            };
+        }
+    }
+
+    for door in doors {
+        if mount_doors.unwrap_or_default() {
+            i += 1;
+            info!("Adding door device: {} with id {i}", door.id);
+            let data = client.info::<DoorDeviceData>(&door.id, 1).await?;
+            match ComelitDoorAccessory::new(
+                i,
+                data.first().unwrap(),
+                client.clone(),
+                &server,
+                DoorConfig {
+                    opening_closing_time: Duration::from_secs(60),
+                    opened_time: Duration::from_secs(60),
+                    mount_as: crate::accessories::DoorType::Door,
+                },
+            )
+            .await
+            {
+                Ok(accessory) => {
+                    client.subscribe(&door.id).await?;
+                    updater
+                        .doors
                         .insert(accessory.get_comelit_id().to_string(), accessory);
                 }
                 Err(err) => error!("Failed to add thermostat device: {}", err),
