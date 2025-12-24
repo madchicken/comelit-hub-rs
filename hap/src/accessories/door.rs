@@ -164,14 +164,7 @@ impl ComelitDoorAccessory {
                 let client = client.clone();
                 let id = id.to_string();
                 async move {
-                    let DoorState {
-                        current_position, ..
-                    } = {
-                        let state = state.lock().unwrap();
-                        *state
-                    };
-
-                    if current_position == new_pos {
+                    if new_pos != FULLY_OPENED {
                         info!(
                             "Target position equals current position for door {}, no action taken",
                             id
@@ -185,34 +178,37 @@ impl ComelitDoorAccessory {
                         state.target_position = FULLY_OPENED;
                         state.position_state = DoorPositionState::Opening as u8;
                     };
-                    // sleep for the required time
-                    tokio::time::sleep(opening_closing_time).await;
-                    {
-                        let mut state = state.lock().unwrap();
-                        state.target_position = FULLY_OPENED;
-                        state.current_position = FULLY_OPENED;
-                        state.position_state = DoorPositionState::Stopped as u8;
-                    };
-                    info!("Door {id} reached the requested position {new_pos}");
 
-                    // sleep for the required time
-                    tokio::time::sleep(opened_time).await;
-                    {
-                        let mut state = state.lock().unwrap();
-                        state.target_position = FULLY_CLOSED;
-                        state.position_state = DoorPositionState::Closing as u8;
-                    };
+                    tokio::spawn(async move {
+                        // sleep for the required time
+                        tokio::time::sleep(opening_closing_time).await;
+                        {
+                            let mut state = state.lock().unwrap();
+                            state.target_position = FULLY_OPENED;
+                            state.current_position = FULLY_OPENED;
+                            state.position_state = DoorPositionState::Stopped as u8;
+                        };
+                        info!("Door {id} reached the requested position {new_pos}");
 
-                    info!("Door {id} started closing");
-                    // sleep for the required time
-                    tokio::time::sleep(opening_closing_time).await;
-                    {
-                        let mut state = state.lock().unwrap();
-                        state.target_position = FULLY_CLOSED;
-                        state.current_position = FULLY_CLOSED;
-                        state.position_state = DoorPositionState::Stopped as u8;
-                    };
-                    info!("Door {id} is closed");
+                        // sleep for the required time
+                        tokio::time::sleep(opened_time).await;
+                        {
+                            let mut state = state.lock().unwrap();
+                            state.target_position = FULLY_CLOSED;
+                            state.position_state = DoorPositionState::Closing as u8;
+                        };
+
+                        info!("Door {id} started closing");
+                        // sleep for the required time
+                        tokio::time::sleep(opening_closing_time).await;
+                        {
+                            let mut state = state.lock().unwrap();
+                            state.target_position = FULLY_CLOSED;
+                            state.current_position = FULLY_CLOSED;
+                            state.position_state = DoorPositionState::Stopped as u8;
+                        };
+                        info!("Door {id} is closed");
+                    });
 
                     Ok(())
                 }
