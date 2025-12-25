@@ -56,6 +56,7 @@ impl ComelitDoorAccessory {
             id,
             AccessoryInformation {
                 name,
+                manufacturer: "Comelit".to_string(),
                 ..Default::default()
             },
         )?;

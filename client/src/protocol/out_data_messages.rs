@@ -678,9 +678,13 @@ pub struct DoorDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct BellDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
+pub struct DoorbellDeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -695,7 +699,7 @@ pub enum HomeDeviceData {
     Irrigation(IrrigationDeviceData),
     Thermostat(ThermostatDeviceData),
     Supplier(SupplierDeviceData),
-    Bell(BellDeviceData),
+    Doorbell(DoorbellDeviceData),
     Door(DoorDeviceData),
 }
 
@@ -711,7 +715,7 @@ impl HomeDeviceData {
             HomeDeviceData::Irrigation(o) => o.data.id.clone(),
             HomeDeviceData::Thermostat(o) => o.id.clone(),
             HomeDeviceData::Supplier(o) => o.data.id.clone(),
-            HomeDeviceData::Bell(o) => o.data.id.clone(),
+            HomeDeviceData::Doorbell(o) => o.id.clone(),
             HomeDeviceData::Door(o) => o.id.clone(),
         }
     }
@@ -729,7 +733,7 @@ impl HomeDeviceData {
             }
             HomeDeviceData::Thermostat(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Supplier(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
-            HomeDeviceData::Bell(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Doorbell(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Door(o) => o.description.clone().unwrap_or(o.id.clone()),
         }
     }
@@ -791,8 +795,8 @@ pub fn device_data_to_home_device(value: Value, level: u8) -> Vec<HomeDeviceData
             })
             .collect::<Vec<HomeDeviceData>>(),
         ObjectType::VipElement => {
-            let other_data = serde_json::from_value::<BellDeviceData>(value.clone()).unwrap();
-            vec![HomeDeviceData::Bell(other_data)]
+            let other_data = serde_json::from_value::<DoorbellDeviceData>(value.clone()).unwrap();
+            vec![HomeDeviceData::Doorbell(other_data)]
         }
         ObjectType::Door => {
             let door_data = serde_json::from_value::<DoorDeviceData>(value.clone()).unwrap();

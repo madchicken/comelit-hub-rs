@@ -380,8 +380,8 @@ impl ComelitClient {
         Ok(index
             .iter()
             .filter_map(|v| match v.value() {
-                HomeDeviceData::Bell(bell) => {
-                    Some((v.id().clone(), HomeDeviceData::Bell(bell.clone())))
+                HomeDeviceData::Doorbell(bell) => {
+                    Some((v.id().clone(), HomeDeviceData::Doorbell(bell.clone())))
                 }
                 HomeDeviceData::Door(door) => {
                     Some((v.id().clone(), HomeDeviceData::Door(door.clone())))

@@ -1,13 +1,13 @@
 use crate::accessories::{
-    ComelitAccessory, ComelitDoorAccessory, ComelitLightbulbAccessory, ComelitThermostatAccessory,
-    ComelitWindowCoveringAccessory, DoorConfig, WindowCoveringConfig,
+    ComelitAccessory, ComelitDoorAccessory, ComelitDoorbellAccessory, ComelitLightbulbAccessory,
+    ComelitThermostatAccessory, ComelitWindowCoveringAccessory, DoorConfig, WindowCoveringConfig,
 };
 use crate::settings::Settings;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use comelit_hub_rs::{
-    ComelitClient, ComelitClientError, ComelitOptions, HomeDeviceData, State, StatusUpdate,
-    get_secrets,
+    ComelitClient, ComelitClientError, ComelitOptions, DoorbellDeviceData, HomeDeviceData, State,
+    StatusUpdate, get_secrets,
 };
 use comelit_hub_rs::{DoorDeviceData, ROOT_ID};
 use dashmap::DashMap;
@@ -28,6 +28,7 @@ struct Updater {
     window_coverings: DashMap<String, ComelitWindowCoveringAccessory>,
     thermostats: DashMap<String, ComelitThermostatAccessory>,
     doors: DashMap<String, ComelitDoorAccessory>,
+    doorbells: DashMap<String, ComelitDoorbellAccessory>,
 }
 
 #[async_trait]
@@ -81,7 +82,7 @@ impl StatusUpdate for Updater {
             HomeDeviceData::Supplier(supplier_device_data) => {
                 info!("Received update for supplier {supplier_device_data:?}");
             }
-            HomeDeviceData::Bell(_bell_device_data) => {}
+            HomeDeviceData::Doorbell(_bell_device_data) => {}
             HomeDeviceData::Door(door_device_data) => {
                 if let Some(mut accessory) = self.doors.get_mut(&device.id()) {
                     accessory
@@ -234,14 +235,6 @@ pub async fn start_bridge(
         .await
         .context("Failed to fetch index")?;
 
-    let Settings {
-        mount_lights,
-        mount_window_covering,
-        mount_thermo,
-        mount_doors,
-        ..
-    } = settings;
-
     let mut lights = vec![];
     let mut thermostats = vec![];
     let mut window_coverings = vec![];
@@ -266,7 +259,7 @@ pub async fn start_bridge(
             HomeDeviceData::Door(door) => {
                 doors.push(door.clone());
             }
-            HomeDeviceData::Bell(bell) => {
+            HomeDeviceData::Doorbell(bell) => {
                 bells.push(bell.clone());
             }
             _ => {}
@@ -280,7 +273,7 @@ pub async fn start_bridge(
 
     let mut i: u64 = 1;
     for light in lights {
-        if mount_lights.unwrap_or_default() {
+        if settings.mount_lights.unwrap_or_default() {
             i += 1;
             info!("Adding light device: {} with id {i}", light.id);
             match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
@@ -296,7 +289,7 @@ pub async fn start_bridge(
     }
 
     for window_covering in window_coverings {
-        if mount_window_covering.unwrap_or_default() {
+        if settings.mount_window_covering.unwrap_or_default() {
             i += 1;
             info!(
                 "Adding window covering device: {} with id {i}",
@@ -329,7 +322,7 @@ pub async fn start_bridge(
     }
 
     for thermostat in thermostats {
-        if mount_thermo.unwrap_or_default() {
+        if settings.mount_thermo.unwrap_or_default() {
             i += 1;
             info!("Adding thermostat device: {} with id {i}", thermostat.id);
             match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server).await {
@@ -344,7 +337,7 @@ pub async fn start_bridge(
     }
 
     for door in doors {
-        if mount_doors.unwrap_or_default() {
+        if settings.mount_doors.unwrap_or_default() {
             i += 1;
             info!("Adding door device: {} with id {i}", door.id);
             let data = client.info::<DoorDeviceData>(&door.id, 1).await?;
@@ -368,6 +361,21 @@ pub async fn start_bridge(
                         .insert(accessory.get_comelit_id().to_string(), accessory);
                 }
                 Err(err) => error!("Failed to add thermostat device: {}", err),
+            };
+        }
+    }
+
+    for bell in bells {
+        if settings.mount_doorbells.unwrap_or_default() {
+            let data = client.info::<DoorbellDeviceData>(&bell.id, 1).await?;
+            match ComelitDoorbellAccessory::new(i, data.first().unwrap(), &server).await {
+                Ok(accessory) => {
+                    client.subscribe(&bell.id).await?;
+                    updater
+                        .doorbells
+                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                }
+                Err(err) => error!("Failed to add doorbell device: {}", err),
             };
         }
     }
