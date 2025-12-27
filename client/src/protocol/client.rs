@@ -1,3 +1,4 @@
+use crate::MacAddress;
 use crate::protocol::credentials::get_secrets;
 use crate::protocol::manager::RequestManager;
 use crate::protocol::messages::{
@@ -65,7 +66,7 @@ struct Inner {
     read_topic: String,
     req_id: Arc<AtomicU32>,
     session: Arc<RwLock<Option<Session>>>,
-    mac_address: String,
+    mac_address: MacAddress,
     user: String,
     password: String,
 }
@@ -157,7 +158,7 @@ impl ComelitClient {
             let (write_topic, read_topic) = if let Some(_mac_address) =
                 get_mac_address().map_err(|e| ComelitClientError::Generic(e.to_string()))?
             {
-                let addr = hub.mac_address();
+                let addr = hub.mac_address().to_string().replace(":", "");
                 let rx_topic = format!("{CLIENT_ID_PREFIX}/{addr}/rx/{client_id}");
                 let tx_topic = format!("{CLIENT_ID_PREFIX}/{addr}/tx/{client_id}");
                 (rx_topic, tx_topic)
@@ -213,7 +214,7 @@ impl ComelitClient {
                     read_topic,
                     req_id,
                     session,
-                    mac_address: hub.mac_address().to_string(),
+                    mac_address: hub.mac_address().clone(),
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
                 }),
@@ -225,7 +226,7 @@ impl ComelitClient {
         }
     }
 
-    pub fn mac_address(&self) -> &str {
+    pub fn mac_address(&self) -> &MacAddress {
         &self.inner.mac_address
     }
 

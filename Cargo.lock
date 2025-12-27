@@ -1023,9 +1023,11 @@ dependencies = [
 [[package]]
 name = "hap"
 version = "0.1.0-pre.15"
+source = "git+https://github.com/madchicken/hap-rs?branch=patch#16c850b07c8b7ce4aca72e7e1fa43411ee4c342d"
 dependencies = [
  "aead",
  "async-trait",
+ "base64",
  "byteorder",
  "bytes",
  "chacha20poly1305",

@@ -1,6 +1,6 @@
-use std::io;
 use std::net::UdpSocket;
 use std::time::Duration;
+use std::{fmt::Display, io};
 use tracing::{debug, error, info};
 
 const MAX_DATAGRAM_SIZE: usize = 65_507;
@@ -11,14 +11,29 @@ fn to_string(bytes: &[u8]) -> String {
         .to_string()
 }
 
-fn to_hex_string(bytes: &[u8]) -> String {
-    bytes.iter().map(|b| format!("{b:02X}")).collect()
+#[derive(Debug, Clone)]
+pub struct MacAddress([u8; 6]);
+
+impl MacAddress {
+    pub fn as_bytes(&self) -> &[u8; 6] {
+        &self.0
+    }
+}
+
+impl Display for MacAddress {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{:02X}:{:02X}:{:02X}:{:02X}:{:02X}:{:02X}",
+            self.0[0], self.0[1], self.0[2], self.0[3], self.0[4], self.0[5]
+        )
+    }
 }
 
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct ComelitHUB {
-    mac_address: String,
+    mac_address: MacAddress,
     hw_id: String,
     app_id: String,
     app_version: String,
@@ -30,7 +45,7 @@ pub struct ComelitHUB {
 
 #[allow(dead_code)]
 impl ComelitHUB {
-    pub fn mac_address(&self) -> &str {
+    pub fn mac_address(&self) -> &MacAddress {
         &self.mac_address
     }
 
@@ -85,7 +100,7 @@ impl ComelitHUB {
 impl From<&[u8]> for ComelitHUB {
     fn from(msg: &[u8]) -> Self {
         ComelitHUB {
-            mac_address: to_hex_string(&msg[14..20]),
+            mac_address: MacAddress(msg[14..20].try_into().unwrap()),
             hw_id: to_string(&msg[20..24]),
             app_id: to_string(&msg[24..28]),
             app_version: to_string(&msg[32..112]),
@@ -153,7 +168,6 @@ impl Scanner {
     ) -> Result<Option<ComelitHUB>, io::Error> {
         let socket = UdpSocket::bind("0.0.0.0:34254")?;
 
-        // Set the read timeout to 1 second
         socket.set_read_timeout(timeout)?;
         let buf: Vec<u8> = vec![b'I', b'N', b'F', b'O', 0, 0, 0, 0, 0, 0, 0, 0];
         socket.send_to(&buf, format!("{address}:{SCAN_PORT}"))?;

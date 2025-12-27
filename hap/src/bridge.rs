@@ -99,57 +99,6 @@ impl StatusUpdate for Updater {
     }
 }
 
-fn generate_setup_uri(pincode: &str, category: u64, setup_id: &str) -> String {
-    // Rimuove i '-' e converte in numero
-    let value_low_str = pincode.replace('-', "");
-    let value_low = value_low_str.parse::<u64>().unwrap_or(0);
-
-    let version = 0;
-    let reserved = 0;
-    let flag = 2;
-    let mut payload: u64 = 0;
-
-    payload |= version & 0x7;
-    payload <<= 4;
-    payload |= reserved & 0xf;
-
-    payload <<= 8;
-    payload |= category & 0xff;
-
-    payload <<= 4;
-    payload |= flag & 0xf;
-    payload <<= 27u64;
-    payload |= value_low & 0x07ff_ffff;
-
-    // Converte in base36 e uppercase
-    let mut encoded_payload = base36_encode(payload).to_uppercase();
-
-    // Padding a 9 caratteri
-    while encoded_payload.len() < 9 {
-        encoded_payload.insert(0, '0');
-    }
-
-    format!("X-HM://{encoded_payload}{setup_id}")
-}
-
-fn base36_encode(mut num: u64) -> String {
-    let mut chars = Vec::new();
-    while num > 0 {
-        let rem = (num % 36) as u8;
-        chars.push(if rem < 10 {
-            (b'0' + rem) as char
-        } else {
-            (b'A' + rem - 10) as char
-        });
-        num /= 36;
-    }
-    chars.reverse();
-    if chars.is_empty() {
-        chars.push('0');
-    }
-    chars.into_iter().collect()
-}
-
 pub async fn start_bridge(
     user: &str,
     password: &str,
@@ -179,10 +128,10 @@ pub async fn start_bridge(
     let bridge = BridgeAccessory::new(
         1,
         AccessoryInformation {
-            name: "Comelit HUB".into(),
+            name: "ComelitHUB-HK".into(),
             serial_number: "20003150".into(),
             manufacturer: "Comelit".into(),
-            model: "COMELIT HUB".into(),
+            model: "20003150".into(),
             ..Default::default()
         },
     )?;
@@ -197,8 +146,10 @@ pub async fn start_bridge(
             config
         }
         Err(_) => {
-            info!("Creating new config");
-            let device_id: [u8; 6] = client.mac_address().as_bytes()[..6].try_into()?;
+            info!(
+                "Creating new config, device id is {:?}",
+                client.mac_address()
+            );
             let pin = loop {
                 if let Ok(pin) = Pin::new(settings.pairing_code) {
                     break pin;
@@ -208,9 +159,10 @@ pub async fn start_bridge(
             };
             let config = Config {
                 pin,
-                name: "Comelit Bridge (Rust)".into(),
-                device_id: MacAddress::from(device_id),
+                name: "ComelitHUB-HK".into(),
+                device_id: MacAddress::from(*client.mac_address().as_bytes()),
                 category: AccessoryCategory::Bridge,
+                setup_id: settings.setup_id.clone(),
                 ..Default::default()
             };
             storage.save_config(&config).await?;
@@ -219,6 +171,7 @@ pub async fn start_bridge(
     };
 
     let pin = config.pin.clone().to_string();
+    let url = config.setup_url();
     let server = IpServer::new(config, storage).await?;
     info!("IP server created, adding bridge accessory...");
     server.add_accessory(bridge).await?;
@@ -382,10 +335,8 @@ pub async fn start_bridge(
 
     info!("Starting HAP bridge server...");
     let handle = server.run_handle();
-    let setup_id = "XYZK"; // some random string
-    info!("PIN for the Bridge accessory is: {pin}, setup ID: {setup_id}");
-    let uri = generate_setup_uri(pin.to_string().as_str(), 2, setup_id);
-    qr2term::print_qr(uri)?;
+    info!("PIN for the Bridge accessory is: {pin}, URL: {url}");
+    qr2term::print_qr(url)?;
     info!("Subscribing to root device updates...");
     client.subscribe(ROOT_ID).await?;
 
@@ -430,27 +381,5 @@ pub async fn start_bridge(
                 .context("Failed to disconnect client")?;
             Ok(())
         },
-    }
-}
-
-#[cfg(test)]
-mod tests {
-
-    #[test]
-    fn test_generate_setup_uri() {
-        let pincode = "841-31-633";
-        let category = 8; // Switch
-        let setup_id = "";
-        let uri = super::generate_setup_uri(pincode, category, setup_id);
-        assert_eq!(uri, "X-HM://0081YCYEP");
-    }
-
-    #[test]
-    fn test_generate_setup_uri_with_setup_id() {
-        let pincode = "841-31-633";
-        let category = 8; // Switch
-        let setup_id = "3QYT";
-        let uri = super::generate_setup_uri(pincode, category, setup_id);
-        assert_eq!(uri, "X-HM://0081YCYEP3QYT");
     }
 }
