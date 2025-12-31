@@ -25,6 +25,12 @@ enum Commands {
         #[arg(long, short, default_value = "1")]
         level: Option<u8>,
     },
+    Lights {
+        #[arg(long)]
+        id: String,
+        #[arg(long, default_value = "1")]
+        toggle: u8,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -212,18 +218,7 @@ async fn get_device_info(
     id: &str,
     level: &Option<u8>,
 ) -> Result<(), ComelitClientError> {
-    let (mqtt_user, mqtt_password) = get_secrets();
-    let options = ComelitOptions::builder()
-        .user(params.user)
-        .password(params.password)
-        .mqtt_user(mqtt_user)
-        .mqtt_password(mqtt_password)
-        .port(params.port)
-        .host(params.host)
-        .build()
-        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-    let updater = Arc::new(Updater::default());
-    let client = ComelitClient::new(options, Some(updater.clone())).await?;
+    let client = create_client(params).await?;
     if let Err(e) = client.login(State::Disconnected).await {
         println!("Login failed: {}", e);
         return Err(e);
@@ -266,7 +261,32 @@ async fn main() -> Result<(), ComelitClientError> {
         Commands::Info { id, level } => {
             get_device_info(params, id, level).await?;
         }
+        Commands::Lights { id, toggle } => {
+            let client = create_client(params).await?;
+            if let Err(e) = client.login(State::Disconnected).await {
+                println!("Login failed: {}", e);
+                return Err(e);
+            } else {
+                println!("Login successful");
+            }
+            client.toggle_device_status(id, *toggle > 0).await?;
+            println!("Device {} status toggled", id);
+        }
     }
 
     Ok(())
+}
+
+async fn create_client(params: Params) -> Result<ComelitClient, ComelitClientError> {
+    let (mqtt_user, mqtt_password) = get_secrets();
+    let options = ComelitOptions::builder()
+        .user(params.user)
+        .password(params.password)
+        .mqtt_user(mqtt_user)
+        .mqtt_password(mqtt_password)
+        .port(params.port)
+        .host(params.host)
+        .build()
+        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+    Ok(ComelitClient::new(options, None).await?)
 }
