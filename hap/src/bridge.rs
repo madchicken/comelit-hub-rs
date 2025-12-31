@@ -125,10 +125,11 @@ pub async fn start_bridge(
         info!("Login successful");
     }
 
+    let bridge_name = "ComelitHUB-HK";
     let bridge = BridgeAccessory::new(
         1,
         AccessoryInformation {
-            name: "ComelitHUB-HK".into(),
+            name: bridge_name.into(),
             serial_number: "20003150".into(),
             manufacturer: "Comelit".into(),
             model: "20003150".into(),
@@ -159,10 +160,9 @@ pub async fn start_bridge(
             };
             let config = Config {
                 pin,
-                name: "ComelitHUB-HK".into(),
+                name: bridge_name.into(),
                 device_id: MacAddress::from(*client.mac_address().as_bytes()),
                 category: AccessoryCategory::Bridge,
-                setup_id: settings.setup_id.clone(),
                 ..Default::default()
             };
             storage.save_config(&config).await?;
@@ -320,6 +320,7 @@ pub async fn start_bridge(
 
     for bell in bells {
         if settings.mount_doorbells.unwrap_or_default() {
+            i += 1;
             let data = client.info::<DoorbellDeviceData>(&bell.id, 1).await?;
             match ComelitDoorbellAccessory::new(i, data.first().unwrap(), &server).await {
                 Ok(accessory) => {

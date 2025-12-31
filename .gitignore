@@ -3,3 +3,4 @@ data/
 *.ron
 .idea
 *.iml
+.DS_Store
