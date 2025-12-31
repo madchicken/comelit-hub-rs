@@ -288,5 +288,5 @@ async fn create_client(params: Params) -> Result<ComelitClient, ComelitClientErr
         .host(params.host)
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
-    Ok(ComelitClient::new(options, None).await?)
+    ComelitClient::new(options, None).await
 }
