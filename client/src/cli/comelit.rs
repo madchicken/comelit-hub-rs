@@ -117,7 +117,7 @@ async fn listen(params: Params) -> Result<(), ComelitClientError> {
 
     println!("Press 'q' to quit");
     println!("Press 'f' to fetch the house index");
-    println!("Press 'l' to list ligths");
+    println!("Press 'l' to list lights");
     println!("Press 'c' to send action to VIP#OD#00000100.2");
     println!("Press 'd' to send action to VIP#APARTMENT");
 
