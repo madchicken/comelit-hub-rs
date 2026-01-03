@@ -228,7 +228,7 @@ impl ComelitAccessory<DoorDeviceData> for ComelitDoorAccessory {
         let mut state = self.state.lock().unwrap();
         *state = new_state;
         info!(
-            "Updated window covering {} position to {:?}",
+            "Updated door {} state to {:?}",
             self.id, *state
         );
         Ok(())
