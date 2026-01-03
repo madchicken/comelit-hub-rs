@@ -14,7 +14,7 @@ pub(crate) struct WindowCoveringState {
 
 impl From<&WindowCoveringDeviceData> for WindowCoveringState {
     fn from(data: &WindowCoveringDeviceData) -> Self {
-        // We don't know the position of the blind at the begiing, we only know if it is open
+        // We don't know the position of the blind at the beginning, we only know if it is open
         // or closed and if it is moving
         let position = FULLY_OPENED;
         let moving = data.power_status.clone().unwrap_or_default() != WindowCoveringStatus::Stopped;
