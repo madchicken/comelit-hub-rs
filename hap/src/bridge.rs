@@ -254,8 +254,8 @@ pub async fn start_bridge(
                 client.clone(),
                 &server,
                 WindowCoveringConfig {
-                    closing_time: Duration::from_secs(30),
-                    opening_time: Duration::from_secs(30),
+                    closing_time: Duration::from_secs(settings.window_covering.closing_time),
+                    opening_time: Duration::from_secs(settings.window_covering.opening_time),
                 },
             )
             .await
@@ -300,8 +300,8 @@ pub async fn start_bridge(
                 client.clone(),
                 &server,
                 DoorConfig {
-                    opening_closing_time: Duration::from_secs(60),
-                    opened_time: Duration::from_secs(60),
+                    opening_closing_time: Duration::from_secs(settings.door.opening_closing_time),
+                    opened_time: Duration::from_secs(settings.door.opened_time),
                     mount_as: crate::accessories::DoorType::Door,
                 },
             )
@@ -336,8 +336,11 @@ pub async fn start_bridge(
 
     info!("Starting HAP bridge server...");
     let handle = server.run_handle();
-    info!("PIN for the Bridge accessory is: {pin}, URL: {url}");
+
+    // Use println! to ensure they are always printed
     qr2term::print_qr(url)?;
+    println!("Pair your Comelit Bridge using pin code {pin}");
+
     info!("Subscribing to root device updates...");
     client.subscribe(ROOT_ID).await?;
 
