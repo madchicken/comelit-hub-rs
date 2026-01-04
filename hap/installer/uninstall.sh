@@ -2,7 +2,7 @@
 set -e
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Esegui come root"
+  echo "Execute as root"
   exit 1
 fi
 
@@ -19,4 +19,4 @@ case "$(uname -s)" in
 esac
 
 rm -f /usr/local/bin/comelit-hub-hap
-echo "✔ Disinstallato"
+echo "✔ Uninstalled"

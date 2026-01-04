@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
 set -e
 
-BIN_NAME="comelit-hub-hap"
+BIN_NAME="target/release/comelit-hub-hap"
 BIN_SRC="./$BIN_NAME"
 BIN_DST="/usr/local/bin/$BIN_NAME"
 
 if [[ $EUID -ne 0 ]]; then
-  echo "Esegui come root (sudo)"
+  echo "Run this script as root (sudo)"
   exit 1
 fi
 
 if [[ ! -f "$BIN_SRC" ]]; then
-  echo "Binario $BIN_NAME non trovato"
+  echo "Binary $BIN_NAME not found"
   exit 1
 fi
 
 install_binary() {
-  echo "→ Installazione binario"
+  echo "→ Installing binary"
   cp "$BIN_SRC" "$BIN_DST"
   chmod 755 "$BIN_DST"
 }
@@ -26,13 +26,13 @@ install_macos() {
   create_macos_user
   install_binary
 
-  cp installer/macos/com.comelit.hub.hap.plist \
+  cp hap/installer/macos/com.comelit.hub.hap.plist \
      /Library/LaunchDaemons/
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
 
-  echo "✔ Servizio macOS installato"
+  echo "✔ Services macOS installed"
 }
 
 install_linux() {
@@ -42,23 +42,23 @@ install_linux() {
 
   mkdir -p /var/lib/comelit-hub-hap
 
-  cp installer/linux/comelit-hub-hap.service \
+  cp hap/installer/linux/comelit-hub-hap.service \
      /etc/systemd/system/
 
   systemctl daemon-reload
   systemctl enable comelit-hub-hap
   systemctl restart comelit-hub-hap
 
-  echo "✔ Servizio Linux installato"
+  echo "✔ Services Linux installed"
 }
 
 create_macos_user() {
   if id comelit &>/dev/null; then
-    echo "→ Utente comelit già esistente"
+    echo "→ User comelit already exists"
     return
   fi
 
-  echo "→ Creazione utente di sistema comelit"
+  echo "→ Creating system user comelit"
 
   sysadminctl -addUser comelit \
     -system \
@@ -71,11 +71,11 @@ create_macos_user() {
 
 create_linux_user() {
   if id comelit &>/dev/null; then
-    echo "→ Utente comelit già esistente"
+    echo "→ User comelit already exists"
     return
   fi
 
-  echo "→ Creazione utente di sistema comelit"
+  echo "→ Creating system user comelit"
 
   useradd \
     --system \
@@ -91,7 +91,7 @@ case "$(uname -s)" in
   Darwin) install_macos ;;
   Linux) install_linux ;;
   *)
-    echo "Sistema non supportato"
+    echo "Unsupported system"
     exit 1
     ;;
 esac
