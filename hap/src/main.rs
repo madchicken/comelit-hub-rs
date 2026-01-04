@@ -12,14 +12,19 @@ use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 pub struct Params {
-    #[clap(long)]
+    /// User name for the Comelit Bridge (default: "admin")
+    #[clap(long, default_value = "admin")]
     user: String,
-    #[clap(long)]
+    /// Password for the Comelit Bridge (default: "admin")
+    #[clap(long, default_value = "admin")]
     password: String,
+    /// Hostname or IP address of the Comelit Bridge (if not set, it will scan the network to find it)
     #[clap(long)]
     host: Option<String>,
-    #[clap(long)]
+    /// Port number for the Comelit Bridge (default: 1883)
+    #[clap(long, default_value = "1883")]
     port: Option<u16>,
+    /// Settings file path for the Comelit Bridge (if not set, it will use default settings)
     #[clap(long)]
     settings: Option<String>,
 }

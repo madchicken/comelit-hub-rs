@@ -12,4 +12,10 @@ members = [
 
 [lib]
 name = "comelit_hub"
-version = "0.1.0"
+
+[profile.release]
+opt-level = "z"      # o "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
