@@ -1,0 +1,16 @@
+[Unit]
+Description=Comelit HUB HAP
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/comelit-hub-hap
+User=comelit
+Group=comelit
+Restart=always
+RestartSec=5
+Environment=RUST_LOG=comelit_hub_hap=info
+WorkingDirectory=/var/lib/comelit-hub-hap
+
+[Install]
+WantedBy=multi-user.target

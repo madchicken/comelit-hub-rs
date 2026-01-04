@@ -1,11 +1,12 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use tracing::debug;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
-pub(crate) enum ObjectType {
+pub enum ObjectType {
     Other = 1,
-    Blind = 2,
+    WindowCovering = 2,
     Light = 3,
     Irrigation = 4,
     Thermostat = 9,
@@ -22,7 +23,7 @@ impl From<i32> for ObjectType {
     fn from(value: i32) -> Self {
         match value {
             1 => Self::Other,
-            2 => Self::Blind,
+            2 => Self::WindowCovering,
             3 => Self::Light,
             4 => Self::Irrigation,
             9 => Self::Thermostat,
@@ -41,7 +42,7 @@ impl From<ObjectType> for i32 {
     fn from(value: ObjectType) -> Self {
         match value {
             ObjectType::Other => 1,
-            ObjectType::Blind => 2,
+            ObjectType::WindowCovering => 2,
             ObjectType::Light => 3,
             ObjectType::Irrigation => 4,
             ObjectType::Thermostat => 9,
@@ -58,7 +59,7 @@ impl From<ObjectType> for i32 {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(into = "i32", from = "i32")]
-pub(crate) enum ObjectSubtype {
+pub enum ObjectSubtype {
     Unknown = -1,
     Generic = 0,
     DigitalLight = 1,
@@ -124,31 +125,68 @@ impl From<ObjectSubtype> for i32 {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-#[serde(into = "i32", from = "String")]
-pub(crate) enum DeviceStatus {
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(into = "u8", from = "String")]
+#[repr(u8)]
+pub enum WindowCoveringStatus {
     #[default]
-    On = 0,
-    Off = 1,
-    Running = 2,
+    Stopped = 0,
+    GoingUp = 1,
+    GoingDown = 2,
 }
 
-impl From<i32> for DeviceStatus {
-    fn from(value: i32) -> Self {
+impl From<WindowCoveringStatus> for u8 {
+    fn from(value: WindowCoveringStatus) -> Self {
         match value {
-            0 => Self::On,
-            1 => Self::Off,
-            2 => Self::Running,
-            _ => Self::Off, // Default case
+            WindowCoveringStatus::Stopped => 0,
+            WindowCoveringStatus::GoingUp => 1,
+            WindowCoveringStatus::GoingDown => 2,
         }
     }
+}
+
+impl From<&str> for WindowCoveringStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::Stopped,
+            "1" => Self::GoingUp,
+            "2" => Self::GoingDown,
+            _ => Self::Stopped, // Default case
+        }
+    }
+}
+
+impl From<String> for WindowCoveringStatus {
+    fn from(value: String) -> Self {
+        WindowCoveringStatus::from(value.as_str())
+    }
+}
+
+impl From<WindowCoveringStatus> for &str {
+    fn from(value: WindowCoveringStatus) -> Self {
+        match value {
+            WindowCoveringStatus::Stopped => "0",
+            WindowCoveringStatus::GoingUp => "1",
+            WindowCoveringStatus::GoingDown => "2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(into = "u8", from = "String")]
+#[repr(u8)]
+pub enum DeviceStatus {
+    #[default]
+    Off = 0,
+    On = 1,
+    Running = 2,
 }
 
 impl From<&str> for DeviceStatus {
     fn from(value: &str) -> Self {
         match value {
-            "0" => Self::On,
-            "1" => Self::Off,
+            "0" => Self::Off,
+            "1" => Self::On,
             "2" => Self::Running,
             _ => Self::Off, // Default case
         }
@@ -161,11 +199,11 @@ impl From<String> for DeviceStatus {
     }
 }
 
-impl From<DeviceStatus> for i32 {
+impl From<DeviceStatus> for u8 {
     fn from(value: DeviceStatus) -> Self {
         match value {
-            DeviceStatus::On => 0,
-            DeviceStatus::Off => 1,
+            DeviceStatus::Off => 0,
+            DeviceStatus::On => 1,
             DeviceStatus::Running => 2,
         }
     }
@@ -174,26 +212,127 @@ impl From<DeviceStatus> for i32 {
 impl From<DeviceStatus> for &str {
     fn from(value: DeviceStatus) -> Self {
         match value {
-            DeviceStatus::On => "0",
-            DeviceStatus::Off => "1",
+            DeviceStatus::Off => "0",
+            DeviceStatus::On => "1",
             DeviceStatus::Running => "2",
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(into = "u8", from = "String")]
+#[repr(u8)]
+pub enum PowerStatus {
+    #[default]
+    Stopped = 0,
+    Off = 1,
+    On = 2,
+}
+
+impl From<&str> for PowerStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::Stopped,
+            "1" => Self::Off,
+            "2" => Self::On,
+            _ => Self::Stopped, // Default case
+        }
+    }
+}
+
+impl From<String> for PowerStatus {
+    fn from(value: String) -> Self {
+        PowerStatus::from(value.as_str())
+    }
+}
+
+impl From<PowerStatus> for u8 {
+    fn from(value: PowerStatus) -> Self {
+        match value {
+            PowerStatus::Stopped => 0,
+            PowerStatus::Off => 1,
+            PowerStatus::On => 2,
+        }
+    }
+}
+
+impl From<PowerStatus> for &str {
+    fn from(value: PowerStatus) -> Self {
+        match value {
+            PowerStatus::Stopped => "0",
+            PowerStatus::Off => "1",
+            PowerStatus::On => "2",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(into = "i32", from = "String")]
-enum ThermoSeason {
-    SUMMER = 0,
-    WINTER = 1,
+#[repr(u8)]
+pub enum OpenStatus {
+    Closed = 0,
+    #[default]
+    Open = 1,
+}
+
+impl From<u8> for OpenStatus {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Closed,
+            1 => Self::Open,
+            _ => Self::Open, // Default case
+        }
+    }
+}
+
+impl From<&str> for OpenStatus {
+    fn from(value: &str) -> Self {
+        match value {
+            "0" => Self::Closed,
+            "1" => Self::Open,
+            _ => Self::Open, // Default case
+        }
+    }
+}
+
+impl From<String> for OpenStatus {
+    fn from(value: String) -> Self {
+        OpenStatus::from(value.as_str())
+    }
+}
+
+impl From<OpenStatus> for i32 {
+    fn from(value: OpenStatus) -> Self {
+        match value {
+            OpenStatus::Closed => 0,
+            OpenStatus::Open => 1,
+        }
+    }
+}
+
+impl From<OpenStatus> for &str {
+    fn from(value: OpenStatus) -> Self {
+        match value {
+            OpenStatus::Closed => "0",
+            OpenStatus::Open => "1",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(into = "i32", from = "String")]
+pub enum ThermoSeason {
+    Summer = 0,
+    #[default]
+    Winter = 1,
 }
 
 impl From<i32> for ThermoSeason {
     fn from(value: i32) -> Self {
         match value {
-            0 => Self::SUMMER,
-            1 => Self::WINTER,
-            _ => Self::SUMMER, // Default case
+            0 => Self::Summer,
+            1 => Self::Winter,
+            _ => Self::Summer, // Default case
         }
     }
 }
@@ -201,8 +340,8 @@ impl From<i32> for ThermoSeason {
 impl From<ThermoSeason> for i32 {
     fn from(value: ThermoSeason) -> Self {
         match value {
-            ThermoSeason::SUMMER => 0,
-            ThermoSeason::WINTER => 1,
+            ThermoSeason::Summer => 0,
+            ThermoSeason::Winter => 1,
         }
     }
 }
@@ -210,8 +349,8 @@ impl From<ThermoSeason> for i32 {
 impl From<ThermoSeason> for &str {
     fn from(value: ThermoSeason) -> Self {
         match value {
-            ThermoSeason::SUMMER => "0",
-            ThermoSeason::WINTER => "1",
+            ThermoSeason::Summer => "0",
+            ThermoSeason::Winter => "1",
         }
     }
 }
@@ -219,16 +358,17 @@ impl From<ThermoSeason> for &str {
 impl From<String> for ThermoSeason {
     fn from(value: String) -> Self {
         match value.as_str() {
-            "0" => Self::SUMMER,
-            "1" => Self::WINTER,
-            _ => Self::SUMMER, // Default case
+            "0" => Self::Summer,
+            "1" => Self::Winter,
+            _ => Self::Summer, // Default case
         }
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(into = "i32", from = "String")]
-enum ClimaMode {
+pub enum ClimaMode {
+    #[default]
     None = 0,
     Auto = 1,
     Manual = 2,
@@ -296,9 +436,75 @@ impl From<ClimaMode> for i32 {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(into = "i32", from = "String")]
+pub enum ClimaOnOff {
+    OffThermo = 0,
+    OnThermo = 1,
+    OffHumi = 2,
+    OnHumi = 3,
+    #[default]
+    Off = 4,
+    On = 5,
+}
+
+impl From<String> for ClimaOnOff {
+    fn from(value: String) -> Self {
+        match value.as_str() {
+            "0" => ClimaOnOff::OffThermo,
+            "1" => ClimaOnOff::OnThermo,
+            "2" => ClimaOnOff::OffHumi,
+            "3" => ClimaOnOff::OnHumi,
+            "4" => ClimaOnOff::Off,
+            "5" => ClimaOnOff::On,
+            _ => ClimaOnOff::Off, // Default case
+        }
+    }
+}
+
+impl From<ClimaOnOff> for &str {
+    fn from(value: ClimaOnOff) -> Self {
+        match value {
+            ClimaOnOff::OffThermo => "0",
+            ClimaOnOff::OnThermo => "1",
+            ClimaOnOff::OffHumi => "2",
+            ClimaOnOff::OnHumi => "3",
+            ClimaOnOff::Off => "4",
+            ClimaOnOff::On => "5",
+        }
+    }
+}
+
+impl From<i32> for ClimaOnOff {
+    fn from(value: i32) -> Self {
+        match value {
+            0 => ClimaOnOff::OffThermo,
+            1 => ClimaOnOff::OnThermo,
+            2 => ClimaOnOff::OffHumi,
+            3 => ClimaOnOff::OnHumi,
+            4 => ClimaOnOff::Off,
+            5 => ClimaOnOff::On,
+            _ => ClimaOnOff::Off, // Default case
+        }
+    }
+}
+
+impl From<ClimaOnOff> for i32 {
+    fn from(value: ClimaOnOff) -> Self {
+        match value {
+            ClimaOnOff::OffThermo => 0,
+            ClimaOnOff::OnThermo => 1,
+            ClimaOnOff::OffHumi => 2,
+            ClimaOnOff::OnHumi => 3,
+            ClimaOnOff::Off => 4,
+            ClimaOnOff::On => 5,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(into = "u32", from = "u32")]
-pub(crate) enum ActionType {
+#[serde(into = "i32", from = "i32")]
+pub enum ActionType {
     Set = 0,
     ClimaMode = 1,
     ClimaSetPoint = 2,
@@ -309,8 +515,8 @@ pub(crate) enum ActionType {
     SetBlindPosition = 52,
 }
 
-impl From<u32> for ActionType {
-    fn from(value: u32) -> Self {
+impl From<i32> for ActionType {
+    fn from(value: i32) -> Self {
         match value {
             0 => Self::Set,
             1 => Self::ClimaMode,
@@ -325,7 +531,7 @@ impl From<u32> for ActionType {
     }
 }
 
-impl From<ActionType> for u32 {
+impl From<ActionType> for i32 {
     fn from(value: ActionType) -> Self {
         match value {
             ActionType::Set => 0,
@@ -340,67 +546,69 @@ impl From<ActionType> for u32 {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InnerDeviceData {
+    pub id: String,
+    pub data: Value,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DeviceData {
-    pub(crate) id: String,
-    pub(crate) r#type: ObjectType,
-    pub(crate) sub_type: ObjectSubtype,
-    sched_status: Option<DeviceStatus>,
-    sched_lock: Option<String>,
-    #[serde(default, rename = "schedZoneStatus")]
-    sched_zone_status: Vec<u32>,
-    status: Option<DeviceStatus>,
+pub struct DeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
     #[serde(rename = "descrizione")]
-    description: Option<String>,
-    #[serde(rename = "placeOrder")]
-    place_order: Option<String>,
-    num_modulo: Option<String>,
-    num_uscita: Option<String>,
-    icon_id: Option<String>,
-    #[serde(rename = "isProtected")]
-    is_protected: Option<DeviceStatus>,
-    #[serde(rename = "objectId")]
-    object_id: Option<String>,
-    #[serde(rename = "placeId")]
-    place_id: Option<String>,
+    pub description: Option<String>,
     #[serde(rename = "powerst")]
-    power_status: Option<DeviceStatus>,
+    pub power_status: Option<PowerStatus>,
     #[serde(default)]
     elements: Vec<Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OtherDeviceData {
+pub struct OtherDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     tempo_uscita: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct LightDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
+pub struct LightDeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
+    #[serde(rename = "powerst")]
+    pub power_status: Option<PowerStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BlindDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
-    open_status: Option<DeviceStatus>,
-    position: Option<String>,
-    #[serde(rename = "openTime")]
-    open_time: Option<String>,
-    #[serde(rename = "closeTime")]
-    close_time: Option<String>,
-    #[serde(rename = "preferPosition")]
-    prefer_position: Option<String>,
-    #[serde(rename = "enablePreferPosition")]
-    enable_prefer_position: Option<DeviceStatus>,
+pub struct WindowCoveringDeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
+    #[serde(rename = "powerst")]
+    pub power_status: Option<WindowCoveringStatus>,
+    // pub open_status: Option<OpenStatus>,
+    // pub position: Option<String>,
+    // #[serde(rename = "openTime")]
+    // pub open_time: Option<String>,
+    // #[serde(rename = "closeTime")]
+    // pub close_time: Option<String>,
+    // #[serde(rename = "preferPosition")]
+    // pub prefer_position: Option<String>,
+    // #[serde(rename = "enablePreferPosition")]
+    // pub enable_prefer_position: Option<DeviceStatus>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct OutletDeviceData {
+pub struct OutletDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     instant_power: String,
@@ -408,98 +616,35 @@ pub(crate) struct OutletDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct IrrigationDeviceData {
+pub struct IrrigationDeviceData {
     #[serde(flatten)]
     data: DeviceData,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[allow(non_snake_case)]
-pub(crate) struct ThermostatDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
-    num_ingresso: Option<u32>,
-    num_moduloIE: Option<String>,
-    num_uscitaIE: Option<String>,
-    num_moduloI: Option<String>,
-    num_uscitaI: Option<String>,
-    num_moduloE: Option<String>,
-    num_uscitaE: Option<String>,
-    num_moduloI_ana: Option<String>,
-    num_uscitaI_ana: Option<String>,
-    num_moduloE_ana: Option<String>,
-    num_uscitaE_ana: Option<String>,
-    num_moduloUD: Option<String>,
-    num_uscitaUD: Option<String>,
-    num_moduloU: Option<String>,
-    num_uscitaU: Option<String>,
-    num_moduloD: Option<String>,
-    num_uscitaD: Option<String>,
-    num_moduloU_ana: Option<String>,
-    num_uscitaU_ana: Option<String>,
-    num_moduloD_ana: Option<String>,
-    num_uscitaD_ana: Option<String>,
-    night_mode: Option<String>,
-    soglia_man_inv: Option<String>,
-    soglia_man_est: Option<String>,
-    soglia_man_notte_inv: Option<String>,
-    soglia_man_notte_est: Option<String>,
-    soglia_semiauto: Option<String>,
-    soglia_auto_inv: Option<String>,
-    soglia_auto_est: Option<String>,
-    out_enable_inv: Option<DeviceStatus>,
-    out_enable_est: Option<DeviceStatus>,
-    dir_enable_inv: Option<DeviceStatus>,
-    dir_enable_est: Option<DeviceStatus>,
-    heatAutoFanDisable: Option<DeviceStatus>,
-    coolAutoFanDisable: Option<DeviceStatus>,
-    heatSwingDisable: Option<DeviceStatus>,
-    coolSwingDisable: Option<DeviceStatus>,
-    out_type_inv: Option<String>,
-    out_type_est: Option<String>,
-    temp_base_inv: Option<String>,
-    temp_base_est: Option<String>,
-    out_enable_umi: Option<String>,
-    out_enable_deumi: Option<String>,
-    dir_enable_umi: Option<String>,
-    dir_enable_deumi: Option<String>,
-    humAutoFanDisable: Option<String>,
-    dehumAutoFanDisable: Option<String>,
-    humSwingDisable: Option<String>,
-    dehumSwingDisable: Option<String>,
-    out_type_umi: Option<String>,
-    out_type_deumi: Option<String>,
-    soglia_man_umi: Option<String>,
-    soglia_man_deumi: Option<String>,
-    soglia_man_notte_umi: Option<String>,
-    soglia_man_notte_deumi: Option<String>,
-    night_mode_umi: Option<String>,
-    soglia_semiauto_umi: Option<String>,
-    umi_base_umi: Option<String>,
-    umi_base_deumi: Option<String>,
-    coolLimitMax: Option<String>,
-    coolLimitMin: Option<String>,
-    heatLimitMax: Option<String>,
-    heatLimitMin: Option<String>,
-    viewOnly: Option<String>,
-    temperatura: Option<String>,
-    auto_man: Option<ClimaMode>,
-    est_inv: Option<ThermoSeason>,
-    soglia_attiva: Option<String>,
-    out_value_inv: Option<String>,
-    out_value_est: Option<String>,
-    dir_out_inv: Option<String>,
-    dir_out_est: Option<String>,
-    semiauto_enabled: Option<String>,
-    umidita: Option<String>,
-    auto_man_umi: Option<ClimaMode>,
-    deumi_umi: Option<String>,
-    soglia_attiva_umi: Option<String>,
-    semiauto_umi_enabled: Option<String>,
+pub struct ThermostatDeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
+    #[serde(rename = "temperatura")]
+    pub temperature: Option<String>,
+    pub auto_man: Option<ClimaMode>,
+    #[serde(rename = "est_inv")]
+    pub season: Option<ThermoSeason>,
+    #[serde(rename = "soglia_attiva")]
+    pub active_threshold: Option<String>,
+    #[serde(rename = "umidita")]
+    pub humidity: Option<String>,
+    #[serde(rename = "soglia_attiva_umi")]
+    pub humi_active_threshold: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct SupplierDeviceData {
+pub struct SupplierDeviceData {
     #[serde(flatten)]
     data: DeviceData,
     label_value: Option<String>,
@@ -516,36 +661,45 @@ pub(crate) struct SupplierDeviceData {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct AgentDeviceData {
-    pub(crate) agent_id: u32,
+pub struct AgentDeviceData {
+    pub agent_id: u32,
     #[serde(rename = "descrizione")]
-    pub(crate) description: String,
+    pub description: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct DoorDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
+pub struct DoorDeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) struct BellDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
+pub struct DoorbellDeviceData {
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub(crate) enum HomeDeviceData {
+#[allow(clippy::large_enum_variant)]
+pub enum HomeDeviceData {
     Agent(AgentDeviceData),
     Data(DeviceData),
     Other(OtherDeviceData),
     Light(LightDeviceData),
-    Blind(BlindDeviceData),
+    WindowCovering(WindowCoveringDeviceData),
     Outlet(OutletDeviceData),
     Irrigation(IrrigationDeviceData),
     Thermostat(ThermostatDeviceData),
     Supplier(SupplierDeviceData),
-    Bell(BellDeviceData),
+    Doorbell(DoorbellDeviceData),
     Door(DoorDeviceData),
 }
 
@@ -555,39 +709,60 @@ impl HomeDeviceData {
             HomeDeviceData::Agent(o) => o.agent_id.to_string(),
             HomeDeviceData::Data(o) => o.id.clone(),
             HomeDeviceData::Other(o) => o.data.id.clone(),
-            HomeDeviceData::Light(o) => o.data.id.clone(),
-            HomeDeviceData::Blind(o) => o.data.id.clone(),
+            HomeDeviceData::Light(o) => o.id.clone(),
+            HomeDeviceData::WindowCovering(o) => o.id.clone(),
             HomeDeviceData::Outlet(o) => o.data.id.clone(),
             HomeDeviceData::Irrigation(o) => o.data.id.clone(),
-            HomeDeviceData::Thermostat(o) => o.data.id.clone(),
+            HomeDeviceData::Thermostat(o) => o.id.clone(),
             HomeDeviceData::Supplier(o) => o.data.id.clone(),
-            HomeDeviceData::Bell(o) => o.data.id.clone(),
-            HomeDeviceData::Door(o) => o.data.id.clone(),
+            HomeDeviceData::Doorbell(o) => o.id.clone(),
+            HomeDeviceData::Door(o) => o.id.clone(),
+        }
+    }
+
+    pub fn name(&self) -> String {
+        match self {
+            HomeDeviceData::Agent(o) => o.description.clone(),
+            HomeDeviceData::Data(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::Other(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Light(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::WindowCovering(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::Outlet(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Irrigation(o) => {
+                o.data.description.clone().unwrap_or(o.data.id.clone())
+            }
+            HomeDeviceData::Thermostat(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::Supplier(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Doorbell(o) => o.description.clone().unwrap_or(o.id.clone()),
+            HomeDeviceData::Door(o) => o.description.clone().unwrap_or(o.id.clone()),
         }
     }
 }
 
-pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
+pub fn device_data_to_home_device(value: Value, level: u8) -> Vec<HomeDeviceData> {
     let data = serde_json::from_value::<DeviceData>(value.clone()).unwrap();
     match data.r#type {
         ObjectType::Other => {
             let other_data = serde_json::from_value::<OtherDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Other(other_data)]
         }
-        ObjectType::Blind => {
-            let blind_data = serde_json::from_value::<BlindDeviceData>(value.clone()).unwrap();
-            vec![HomeDeviceData::Blind(blind_data)]
+        ObjectType::WindowCovering => {
+            let blind_data =
+                serde_json::from_value::<WindowCoveringDeviceData>(value.clone()).unwrap();
+            vec![HomeDeviceData::WindowCovering(blind_data)]
         }
         ObjectType::Light => {
             let light_data = serde_json::from_value::<LightDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Light(light_data)]
         }
         ObjectType::Irrigation => {
-            let irrigation_data = serde_json::from_value::<IrrigationDeviceData>(value.clone()).unwrap();
+            let irrigation_data =
+                serde_json::from_value::<IrrigationDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Irrigation(irrigation_data)]
         }
         ObjectType::Thermostat => {
-            let thermostat_data = serde_json::from_value::<ThermostatDeviceData>(value.clone()).unwrap();
+            let thermostat_data =
+                serde_json::from_value::<ThermostatDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Thermostat(thermostat_data)]
         }
         ObjectType::Outlet => {
@@ -595,22 +770,33 @@ pub(crate) fn device_data_to_home_device(value: Value) -> Vec<HomeDeviceData> {
             vec![HomeDeviceData::Outlet(outlet_data)]
         }
         ObjectType::PowerSupplier => {
-            let supplier_data = serde_json::from_value::<SupplierDeviceData>(value.clone()).unwrap();
+            let supplier_data =
+                serde_json::from_value::<SupplierDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Supplier(supplier_data)]
         }
         ObjectType::Agent => {
             let agent_data = serde_json::from_value::<AgentDeviceData>(value.clone()).unwrap();
             vec![HomeDeviceData::Agent(agent_data)]
         }
-        ObjectType::Zone => {
-            data.elements.iter().flat_map(|v| {
-                println!("Zone {} found, reading element inside: {:?}", data.description.as_ref().unwrap_or(&"None".to_string()), v);
-                device_data_to_home_device(v.clone())
-            }).collect::<Vec<HomeDeviceData>>()
-        }
+        ObjectType::Zone => data
+            .elements
+            .iter()
+            .flat_map(|v| {
+                debug!(
+                    "Zone {} found, reading element inside",
+                    data.description.as_ref().unwrap_or(&"None".to_string()),
+                );
+                if level == 1 {
+                    let inner = serde_json::from_value::<InnerDeviceData>(v.clone()).unwrap();
+                    device_data_to_home_device(inner.data, level)
+                } else {
+                    device_data_to_home_device(v.clone(), level)
+                }
+            })
+            .collect::<Vec<HomeDeviceData>>(),
         ObjectType::VipElement => {
-            let other_data = serde_json::from_value::<BellDeviceData>(value.clone()).unwrap();
-            vec![HomeDeviceData::Bell(other_data)]
+            let other_data = serde_json::from_value::<DoorbellDeviceData>(value.clone()).unwrap();
+            vec![HomeDeviceData::Doorbell(other_data)]
         }
         ObjectType::Door => {
             let door_data = serde_json::from_value::<DoorDeviceData>(value.clone()).unwrap();

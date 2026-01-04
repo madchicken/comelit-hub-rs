@@ -1,1 +1,6 @@
-/target
+target/
+data/
+*.ron
+.idea
+*.iml
+.DS_Store

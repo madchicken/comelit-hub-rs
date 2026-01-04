@@ -1,0 +1,51 @@
+name: macOS pkg
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main ]
+    tags: [ "v*" ]
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Build binary
+        run: |
+          cargo build --release --manifest-path hap/Cargo.toml
+          strip target/release/comelit-hub-hap
+
+      - name: Prepare payload
+        run: |
+          mkdir -p pkgroot/usr/local/bin
+          mkdir -p pkgroot/Library/LaunchDaemons
+
+          cp target/release/comelit-hub-hap pkgroot/usr/local/bin/
+          cp hap/installer/macos/com.comelit.hub.hap.plist \
+             pkgroot/Library/LaunchDaemons/
+
+      - name: Build pkg
+        run: |
+          VERSION=$(cargo metadata --no-deps --format-version=1 \
+            | jq -r '.packages[0].version')
+
+          pkgbuild \
+            --root pkgroot \
+            --identifier com.comelit.hub.hap \
+            --version "$VERSION" \
+            comelit-hub-hap.pkg
+
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
+        with:
+          name: comelit-hub-hap-macos-pkg
+          path: comelit-hub-hap.pkg

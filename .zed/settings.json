@@ -1,0 +1,9 @@
+{
+  "languages": {
+    "Rust": {
+      "inlay_hints": {
+        "enabled": true
+      }
+    }
+  }
+}

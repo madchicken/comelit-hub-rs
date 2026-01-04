@@ -1,0 +1,14 @@
+[package]
+name = "comelit-hub-tui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1.0.73"
+clap = "4.5.34"
+clap_derive = "4.5.32"
+comelit_hub_rs = { path = "../client" }
+color-eyre = "0.5.5-rc.1"
+crossterm = "0.26.0"
+ratatui = { version = "0.28.0", features = ["all-widgets"] }
+tokio = { version = "1.44.1", features = ["full"] }

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+ "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.comelit.hub.hap</string>
+
+    <key>ProgramArguments</key>
+    <array>
+    <string>/usr/local/bin/comelit-hub-hap</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+    <key>RUST_LOG</key>
+    <string>comelit_hub_hap=info</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/var/log/comelit-hub-hap.log</string>
+    <key>StandardErrorPath</key>
+    <string>/var/log/comelit-hub-hap.err</string>
+    <key>UserName</key>
+    <string>comelit</string>
+
+    <key>GroupName</key>
+    <string>wheel</string>
+</dict>
+</plist>
