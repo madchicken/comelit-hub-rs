@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -e
 
-BIN_NAME="target/release/comelit-hub-hap"
-BIN_SRC="./$BIN_NAME"
+BIN_NAME="comelit-hub-hap"
+BIN_SRC="./target/release/$BIN_NAME"
 BIN_DST="/usr/local/bin/$BIN_NAME"
 
 if [[ $EUID -ne 0 ]]; then
