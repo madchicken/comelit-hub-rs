@@ -1,9 +1,10 @@
 name: macOS pkg
 
 on:
+  workflow_dispatch:
   push:
-    tags:
-      - "v*"
+    branches: [ main ]
+    tags: [ "v*" ]
 
 jobs:
   build:
@@ -42,7 +43,9 @@ jobs:
             --version "$VERSION" \
             comelit-hub-hap.pkg
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
         with:
           name: comelit-hub-hap-macos-pkg
           path: comelit-hub-hap.pkg

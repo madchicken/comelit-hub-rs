@@ -1,9 +1,10 @@
 name: Windows msi
 
 on:
+  workflow_dispatch:
   push:
-    tags:
-      - "v*"
+    branches: [ main ]
+    tags: [ "v*" ]
 
 jobs:
   build:
@@ -33,7 +34,9 @@ jobs:
           candle hap\installer\msi\product.wxs
           light product.wixobj -out comelit-hub-hap.msi
 
-      - uses: actions/upload-artifact@v4
+      - name: Publish release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/upload-artifact@v4
         with:
           name: comelit-hub-hap-msi
           path: comelit-hub-hap.msi
