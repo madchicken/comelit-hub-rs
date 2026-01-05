@@ -10,6 +10,18 @@ The current implementation supports the following features:
 - Control of doors and gates
 - Listen to doorbell events (no video)
 
+## Build
+To build the Comelit Hub HAP, you need to have Rust installed on your system.
+You can install Rust by following the instructions on the [official Rust website](https://www.rust-lang.org/tools/install).
+
+Once Rust is installed, you can build the Comelit Hub HAP by running the following command from the main directory:
+
+```
+cargo build --release --manifest-path=hap/Cargo.toml
+```
+
+This will build the Comelit Hub HAP in release mode and place the executable in the `target/release` directory.
+
 ## Usage
 Depending on the OS you are using, you can run the Comelit Hub HAP by executing the following command:
 

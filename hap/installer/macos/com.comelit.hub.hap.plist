@@ -14,7 +14,7 @@
     <key>EnvironmentVariables</key>
     <dict>
     <key>RUST_LOG</key>
-    <string>comelit_hub_hap=info</string>
+    <string>info</string>
     </dict>
 
     <key>RunAtLoad</key>
@@ -23,13 +23,14 @@
     <key>KeepAlive</key>
     <true/>
 
+    <key>WorkingDirectory</key>
+    <string>/var/lib/comelit-hub-hap</string>
     <key>StandardOutPath</key>
     <string>/var/log/comelit-hub-hap.log</string>
     <key>StandardErrorPath</key>
     <string>/var/log/comelit-hub-hap.err</string>
     <key>UserName</key>
     <string>comelit</string>
-
     <key>GroupName</key>
     <string>wheel</string>
 </dict>
