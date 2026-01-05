@@ -19,4 +19,5 @@ case "$(uname -s)" in
 esac
 
 rm -f /usr/local/bin/comelit-hub-hap
+rm -rf /var/lib/comelit-hub-hap/data
 echo "✔ Uninstalled"
