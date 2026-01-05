@@ -26,7 +26,7 @@ install_macos() {
   create_macos_user
   install_binary
 
-  cp hap/installer/macos/com.comelit.hub.hap.plist \
+  cp ./macos/com.comelit.hub.hap.plist \
      /Library/LaunchDaemons/
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
@@ -42,7 +42,7 @@ install_linux() {
 
   mkdir -p /var/lib/comelit-hub-hap
 
-  cp hap/installer/linux/comelit-hub-hap.service \
+  cp ./linux/comelit-hub-hap.service \
      /etc/systemd/system/
 
   systemctl daemon-reload
