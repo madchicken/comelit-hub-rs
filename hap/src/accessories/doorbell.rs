@@ -8,12 +8,10 @@ use hap::{
     server::{IpServer, Server},
     service::{
         HapService, accessory_information::AccessoryInformationService, doorbell::DoorbellService,
-        switch::SwitchService,
     },
 };
 use serde_json::Value;
 use std::sync::Arc;
-use tokio::time::sleep;
 
 use crate::accessories::ComelitAccessory;
 
@@ -31,8 +29,6 @@ pub struct DoorbellAccessory {
     pub accessory_information: AccessoryInformationService,
     /// Doorbell service.
     pub doorbell: DoorbellService,
-    /// Switch service.
-    pub switch: SwitchService,
 }
 
 impl DoorbellAccessory {
@@ -43,15 +39,11 @@ impl DoorbellAccessory {
         let mut doorbell = DoorbellService::new(1 + access_info_id + 1, id);
         doorbell.set_hidden(true);
         doorbell.set_primary(true);
-        let doorbell_id = doorbell.get_characteristics().len() as u64;
-        let mut switch = SwitchService::new(1 + access_info_id + doorbell_id + 1, id);
-        switch.set_primary(true);
 
         Ok(Self {
             id,
             accessory_information,
             doorbell,
-            switch,
         })
     }
 }
@@ -80,15 +72,11 @@ impl HapAccessory for DoorbellAccessory {
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        vec![&self.accessory_information, &self.doorbell, &self.switch]
+        vec![&self.accessory_information, &self.doorbell]
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
-        vec![
-            &mut self.accessory_information,
-            &mut self.doorbell,
-            &mut self.switch,
-        ]
+        vec![&mut self.accessory_information, &mut self.doorbell]
     }
 }
 
@@ -156,18 +144,7 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
                     .get_mut_characteristic(HapType::StatefulProgrammableSwitch)
                     .unwrap();
                 programmable_switch.set_value(Value::from(2)).await?; // long press
-                let switch = accessory.get_mut_service(HapType::Switch).unwrap();
-                let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-                power_state.set_value(Value::from(true)).await?;
             } // drop the lock
-            let accessory_pointer = self.accessory_pointer.clone();
-            tokio::spawn(async move {
-                sleep(std::time::Duration::from_secs(2)).await;
-                let mut accessory = accessory_pointer.lock().await;
-                let switch = accessory.get_mut_service(HapType::Switch).unwrap();
-                let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-                power_state.set_value(Value::from(false)).await.unwrap();
-            });
         }
         Ok(())
     }
