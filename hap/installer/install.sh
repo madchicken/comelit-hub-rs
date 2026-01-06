@@ -32,6 +32,11 @@ install_macos() {
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
 
+  cp ./macos/comelit-hub-hap.conf \
+     /etc/newsyslog.d/comelit-hub-hap.conf
+
+  newsyslog -v -f /etc/newsyslog.d/comelit-hub-hap.conf
+
   echo "✔ Services macOS installed"
 }
 
@@ -49,6 +54,10 @@ install_linux() {
   systemctl enable comelit-hub-hap
   systemctl restart comelit-hub-hap
 
+  cp ./linux/comelit-hub-hap.conf \
+     /etc/logrotate.d/comelit-hub-hap
+
+  logrotate -f /etc/logrotate.d/comelit-hub-hap
   echo "✔ Services Linux installed"
 }
 

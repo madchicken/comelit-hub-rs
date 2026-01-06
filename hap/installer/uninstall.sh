@@ -10,10 +10,12 @@ case "$(uname -s)" in
   Darwin)
     launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist || true
     rm -f /Library/LaunchDaemons/com.comelit.hub.hap.plist
+    rm -f /etc/newsyslog.d/comelit-hub-hap.conf
     ;;
   Linux)
     systemctl disable --now comelit-hub-hap || true
     rm -f /etc/systemd/system/comelit-hub-hap.service
+    rm -f /etc/logrotate.d/comelit-hub-hap
     systemctl daemon-reload
     ;;
 esac
