@@ -1,5 +1,5 @@
 use anyhow::Result;
-use comelit_hub_rs::{DeviceStatus, DoorbellDeviceData};
+use comelit_hub_rs::DoorbellDeviceData;
 use futures_util::lock::Mutex;
 use hap::{
     HapType,
@@ -149,7 +149,7 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
         &self.id
     }
 
-    async fn update(&mut self, data: &DoorbellDeviceData) -> Result<()> {
+    async fn update(&mut self, _data: &DoorbellDeviceData) -> Result<()> {
         {
             info!("Doorbell {} just triggered!", self.id);
             let mut accessory = self.accessory_pointer.lock().await;
