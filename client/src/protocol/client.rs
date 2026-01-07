@@ -146,11 +146,12 @@ pub trait StatusUpdate {
     async fn status_update(&self, device: &HomeDeviceData);
 }
 
-#[allow(dead_code)]
+pub type ComelitObserver = Arc<dyn StatusUpdate + Sync + Send>;
+
 impl ComelitClient {
     pub async fn new(
         options: ComelitOptions,
-        observer: Option<Arc<dyn StatusUpdate + Sync + Send>>,
+        observer: Option<ComelitObserver>,
     ) -> Result<Self, ComelitClientError> {
         let hub = options.get_hub_info().await?;
         if let Some(hub) = hub {
