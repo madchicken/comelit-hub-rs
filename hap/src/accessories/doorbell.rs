@@ -150,29 +150,26 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
     }
 
     async fn update(&mut self, data: &DoorbellDeviceData) -> Result<()> {
-        info!("Status update for doorbell {}", self.id);
-        if data.status.clone().unwrap_or_default() == DeviceStatus::On {
-            {
-                info!("Doorbell {} just triggered!", self.id);
-                let mut accessory = self.accessory_pointer.lock().await;
-                let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
-                let programmable_switch = service
-                    .get_mut_characteristic(HapType::StatefulProgrammableSwitch)
-                    .unwrap();
-                programmable_switch.set_value(Value::from(2)).await?; // long press
-                let switch = accessory.get_mut_service(HapType::Switch).unwrap();
-                let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-                power_state.set_value(Value::from(true)).await?;
-            } // drop the lock
-            let accessory_pointer = self.accessory_pointer.clone();
-            tokio::spawn(async move {
-                sleep(std::time::Duration::from_secs(2)).await;
-                let mut accessory = accessory_pointer.lock().await;
-                let switch = accessory.get_mut_service(HapType::Switch).unwrap();
-                let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-                power_state.set_value(Value::from(false)).await.unwrap();
-            });
-        }
+        {
+            info!("Doorbell {} just triggered!", self.id);
+            let mut accessory = self.accessory_pointer.lock().await;
+            let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
+            let programmable_switch = service
+                .get_mut_characteristic(HapType::StatefulProgrammableSwitch)
+                .unwrap();
+            programmable_switch.set_value(Value::from(0)).await?; // long press
+            let switch = accessory.get_mut_service(HapType::Switch).unwrap();
+            let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
+            power_state.set_value(Value::from(true)).await?;
+        } // drop the lock
+        let accessory_pointer = self.accessory_pointer.clone();
+        tokio::spawn(async move {
+            sleep(std::time::Duration::from_secs(2)).await;
+            let mut accessory = accessory_pointer.lock().await;
+            let switch = accessory.get_mut_service(HapType::Switch).unwrap();
+            let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
+            power_state.set_value(Value::from(false)).await.unwrap();
+        });
         Ok(())
     }
 }
