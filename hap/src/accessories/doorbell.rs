@@ -150,6 +150,7 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
     }
 
     async fn update(&mut self, data: &DoorbellDeviceData) -> Result<()> {
+        info!("Status update for doorbell {}", self.id);
         if data.status.clone().unwrap_or_default() == DeviceStatus::On {
             {
                 info!("Doorbell {} just triggered!", self.id);
