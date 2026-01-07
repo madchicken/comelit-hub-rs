@@ -14,6 +14,7 @@ use hap::{
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::time::sleep;
+use tracing::info;
 
 use crate::accessories::ComelitAccessory;
 
@@ -120,6 +121,7 @@ impl ComelitDoorbellAccessory {
                 name: name.clone(),
                 model: "VIP Doorbell".to_string(),
                 manufacturer: "Comelit".to_string(),
+                serial_number: device_id.clone(),
                 ..Default::default()
             },
         )?;
@@ -150,6 +152,7 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
     async fn update(&mut self, data: &DoorbellDeviceData) -> Result<()> {
         if data.status.clone().unwrap_or_default() == DeviceStatus::On {
             {
+                info!("Doorbell {} just triggered!", self.id);
                 let mut accessory = self.accessory_pointer.lock().await;
                 let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
                 let programmable_switch = service
