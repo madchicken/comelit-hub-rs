@@ -1,0 +1,11 @@
+{
+  "pairing_code": ["1", "1", "1", "2", "2", "3", "3", "3"],
+  "window_covering": {
+    "opening_time": 35,
+    "closing_time": 35
+  },
+  "door": {
+    "opening_closing_time": 60,
+    "opened_time": 60
+  }
+}

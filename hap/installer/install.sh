@@ -28,6 +28,10 @@ install_macos() {
 
   cp ./macos/com.comelit.hub.hap.plist \
      /Library/LaunchDaemons/
+  mkdir -p /etc/comelit-hub-hap
+  cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
+  cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
+  cp ./comelit-hub-wrapper.sh /usr/local/bin/comelit-hub-hap-wrapper.sh
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
@@ -53,6 +57,11 @@ install_linux() {
   systemctl daemon-reload
   systemctl enable comelit-hub-hap
   systemctl restart comelit-hub-hap
+
+  mkdir -p /etc/comelit-hub-hap
+  cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
+  cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
+  cp ./comelit-hub-wrapper.sh /usr/local/bin/comelit-hub-hap-wrapper.sh
 
   cp ./linux/comelit-hub-hap.conf \
      /etc/logrotate.d/comelit-hub-hap

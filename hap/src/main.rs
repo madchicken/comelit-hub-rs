@@ -8,6 +8,8 @@ use anyhow::Result;
 use clap::Parser;
 use clap_derive::Parser;
 use settings::Settings;
+use signal_hook::{consts::SIGHUP, iterator::Signals};
+use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
@@ -43,6 +45,16 @@ async fn main() -> Result<()> {
     } else {
         Settings::default()
     };
+
+    let mut signals = Signals::new([SIGHUP])?;
+    std::thread::spawn(move || {
+        for _ in signals.forever() {
+            tracing_subscriber::fmt()
+                .with_env_filter(EnvFilter::from_default_env())
+                .init();
+            info!("Reopening log files");
+        }
+    });
 
     start_bridge(
         params.user.as_str(),
