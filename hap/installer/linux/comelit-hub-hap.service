@@ -4,13 +4,23 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/comelit-hub-hap
+ExecStart=/usr/local/bin/comelit-hub-hap-wrapper.sh
 User=comelit
 Group=comelit
 Restart=always
 RestartSec=5
-Environment=RUST_LOG=comelit_hub_hap=info
 WorkingDirectory=/var/lib/comelit-hub-hap
+EnvironmentFile=/etc/comelit-hub-hap/comelit-hub-hap.env
+
+# Allow the service to write PID file
+RuntimeDirectory=comelit-hub-hap
+PIDFile=/var/run/comelit-hub-hap.pid
+
+# Hardening options
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/comelit-hub-hap /var/log /var/run
 
 [Install]
 WantedBy=multi-user.target

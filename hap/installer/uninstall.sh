@@ -24,5 +24,7 @@ rm -f /etc/comelit-hub-hap/comelit-hub-hap.env
 rm -f /etc/comelit-hub-hap/comelit-hub-hap-config.json
 rm -f /usr/local/bin/comelit-hub-hap
 rm -f /usr/local/bin/comelit-hub-hap-wrapper.sh
+rm -f /usr/local/bin/comelit-hub-ctl
+rm -f /var/run/comelit-hub-hap.pid
 # rm -rf /var/lib/comelit-hub-hap/data
 echo "✔ Uninstalled"
