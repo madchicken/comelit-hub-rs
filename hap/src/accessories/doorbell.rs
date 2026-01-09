@@ -155,9 +155,9 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
             let mut accessory = self.accessory_pointer.lock().await;
             let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
             let programmable_switch = service
-                .get_mut_characteristic(HapType::StatefulProgrammableSwitch)
+                .get_mut_characteristic(HapType::ProgrammableSwitchEvent)
                 .unwrap();
-            programmable_switch.set_value(Value::from(0)).await?; // long press
+            programmable_switch.set_value(Value::from(0)).await?; // single press (doorbell ring)
             let switch = accessory.get_mut_service(HapType::Switch).unwrap();
             let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
             power_state.set_value(Value::from(true)).await?;
