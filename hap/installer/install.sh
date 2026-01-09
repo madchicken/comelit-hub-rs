@@ -37,6 +37,11 @@ install_macos() {
   cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
   chmod 755 /usr/local/bin/comelit-hub-ctl
 
+  # Create log files with proper ownership
+  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chown comelit:wheel /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
 
@@ -70,6 +75,11 @@ install_linux() {
 
   cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
   chmod 755 /usr/local/bin/comelit-hub-ctl
+
+  # Create log files with proper ownership
+  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chown comelit:comelit /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
 
   cp ./linux/comelit-hub-hap.conf \
      /etc/logrotate.d/comelit-hub-hap
