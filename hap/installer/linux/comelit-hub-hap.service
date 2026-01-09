@@ -12,9 +12,9 @@ RestartSec=5
 WorkingDirectory=/var/lib/comelit-hub-hap
 EnvironmentFile=/etc/comelit-hub-hap/comelit-hub-hap.env
 
-# Allow the service to write PID file
+# Allow the service to write PID file (RuntimeDirectory creates /run/comelit-hub-hap)
 RuntimeDirectory=comelit-hub-hap
-PIDFile=/var/run/comelit-hub-hap.pid
+PIDFile=/run/comelit-hub-hap/comelit-hub-hap.pid
 
 # Hardening options
 NoNewPrivileges=true

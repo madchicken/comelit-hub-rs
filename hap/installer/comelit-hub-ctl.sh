@@ -20,7 +20,6 @@ SERVICE_NAME="comelit-hub-hap"
 PLIST_NAME="com.comelit.hub.hap"
 LOG_FILE="/var/log/comelit-hub-hap.log"
 ERR_FILE="/var/log/comelit-hub-hap.err"
-PID_FILE="/var/run/comelit-hub-hap.pid"
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,6 +37,13 @@ detect_os() {
 }
 
 OS=$(detect_os)
+
+# Set platform-specific PID file location
+case "$OS" in
+    linux)  PID_FILE="/run/comelit-hub-hap/comelit-hub-hap.pid" ;;
+    macos)  PID_FILE="/var/lib/comelit-hub-hap/comelit-hub-hap.pid" ;;
+    *)      PID_FILE="/var/lib/comelit-hub-hap/comelit-hub-hap.pid" ;;
+esac
 
 # Print colored output
 print_info() {
