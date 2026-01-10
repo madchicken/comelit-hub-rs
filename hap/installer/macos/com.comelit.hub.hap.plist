@@ -8,14 +8,8 @@
 
     <key>ProgramArguments</key>
     <array>
-    <string>/usr/local/bin/comelit-hub-hap</string>
+    <string>/usr/local/bin/comelit-hub-hap-wrapper.sh</string>
     </array>
-
-    <key>EnvironmentVariables</key>
-    <dict>
-    <key>RUST_LOG</key>
-    <string>info</string>
-    </dict>
 
     <key>RunAtLoad</key>
     <true/>

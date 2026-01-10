@@ -57,6 +57,7 @@ impl ComelitDoorAccessory {
             AccessoryInformation {
                 name,
                 manufacturer: "Comelit".to_string(),
+                serial_number: device_id.clone(),
                 ..Default::default()
             },
         )?;
@@ -227,10 +228,7 @@ impl ComelitAccessory<DoorDeviceData> for ComelitDoorAccessory {
         let new_state = DoorState::from(data);
         let mut state = self.state.lock().unwrap();
         *state = new_state;
-        info!(
-            "Updated door {} state to {:?}",
-            self.id, *state
-        );
+        info!("Updated door {} state to {:?}", self.id, *state);
         Ok(())
     }
 }

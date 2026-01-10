@@ -146,11 +146,12 @@ pub trait StatusUpdate {
     async fn status_update(&self, device: &HomeDeviceData);
 }
 
-#[allow(dead_code)]
+pub type ComelitObserver = Arc<dyn StatusUpdate + Sync + Send>;
+
 impl ComelitClient {
     pub async fn new(
         options: ComelitOptions,
-        observer: Option<Arc<dyn StatusUpdate + Sync + Send>>,
+        observer: Option<ComelitObserver>,
     ) -> Result<Self, ComelitClientError> {
         let hub = options.get_hub_info().await?;
         if let Some(hub) = hub {
@@ -198,13 +199,6 @@ impl ComelitClient {
             let req_id = Arc::new(AtomicU32::new(1));
             let _event_loop_task =
                 Self::start_event_loop(event_loop, manager_clone, read_topic_clone, observer);
-            let _ping_task = Self::start_ping(
-                client.clone(),
-                session.clone(),
-                req_id.clone(),
-                write_topic.as_str(),
-                request_manager.clone(),
-            );
 
             Ok(ComelitClient {
                 inner: Arc::new(Inner {
@@ -248,7 +242,7 @@ impl ComelitClient {
         Ok(())
     }
 
-    pub async fn login(&self, state: State) -> Result<(), ComelitClientError> {
+    pub async fn login(&self, state: State) -> Result<JoinHandle<()>, ComelitClientError> {
         let mut state = state.clone();
         loop {
             // Get a read lock
@@ -296,7 +290,15 @@ impl ComelitClient {
                         session_token: session_token.clone(),
                         agent_id,
                     });
-                    break Ok(());
+                    let ping_task = Self::start_ping(
+                        self.inner.client.clone(),
+                        self.inner.session.clone(),
+                        self.inner.req_id.clone(),
+                        self.inner.write_topic.as_str(),
+                        self.inner.request_manager.clone(),
+                    );
+
+                    break Ok(ping_task);
                 }
             }
         }
@@ -485,6 +487,7 @@ impl ComelitClient {
             let req_id = req_id.clone();
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.tick().await; // first tick is immediate
+            let mut failed_ping_requests: u8 = 0;
             loop {
                 tokio::select! {
                     // Trigger periodic updates
@@ -505,6 +508,11 @@ impl ComelitClient {
                                         tokio::select! {
                                             _ = res_interval.tick() => {
                                                 error!("Ping response timed out");
+                                                failed_ping_requests += 1;
+                                                if failed_ping_requests >= 3 {
+                                                    state.write().await.take(); // invalidate session
+                                                    failed_ping_requests = 0;
+                                                }
                                             }
                                             res = receiver => {
                                                 match res {
@@ -527,8 +535,8 @@ impl ComelitClient {
                                 }
                             },
                             _ => {
-                                // Do nothing, we are not logged in
-                                debug!("Not logged in, skipping ping");
+                                warn!("Not logged in, exiting from ping thread");
+                                break;
                             }
                         }
                     }

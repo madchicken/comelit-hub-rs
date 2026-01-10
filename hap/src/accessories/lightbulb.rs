@@ -35,6 +35,8 @@ impl ComelitLightbulbAccessory {
             id,
             AccessoryInformation {
                 name,
+                manufacturer: "Comelit".to_string(),
+                serial_number: device_id.clone(),
                 ..Default::default()
             },
         )?;

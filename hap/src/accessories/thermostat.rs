@@ -77,9 +77,10 @@ impl Serialize for ComelitThermostat {
 }
 
 impl ComelitThermostat {
-    pub async fn new(id: u64, name: &str) -> Result<Self> {
+    pub async fn new(id: u64, name: &str, device_id: &str) -> Result<Self> {
         let accessory_information = AccessoryInformation {
-            manufacturer: "Comelit".into(),
+            manufacturer: "Comelit".to_string(),
+            serial_number: device_id.to_string(),
             name: name.to_string(),
             ..Default::default()
         }
@@ -131,7 +132,7 @@ impl ComelitThermostatAccessory {
     ) -> Result<Self> {
         let name = data.description.clone().unwrap_or(data.id.clone());
         let comelit_id = data.id.clone();
-        let mut accessory = ComelitThermostat::new(id, name.as_str()).await?;
+        let mut accessory = ComelitThermostat::new(id, name.as_str(), comelit_id.as_str()).await?;
         let state = ThermostatState::from(data);
         let arc_state = Arc::new(Mutex::new(ThermostatState::from(data)));
 
