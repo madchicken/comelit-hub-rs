@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use futures::FutureExt;
 use hap::characteristic::{CharacteristicCallbacks, HapCharacteristic};
+use hap::storage::{FileStorage, Storage};
 use hap::{
     accessory::{AccessoryInformation, window_covering::WindowCoveringAccessory},
     characteristic::AsyncCharacteristicCallbacks,
@@ -10,6 +11,7 @@ use serde_json::Value;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Mutex as TokioMutex;
 use tracing::{info, warn};
 
 use crate::accessories::ComelitAccessory;
@@ -62,7 +64,19 @@ impl ComelitWindowCoveringAccessory {
         wc_accessory.window_covering.current_vertical_tilt_angle = None;
         wc_accessory.window_covering.target_vertical_tilt_angle = None;
 
-        let state = WindowCoveringState::from(window_covering_data);
+        let mut state = WindowCoveringState::from(window_covering_data);
+        let mut t = FileStorage::current_dir().await?;
+        let key = &format!("{device_id}.json");
+        if let Ok(bytes) = t.load_bytes(key.as_str()).await
+            && let Ok(str) = String::from_utf8(bytes)
+        {
+            let stored_state: WindowCoveringState = serde_json::from_str(&str)?;
+            info!("Loaded state for {device_id}: {str}");
+            state = stored_state;
+        }
+        t.save_bytes(key, &serde_json::to_vec(&state).unwrap())
+            .await?;
+        let state_storage = Arc::new(TokioMutex::new(t));
 
         info!(
             "Setting initial window covering position to {}",
@@ -97,6 +111,7 @@ impl ComelitWindowCoveringAccessory {
             config.closing_time,
             config.opening_time,
             state.clone(),
+            state_storage.clone(),
         );
 
         server.add_accessory(wc_accessory).await?;
@@ -159,10 +174,12 @@ impl ComelitWindowCoveringAccessory {
         closing_time: Duration,
         opening_time: Duration,
         state: Arc<Mutex<WindowCoveringState>>,
+        state_storage: Arc<TokioMutex<FileStorage>>,
     ) {
         let id = id.to_string();
         let state = state.clone();
         let client = client.clone();
+        let state_storage = state_storage.clone();
         accessory
             .window_covering
             .target_position
@@ -176,6 +193,7 @@ impl ComelitWindowCoveringAccessory {
                 let state = state.clone();
                 let client = client.clone();
                 let id = id.to_string();
+                let state_storage = state_storage.clone();
                 async move {
                     let WindowCoveringState { current_position: position, moving, position_state, .. } = {
                         let state = state.lock().unwrap();
@@ -210,6 +228,7 @@ impl ComelitWindowCoveringAccessory {
                     // Now move it in the new position
                     let id1 = id.clone();
                     let state1 = state.clone();
+                    let storage = state_storage.clone();
                     let moving_task = async move {
                         {
                             let mut state = state1.lock().unwrap();
@@ -226,15 +245,18 @@ impl ComelitWindowCoveringAccessory {
                         info!("Window covering {id1} reached the requested position {new_pos}");
                         // stop moving
                         client.toggle_device_status(&id1, opening).await?;
-                        {
+                        let bytes = {
                             let mut state = state1.lock().unwrap();
                             state.current_position = new_pos;
                             state.moving = false;
                             state.opening = false;
                             state.position_state = PositionState::Stopped as u8;
                             state.target_position = new_pos;
-                        }
-                        Ok::<(), ComelitClientError>(())
+                            serde_json::to_vec(&*state).unwrap()
+                        };
+
+                        let mut state_storage = storage.lock().await;
+                        state_storage.save_bytes(format!("{id1}.json").as_str(), &bytes).await.map_err(|e| ComelitClientError::Generic(e.to_string()))
                     };
 
                     // spawn a task that waits for either the moving to finish or a cancellation
@@ -244,12 +266,15 @@ impl ComelitWindowCoveringAccessory {
                     let cancel_task = async move {
                         loop {
                             {
-                                let state = state2.lock().unwrap();
-                                if !state.moving || done_.load(Ordering::Relaxed) {
+                                let mut state = state2.lock().unwrap();
+                                if done_.load(Ordering::Relaxed) {
+                                    state.moving = false;
+                                    state.opening = false;
+                                    state.position_state = PositionState::Stopped as u8;
                                     break;
                                 }
                             }
-                            tokio::time::sleep(Duration::from_millis(500)).await;
+                            tokio::time::sleep(Duration::from_millis(1000)).await;
                         }
                     };
                     tokio::select! {

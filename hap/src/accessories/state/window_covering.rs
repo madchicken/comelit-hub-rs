@@ -1,9 +1,10 @@
 use comelit_hub_rs::{WindowCoveringDeviceData, WindowCoveringStatus};
+use serde::{Deserialize, Serialize};
 
 const FULLY_OPENED: u8 = 100;
 // const FULLY_CLOSED: u8 = 100;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct WindowCoveringState {
     pub(crate) current_position: u8,
     pub(crate) target_position: u8,
