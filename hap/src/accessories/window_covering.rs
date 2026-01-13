@@ -1,15 +1,14 @@
 use anyhow::{Context, Result};
 use futures::FutureExt;
-use hap::characteristic::{CharacteristicCallbacks, HapCharacteristic};
-use hap::storage::{FileStorage, Storage};
+use hap::characteristic::HapCharacteristic;
 use hap::{
     accessory::{AccessoryInformation, window_covering::WindowCoveringAccessory},
     characteristic::AsyncCharacteristicCallbacks,
     server::{IpServer, Server},
 };
 use serde_json::Value;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 use tracing::{info, warn};
@@ -25,7 +24,7 @@ pub struct WindowCoveringConfig {
 
 pub(crate) struct ComelitWindowCoveringAccessory {
     id: String,
-    state: Arc<Mutex<WindowCoveringState>>,
+    state: Arc<TokioMutex<WindowCoveringState>>,
 }
 
 impl ComelitWindowCoveringAccessory {
@@ -64,19 +63,11 @@ impl ComelitWindowCoveringAccessory {
         wc_accessory.window_covering.current_vertical_tilt_angle = None;
         wc_accessory.window_covering.target_vertical_tilt_angle = None;
 
-        let mut state = WindowCoveringState::from(window_covering_data);
-        let mut t = FileStorage::current_dir().await?;
-        let key = &format!("{device_id}.json");
-        if let Ok(bytes) = t.load_bytes(key.as_str()).await
-            && let Ok(str) = String::from_utf8(bytes)
-        {
-            let stored_state: WindowCoveringState = serde_json::from_str(&str)?;
-            info!("Loaded state for {device_id}: {str}");
-            state = stored_state;
-        }
-        t.save_bytes(key, &serde_json::to_vec(&state).unwrap())
-            .await?;
-        let state_storage = Arc::new(TokioMutex::new(t));
+        let state = WindowCoveringState::from_storage(device_id.as_str())
+            .await
+            .unwrap_or(WindowCoveringState::from(window_covering_data));
+
+        state.save(device_id.as_str()).await?;
 
         info!(
             "Setting initial window covering position to {}",
@@ -101,9 +92,10 @@ impl ComelitWindowCoveringAccessory {
             .await
             .context("Cannot set current target position")?;
 
-        let state = Arc::new(Mutex::new(state));
+        let state = Arc::new(TokioMutex::new(state));
 
-        Self::setup_read_characteristics(device_id.as_str(), &mut wc_accessory, state.clone());
+        Self::setup_read_characteristics(device_id.as_str(), &mut wc_accessory, state.clone())
+            .await;
         Self::setup_update_target_position(
             device_id.as_str(),
             client.clone(),
@@ -111,8 +103,8 @@ impl ComelitWindowCoveringAccessory {
             config.closing_time,
             config.opening_time,
             state.clone(),
-            state_storage.clone(),
-        );
+        )
+        .await;
 
         server.add_accessory(wc_accessory).await?;
         Ok(Self {
@@ -121,27 +113,32 @@ impl ComelitWindowCoveringAccessory {
         })
     }
 
-    fn setup_read_characteristics(
+    async fn setup_read_characteristics(
         id: &str,
         accessory: &mut WindowCoveringAccessory,
-        state: Arc<Mutex<WindowCoveringState>>,
+        state: Arc<TokioMutex<WindowCoveringState>>,
     ) {
         let id_ = id.to_string();
         let state_ = state.clone();
         accessory
             .window_covering
             .position_state
-            .on_read(Some(move || {
-                info!("Window covering POSITION STATE read {}", id_);
-                let state = state_.lock().unwrap();
-                let is_moving = state.moving;
-                let opening = state.opening;
-                match (is_moving, opening) {
-                    (true, true) => Ok(Some(PositionState::MovingUp as u8)),
-                    (true, false) => Ok(Some(PositionState::MovingDown as u8)),
-                    (false, true) => Ok(Some(PositionState::Stopped as u8)),
-                    (false, false) => Ok(Some(PositionState::Stopped as u8)),
+            .on_read_async(Some(move || {
+                let id_ = id_.clone();
+                let state_ = state_.clone();
+                async move {
+                    info!("Window covering POSITION STATE read {}", id_);
+                    let state = state_.lock().await;
+                    let is_moving = state.moving;
+                    let opening = state.opening;
+                    match (is_moving, opening) {
+                        (true, true) => Ok(Some(PositionState::MovingUp as u8)),
+                        (true, false) => Ok(Some(PositionState::MovingDown as u8)),
+                        (false, true) => Ok(Some(PositionState::Stopped as u8)),
+                        (false, false) => Ok(Some(PositionState::Stopped as u8)),
+                    }
                 }
+                .boxed()
             }));
 
         let id_ = id.to_string();
@@ -149,10 +146,15 @@ impl ComelitWindowCoveringAccessory {
         accessory
             .window_covering
             .current_position
-            .on_read(Some(move || {
-                info!("Window covering POSITION read {}", id_);
-                let state = state_.lock().unwrap();
-                Ok(Some(state.current_position))
+            .on_read_async(Some(move || {
+                let id_ = id_.to_string();
+                let state_ = state_.clone();
+                async move {
+                    info!("Window covering POSITION read {}", id_);
+                    let state = state_.lock().await;
+                    Ok(Some(state.current_position))
+                }
+                .boxed()
             }));
 
         let id_ = id.to_string();
@@ -160,26 +162,29 @@ impl ComelitWindowCoveringAccessory {
         accessory
             .window_covering
             .target_position
-            .on_read(Some(move || {
-                info!("Window covering TARGET POSITION read {}", id_);
-                let state = state_.lock().unwrap();
-                Ok(Some(state.target_position))
+            .on_read_async(Some(move || {
+                let id_ = id_.to_string();
+                let state_ = state_.clone();
+                async move {
+                    info!("Window covering TARGET POSITION read {}", id_);
+                    let state = state_.lock().await;
+                    Ok(Some(state.target_position))
+                }
+                .boxed()
             }));
     }
 
-    fn setup_update_target_position(
+    async fn setup_update_target_position(
         id: &str,
         client: ComelitClient,
         accessory: &mut WindowCoveringAccessory,
         closing_time: Duration,
         opening_time: Duration,
-        state: Arc<Mutex<WindowCoveringState>>,
-        state_storage: Arc<TokioMutex<FileStorage>>,
+        state: Arc<TokioMutex<WindowCoveringState>>,
     ) {
         let id = id.to_string();
         let state = state.clone();
         let client = client.clone();
-        let state_storage = state_storage.clone();
         accessory
             .window_covering
             .target_position
@@ -193,10 +198,9 @@ impl ComelitWindowCoveringAccessory {
                 let state = state.clone();
                 let client = client.clone();
                 let id = id.to_string();
-                let state_storage = state_storage.clone();
                 async move {
                     let WindowCoveringState { current_position: position, moving, position_state, .. } = {
-                        let state = state.lock().unwrap();
+                        let state = state.lock().await;
                         *state
                     };
 
@@ -220,7 +224,7 @@ impl ComelitWindowCoveringAccessory {
                     if moving {
                         info!("Previous position change for window covering {} is still in progress, stopping it", id);
                         client.toggle_device_status(&id, position_state == PositionState::MovingDown as u8).await?; // stop the device
-                        let mut state = state.lock().unwrap();
+                        let mut state = state.lock().await;
                         state.moving = false;
                         state.position_state = PositionState::Stopped as u8;
                         state.target_position = new_pos;
@@ -228,12 +232,11 @@ impl ComelitWindowCoveringAccessory {
                     // Now move it in the new position
                     let id1 = id.clone();
                     let state1 = state.clone();
-                    let storage = state_storage.clone();
                     let moving_task = async move {
                         {
-                            let mut state = state1.lock().unwrap();
-                            state.moving = true;
-                            state.opening = opening;
+                            let mut state = state1.lock().await;
+                            // state.moving = true;
+                            // state.opening = opening;
                             state.position_state = if opening { PositionState::MovingUp as u8 } else { PositionState::MovingDown as u8 };
                             state.target_position = new_pos;
                         }
@@ -245,18 +248,16 @@ impl ComelitWindowCoveringAccessory {
                         info!("Window covering {id1} reached the requested position {new_pos}");
                         // stop moving
                         client.toggle_device_status(&id1, opening).await?;
-                        let bytes = {
-                            let mut state = state1.lock().unwrap();
+                        {
+                            let mut state = state1.lock().await;
                             state.current_position = new_pos;
-                            state.moving = false;
-                            state.opening = false;
+                            // state.moving = false;
+                            // state.opening = false;
                             state.position_state = PositionState::Stopped as u8;
                             state.target_position = new_pos;
-                            serde_json::to_vec(&*state).unwrap()
-                        };
-
-                        let mut state_storage = storage.lock().await;
-                        state_storage.save_bytes(format!("{id1}.json").as_str(), &bytes).await.map_err(|e| ComelitClientError::Generic(e.to_string()))
+                            state.save(id1.as_str()).await
+                                .map_err(|e| ComelitClientError::Generic(e.to_string()))
+                        }
                     };
 
                     // spawn a task that waits for either the moving to finish or a cancellation
@@ -266,10 +267,10 @@ impl ComelitWindowCoveringAccessory {
                     let cancel_task = async move {
                         loop {
                             {
-                                let mut state = state2.lock().unwrap();
-                                if done_.load(Ordering::Relaxed) {
-                                    state.moving = false;
-                                    state.opening = false;
+                                let mut state = state2.lock().await;
+                                if !state.moving || done_.load(Ordering::Relaxed) {
+                                    // state.moving = false;
+                                    // state.opening = false;
                                     state.position_state = PositionState::Stopped as u8;
                                     break;
                                 }
@@ -300,9 +301,10 @@ impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccesso
     async fn update(&mut self, window_covering_data: &WindowCoveringDeviceData) -> Result<()> {
         if let Some(status) = window_covering_data.power_status.as_ref() {
             let new_state = WindowCoveringState::from(window_covering_data);
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock().await;
             state.moving = new_state.moving;
             state.opening = new_state.opening;
+            state.save(&window_covering_data.id).await?;
             info!(
                 "Updated window covering {} position to {:?}",
                 self.id, status

@@ -1,5 +1,8 @@
+use anyhow::Result;
 use comelit_hub_rs::{WindowCoveringDeviceData, WindowCoveringStatus};
+use hap::storage::{FileStorage, Storage};
 use serde::{Deserialize, Serialize};
+use tracing::info;
 
 const FULLY_OPENED: u8 = 100;
 // const FULLY_CLOSED: u8 = 100;
@@ -11,6 +14,29 @@ pub(crate) struct WindowCoveringState {
     pub(crate) position_state: u8,
     pub(crate) moving: bool,
     pub(crate) opening: bool,
+}
+
+impl WindowCoveringState {
+    pub async fn from_storage(device_id: &str) -> Option<Self> {
+        if let Ok(t) = FileStorage::current_dir().await {
+            let key = &format!("{device_id}.json");
+            if let Ok(bytes) = t.load_bytes(key.as_str()).await
+                && let Ok(str) = String::from_utf8(bytes)
+                && let Ok(stored_state) = serde_json::from_str::<WindowCoveringState>(&str)
+            {
+                info!("Loaded state for {device_id}: {str}");
+                return Some(stored_state);
+            }
+        }
+        None
+    }
+
+    pub async fn save(&self, device_id: &str) -> Result<()> {
+        let mut t = FileStorage::current_dir().await?;
+        let key = &format!("{device_id}.json");
+        Ok(t.save_bytes(key, &serde_json::to_vec(self).unwrap())
+            .await?)
+    }
 }
 
 impl From<&WindowCoveringDeviceData> for WindowCoveringState {
