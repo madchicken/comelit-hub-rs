@@ -275,7 +275,11 @@ impl ComelitWindowCoveringAccessory {
                         loop {
                             {
                                 let mut state = state2.lock().await;
-                                state.current_position += delta_pos;
+                                if state.opening {
+                                    state.current_position += delta_pos;
+                                } else {
+                                    state.current_position -= delta_pos;
+                                }
                                 info!("Window covering {id_} is now at position {}", state.current_position);
                                 if done_.load(Ordering::Relaxed) {
                                     state.position_state = PositionState::Stopped as u8;
