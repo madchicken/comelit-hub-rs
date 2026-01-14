@@ -1,3 +1,5 @@
+use std::fmt::Display;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tracing::debug;
@@ -169,6 +171,17 @@ impl From<WindowCoveringStatus> for &str {
             WindowCoveringStatus::GoingUp => "1",
             WindowCoveringStatus::GoingDown => "2",
         }
+    }
+}
+
+impl Display for WindowCoveringStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let desc = match *self {
+            WindowCoveringStatus::Stopped => "stopped",
+            WindowCoveringStatus::GoingUp => "moving Up",
+            WindowCoveringStatus::GoingDown => "moving Down",
+        };
+        write!(f, "{}", desc)
     }
 }
 
@@ -590,7 +603,7 @@ pub struct WindowCoveringDeviceData {
     pub id: String,
     pub r#type: ObjectType,
     pub sub_type: ObjectSubtype,
-    pub status: Option<DeviceStatus>,
+    pub status: Option<WindowCoveringStatus>,
     #[serde(rename = "descrizione")]
     pub description: Option<String>,
     #[serde(rename = "powerst")]

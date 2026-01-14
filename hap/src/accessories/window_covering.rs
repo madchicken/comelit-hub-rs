@@ -129,9 +129,11 @@ impl ComelitWindowCoveringAccessory {
                 async move {
                     info!("Window covering POSITION STATE read {}", id_);
                     let state = state_.lock().await;
-                    let is_moving = state.moving;
-                    let opening = state.opening;
-                    match (is_moving, opening) {
+                    let WindowCoveringState {
+                        moving, opening, ..
+                    } = *state;
+                    drop(state);
+                    match (moving, opening) {
                         (true, true) => Ok(Some(PositionState::MovingUp as u8)),
                         (true, false) => Ok(Some(PositionState::MovingDown as u8)),
                         (false, true) => Ok(Some(PositionState::Stopped as u8)),
@@ -268,11 +270,13 @@ impl ComelitWindowCoveringAccessory {
                     let state2 = state.clone();
                     let done = Arc::new(AtomicBool::new(false));
                     let done_ = done.clone();
+                    let id_ = id.clone();
                     let cancel_task = async move {
                         loop {
                             {
                                 let mut state = state2.lock().await;
                                 state.current_position += delta_pos;
+                                info!("Window covering {id_} is now at position {}", state.current_position);
                                 if done_.load(Ordering::Relaxed) {
                                     state.position_state = PositionState::Stopped as u8;
                                     break;
@@ -302,12 +306,15 @@ impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccesso
     }
 
     async fn update(&mut self, window_covering_data: &WindowCoveringDeviceData) -> Result<()> {
-        if let Some(status) = window_covering_data.power_status.as_ref() {
+        if let Some(status) = window_covering_data.status.as_ref() {
+            info!("Window covering {} is {}", window_covering_data.id, *status);
             let new_state = WindowCoveringState::from(window_covering_data);
-            let mut state = self.state.lock().await;
-            state.moving = new_state.moving;
-            state.opening = new_state.opening;
-            state.save(&window_covering_data.id).await?;
+            {
+                let mut state = self.state.lock().await;
+                state.moving = new_state.moving;
+                state.opening = new_state.opening;
+                state.save(&window_covering_data.id).await?;
+            }
             info!(
                 "Updated window covering {} position to {:?}",
                 self.id, status

@@ -45,8 +45,7 @@ impl From<&WindowCoveringDeviceData> for WindowCoveringState {
         // or closed and if it is moving
         let position = FULLY_OPENED;
         let moving = data.power_status.clone().unwrap_or_default() != WindowCoveringStatus::Stopped;
-        let opening =
-            data.power_status.clone().unwrap_or_default() == WindowCoveringStatus::GoingUp;
+        let opening = data.status.clone().unwrap_or_default() == WindowCoveringStatus::GoingUp;
 
         let position_state = if moving {
             if opening {
