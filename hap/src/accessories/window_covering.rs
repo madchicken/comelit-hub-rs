@@ -210,24 +210,30 @@ impl ComelitWindowCoveringAccessory {
                     }
 
                     let id = id.clone();
-                    // if the new position is greater the blind is opening
+                    // if the new position is greater the blind is opening (100 is fully open, 0 closed)
                     let opening = position > new_pos;
-                    let delta = Duration::from_secs((if position > new_pos {
+                    let delta = Duration::from_secs((if opening {
                         (opening_time.as_secs_f32() / 100f32) * (position - new_pos) as f32
                     } else {
                         (closing_time.as_secs_f32() / 100f32) * (new_pos - position) as f32
                     }) as u64);
 
+                    let delta_pos = if opening {
+                        (delta.as_secs()) / (position - new_pos) as u64
+                    } else {
+                        (delta.as_secs()) / (new_pos - position) as u64
+                    } as u8;
 
                     info!("Position change for window covering {} from {} to {}", id, position, new_pos);
                     // Check if we are already moving
                     if moving {
-                        info!("Previous position change for window covering {} is still in progress, stopping it", id);
+                        info!("Window covering {} is moving, stopping it", id);
                         client.toggle_device_status(&id, position_state == PositionState::MovingDown as u8).await?; // stop the device
                         let mut state = state.lock().await;
-                        state.moving = false;
                         state.position_state = PositionState::Stopped as u8;
                         state.target_position = new_pos;
+                    } else {
+                        info!("Window covering {} is not moving", id);
                     }
                     // Now move it in the new position
                     let id1 = id.clone();
@@ -251,8 +257,6 @@ impl ComelitWindowCoveringAccessory {
                         {
                             let mut state = state1.lock().await;
                             state.current_position = new_pos;
-                            // state.moving = false;
-                            // state.opening = false;
                             state.position_state = PositionState::Stopped as u8;
                             state.target_position = new_pos;
                             state.save(id1.as_str()).await
@@ -268,9 +272,8 @@ impl ComelitWindowCoveringAccessory {
                         loop {
                             {
                                 let mut state = state2.lock().await;
-                                if !state.moving || done_.load(Ordering::Relaxed) {
-                                    // state.moving = false;
-                                    // state.opening = false;
+                                state.current_position += delta_pos;
+                                if done_.load(Ordering::Relaxed) {
                                     state.position_state = PositionState::Stopped as u8;
                                     break;
                                 }
