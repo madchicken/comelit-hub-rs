@@ -4,16 +4,14 @@ use hap::storage::{FileStorage, Storage};
 use serde::{Deserialize, Serialize};
 use tracing::info;
 
-const FULLY_OPENED: u8 = 100;
-// const FULLY_CLOSED: u8 = 100;
+pub const FULLY_OPENED: u8 = 100;
+pub const FULLY_CLOSED: u8 = 0;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 pub(crate) struct WindowCoveringState {
     pub(crate) current_position: u8,
     pub(crate) target_position: u8,
-    pub(crate) position_state: u8,
-    pub(crate) moving: bool,
-    pub(crate) opening: bool,
+    pub(crate) position_state: PositionState,
 }
 
 impl WindowCoveringState {
@@ -37,6 +35,14 @@ impl WindowCoveringState {
         Ok(t.save_bytes(key, &serde_json::to_vec(self).unwrap())
             .await?)
     }
+
+    pub fn is_moving(&self) -> bool {
+        self.position_state != PositionState::Stopped
+    }
+
+    pub fn is_opening(&self) -> bool {
+        self.current_position < self.target_position
+    }
 }
 
 impl From<&WindowCoveringDeviceData> for WindowCoveringState {
@@ -49,23 +55,22 @@ impl From<&WindowCoveringDeviceData> for WindowCoveringState {
 
         let position_state = if moving {
             if opening {
-                PositionState::MovingUp as u8
+                PositionState::MovingUp
             } else {
-                PositionState::MovingDown as u8
+                PositionState::MovingDown
             }
         } else {
-            PositionState::Stopped as u8
+            PositionState::Stopped
         };
         WindowCoveringState {
             current_position: position,
             target_position: position,
             position_state,
-            moving,
-            opening,
         }
     }
 }
 
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[repr(u8)]
 pub(crate) enum PositionState {
     MovingDown = 0, // Going to the minimum value specified in metadata (min is 0 that is FULLY CLOSED)
