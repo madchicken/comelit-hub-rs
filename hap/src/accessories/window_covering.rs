@@ -401,8 +401,8 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
         client.toggle_device_status(&id, !opening).await?;
         // sleep for the required time
         while delta.as_millis() > 0 {
-            delta -= Duration::from_millis(1);
-            tokio::time::sleep(Duration::from_millis(1)).await;
+            delta -= Duration::from_millis(10);
+            tokio::time::sleep(Duration::from_millis(10)).await;
             if receiver.try_recv().is_ok() {
                 // someone killed this moving process
                 warn!("Window covering {} was interrupted", id);
@@ -414,7 +414,7 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             id
         );
         // stop moving
-        client.toggle_device_status(&id, opening).await?;
+        client.toggle_device_status(&id, !opening).await?;
         let mut state = state.lock().await;
         state.current_position = new_pos;
         state.position_state = PositionState::Stopped;
@@ -438,7 +438,8 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 let mut state = state.lock().await;
                 let sign = if state.is_opening() { 1.0 } else { -1.0 };
                 let delta_pos = sign * 100.0 / config.opening_time.as_secs() as f32;
-                let current_position = (state.current_position as f32 + delta_pos).ceil() as u8;
+                let current_position =
+                    (state.current_position as f32 + delta_pos.ceil()).ceil() as u8;
                 if state.is_opening() {
                     state.current_position = min(FULLY_OPENED, current_position);
                 } else {
