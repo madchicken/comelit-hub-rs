@@ -13,13 +13,13 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::oneshot::{Receiver, Sender};
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::accessories::ComelitAccessory;
 use crate::accessories::state::window_covering::{
     FULLY_CLOSED, FULLY_OPENED, PositionState, WindowCoveringState,
 };
-use comelit_hub_rs::{ComelitClient, WindowCoveringDeviceData};
+use comelit_hub_rs::{ComelitClient, ComelitClientTrait, WindowCoveringDeviceData};
 
 #[derive(Clone, Copy)]
 pub struct WindowCoveringConfig {
@@ -29,7 +29,7 @@ pub struct WindowCoveringConfig {
 
 pub(crate) struct ComelitWindowCoveringAccessory {
     id: String,
-    moving_observer: Arc<TokioMutex<MovingObserverTask>>,
+    moving_observer: Arc<TokioMutex<MovingObserverTask<ComelitClient>>>,
 }
 
 impl ComelitWindowCoveringAccessory {
@@ -178,7 +178,7 @@ impl ComelitWindowCoveringAccessory {
 
     async fn setup_update_target_position(
         accessory: &mut WindowCoveringAccessory,
-        moving_observer: Arc<TokioMutex<MovingObserverTask>>,
+        moving_observer: Arc<TokioMutex<MovingObserverTask<ComelitClient>>>,
     ) {
         accessory
             .window_covering
@@ -227,27 +227,29 @@ enum MovingCommand {
     Stop,
 }
 
+#[derive(Debug, Default)]
 enum MovingStatus {
     Moving,
     MovingExternal,
+    #[default]
     Stopped,
 }
 
-struct MovingObserverTask {
+struct MovingObserverTask<C: ComelitClientTrait> {
     id: String,
     moving_sender: Option<Sender<MovingCommand>>,
     observing_sender: Option<Sender<MovingCommand>>,
     state: Arc<TokioMutex<WindowCoveringState>>,
-    client: ComelitClient,
+    client: C,
     config: WindowCoveringConfig,
-    running: MovingStatus,
+    moving_status: MovingStatus,
 }
 
-impl MovingObserverTask {
+impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
     pub fn new(
         id: &str,
         state: Arc<TokioMutex<WindowCoveringState>>,
-        client: ComelitClient,
+        client: C,
         config: WindowCoveringConfig,
     ) -> Self {
         Self {
@@ -257,7 +259,7 @@ impl MovingObserverTask {
             state,
             client,
             config,
-            running: MovingStatus::Stopped,
+            moving_status: MovingStatus::default(),
         }
     }
 
@@ -283,7 +285,7 @@ impl MovingObserverTask {
         } else {
             info!("Window covering {} is not moving", self.id);
         }
-        self.running = MovingStatus::Moving; // the movement is initiated internally
+        self.moving_status = MovingStatus::Moving; // the movement is initiated internally
         // Now move it in the new position
         let (moving_sender, moving_receiver) = tokio::sync::oneshot::channel::<MovingCommand>();
         let id = self.id.clone();
@@ -313,12 +315,12 @@ impl MovingObserverTask {
 
     async fn update(&mut self, new_state: WindowCoveringState) -> Result<()> {
         let mut state = self.state.lock().await;
-        match self.running {
+        match self.moving_status {
             MovingStatus::Stopped => {
-                *state = new_state;
+                state.position_state = new_state.position_state;
                 let (observing_sender, observe_receiver) =
                     tokio::sync::oneshot::channel::<MovingCommand>();
-                self.running = MovingStatus::MovingExternal; // the movement is initiated externally
+                self.moving_status = MovingStatus::MovingExternal; // the movement is initiated externally
                 tokio::spawn(Self::start_observing(
                     self.id.clone(),
                     self.state.clone(),
@@ -334,7 +336,7 @@ impl MovingObserverTask {
                 match new_state.position_state {
                     PositionState::Stopped => {
                         // someone stopped the movement
-                        self.running = MovingStatus::Stopped;
+                        self.moving_status = MovingStatus::Stopped;
                         if let Some(sender) = self.moving_sender.take() {
                             sender.send(MovingCommand::Stop).ok();
                         }
@@ -350,7 +352,7 @@ impl MovingObserverTask {
                 PositionState::MovingDown => todo!(),
                 PositionState::MovingUp => todo!(),
                 PositionState::Stopped => {
-                    self.running = MovingStatus::Stopped;
+                    self.moving_status = MovingStatus::Stopped;
                     if let Some(sender) = self.moving_sender.take() {
                         sender.send(MovingCommand::Stop).ok();
                     }
@@ -372,7 +374,7 @@ impl MovingObserverTask {
         new_pos: u8,
         state: Arc<TokioMutex<WindowCoveringState>>,
         config: WindowCoveringConfig,
-        client: ComelitClient,
+        client: C,
         mut receiver: Receiver<MovingCommand>,
     ) -> Result<()> {
         // if the new position is greater the blind is opening (100 is fully open, 0 closed)
@@ -427,24 +429,22 @@ impl MovingObserverTask {
         id: String,
         state: Arc<TokioMutex<WindowCoveringState>>,
         config: WindowCoveringConfig,
-        client: ComelitClient,
+        client: C,
         mut receiver: Receiver<MovingCommand>,
     ) -> Result<()> {
         loop {
             tokio::time::sleep(Duration::from_millis(1000)).await;
             {
                 let mut state = state.lock().await;
+                let sign = if state.is_opening() { 1.0 } else { -1.0 };
+                let delta_pos = sign * 100.0 / config.opening_time.as_secs() as f32;
+                let current_position = (state.current_position as f32 + delta_pos).ceil() as u8;
                 if state.is_opening() {
-                    let delta_pos = config.opening_time.as_secs() as f32 / 100.0;
-                    let current_position =
-                        (state.current_position as f32 + delta_pos).round() as u8;
                     state.current_position = min(FULLY_OPENED, current_position);
                 } else {
-                    let delta_pos = config.closing_time.as_secs() as f32 / 100.0;
-                    let current_position =
-                        (state.current_position as f32 - delta_pos).round() as u8;
                     state.current_position = max(FULLY_CLOSED, current_position);
                 }
+                debug!("Current position is now {}", state.current_position);
                 info!(
                     "Window covering {id} is now at position {}",
                     state.current_position
@@ -454,6 +454,7 @@ impl MovingObserverTask {
                     let on = state.position_state == PositionState::MovingDown;
                     client.toggle_device_status(&id, on).await?; // stop the device
                     state.position_state = PositionState::Stopped;
+                    debug!("Stopped observing");
                     break Ok(());
                 }
             }
@@ -462,29 +463,252 @@ impl MovingObserverTask {
 }
 
 #[cfg(test)]
-mod tests {
+pub mod testing {
+    use async_trait::async_trait;
+    use comelit_hub_rs::{
+        ActionType, ClimaMode, ClimaOnOff, ComelitClientError, ComelitClientTrait, HomeDeviceData,
+        MacAddress, State, ThermoSeason,
+    };
+    use dashmap::DashMap;
+    use tokio::time::sleep;
+
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use tokio::sync::RwLock;
+    use tokio::task::JoinHandle;
+
+    #[derive(Clone, Default)]
+    pub struct FakeComelitClient {
+        pub toggle_calls: Arc<RwLock<Vec<(String, bool)>>>,
+        pub action_calls: Arc<RwLock<Vec<(String, ActionType, i32)>>>,
+        pub should_fail: Arc<AtomicBool>,
+    }
+
+    #[allow(dead_code)]
+    impl FakeComelitClient {
+        pub fn new() -> Self {
+            Self::default()
+        }
+
+        pub fn failing() -> Self {
+            Self {
+                should_fail: Arc::new(AtomicBool::new(true)),
+                ..Default::default()
+            }
+        }
+    }
+
+    #[async_trait]
+    impl ComelitClientTrait for FakeComelitClient {
+        fn mac_address(&self) -> &MacAddress {
+            // Return a dummy MAC address
+            static MAC: MacAddress = MacAddress::new([0, 0, 0, 0, 0, 0]);
+            &MAC
+        }
+
+        async fn disconnect(&self) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn login(&self, _state: State) -> Result<JoinHandle<()>, ComelitClientError> {
+            Ok(tokio::task::spawn(async {}))
+        }
+
+        async fn info<T>(
+            &self,
+            _device_id: &str,
+            _detail_level: u8,
+        ) -> Result<Vec<T>, ComelitClientError>
+        where
+            T: serde::de::DeserializeOwned + Send,
+        {
+            Ok(vec![])
+        }
+
+        async fn subscribe(&self, _device_id: &str) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn fetch_index(
+            &self,
+            _level: u8,
+        ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+            Ok(DashMap::new())
+        }
+
+        async fn fetch_external_devices(
+            &self,
+        ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+            Ok(DashMap::new())
+        }
+
+        async fn send_action(
+            &self,
+            device_id: &str,
+            action_type: ActionType,
+            value: i32,
+        ) -> Result<(), ComelitClientError> {
+            self.action_calls
+                .write()
+                .await
+                .push((device_id.to_string(), action_type, value));
+            Ok(())
+        }
+
+        async fn toggle_device_status(&self, id: &str, on: bool) -> Result<(), ComelitClientError> {
+            if self.should_fail.load(Ordering::Relaxed) {
+                return Err(ComelitClientError::Generic("Fake error".to_string()));
+            }
+            self.toggle_calls.write().await.push((id.to_string(), on));
+            Ok(())
+        }
+
+        async fn toggle_blind_position(
+            &self,
+            _id: &str,
+            _position: u8,
+        ) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn set_thermostat_temperature(
+            &self,
+            _id: &str,
+            _temperature: i32,
+        ) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn set_thermostat_mode(
+            &self,
+            _id: &str,
+            _mode: ClimaMode,
+        ) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn set_thermostat_season(
+            &self,
+            _id: &str,
+            _mode: ThermoSeason,
+        ) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn toggle_thermostat_status(
+            &self,
+            _id: &str,
+            _mode: ClimaOnOff,
+        ) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+
+        async fn set_humidity(&self, _id: &str, _humidity: i32) -> Result<(), ComelitClientError> {
+            Ok(())
+        }
+    }
 
     #[tokio::test]
-    async fn test_move_to() {
-        let mut state = WindowCoveringState {
+    async fn test_close() {
+        let state = WindowCoveringState {
             current_position: FULLY_OPENED,
             target_position: FULLY_CLOSED,
-            position_state: PositionState::MovingDown,
+            position_state: PositionState::Stopped,
         };
         let config = WindowCoveringConfig {
             opening_time: Duration::from_secs(5),
             closing_time: Duration::from_secs(5),
         };
-        let client = ComelitClient::default();
-        let (sender, receiver) = tokio::sync::mpsc::channel(1);
+        let client = FakeComelitClient::new();
         let mut window_covering =
             MovingObserverTask::new("123", Arc::new(TokioMutex::new(state)), client, config);
 
-        window_covering.move_to(0, 100).await.unwrap();
-        assert_eq!(window_covering.state.lock().await.current_position, 100);
-
-        window_covering.move_to(100, 0).await.unwrap();
+        window_covering
+            .move_to(FULLY_CLOSED, FULLY_OPENED)
+            .await
+            .unwrap();
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(window_covering.state.lock().await.target_position, 100);
         assert_eq!(window_covering.state.lock().await.current_position, 0);
+        sleep(Duration::from_secs(5)).await;
+        assert_eq!(window_covering.state.lock().await.current_position, 100);
+        assert_eq!(
+            window_covering.state.lock().await.position_state,
+            PositionState::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn test_open() {
+        let state = WindowCoveringState {
+            current_position: FULLY_CLOSED,
+            target_position: FULLY_OPENED,
+            position_state: PositionState::Stopped,
+        };
+        let config = WindowCoveringConfig {
+            opening_time: Duration::from_secs(5),
+            closing_time: Duration::from_secs(5),
+        };
+        let client = FakeComelitClient::new();
+        let mut window_covering =
+            MovingObserverTask::new("123", Arc::new(TokioMutex::new(state)), client, config);
+
+        window_covering
+            .move_to(FULLY_OPENED, FULLY_CLOSED)
+            .await
+            .unwrap();
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(window_covering.state.lock().await.target_position, 0);
+        assert_eq!(window_covering.state.lock().await.current_position, 100);
+        sleep(Duration::from_secs(5)).await;
+        assert_eq!(window_covering.state.lock().await.current_position, 0);
+        assert_eq!(
+            window_covering.state.lock().await.position_state,
+            PositionState::Stopped
+        );
+    }
+
+    #[tokio::test]
+    async fn test_update() {
+        let state = WindowCoveringState {
+            current_position: FULLY_CLOSED,
+            target_position: FULLY_OPENED,
+            position_state: PositionState::Stopped,
+        };
+        let config = WindowCoveringConfig {
+            opening_time: Duration::from_secs(5),
+            closing_time: Duration::from_secs(5),
+        };
+        let client = FakeComelitClient::new();
+        let mut window_covering =
+            MovingObserverTask::new("123", Arc::new(TokioMutex::new(state)), client, config);
+
+        window_covering
+            .update(WindowCoveringState {
+                current_position: FULLY_CLOSED,
+                target_position: FULLY_OPENED,
+                position_state: PositionState::MovingUp,
+            })
+            .await
+            .unwrap();
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(window_covering.state.lock().await.target_position, 100);
+        assert_eq!(window_covering.state.lock().await.current_position, 0);
+        sleep(Duration::from_secs(3)).await;
+        assert_eq!(window_covering.state.lock().await.current_position, 60);
+        window_covering
+            .update(WindowCoveringState {
+                current_position: FULLY_OPENED,
+                target_position: FULLY_OPENED,
+                position_state: PositionState::Stopped,
+            })
+            .await
+            .unwrap();
+        sleep(Duration::from_secs(1)).await;
+        assert_eq!(window_covering.state.lock().await.current_position, 80);
+        assert_eq!(
+            window_covering.state.lock().await.position_state,
+            PositionState::Stopped
+        );
     }
 }

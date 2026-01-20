@@ -47,9 +47,6 @@ impl WindowCoveringState {
 
 impl From<&WindowCoveringDeviceData> for WindowCoveringState {
     fn from(data: &WindowCoveringDeviceData) -> Self {
-        // We don't know the position of the blind at the beginning, we only know if it is open
-        // or closed and if it is moving
-        let position = FULLY_OPENED;
         let moving = data.power_status.clone().unwrap_or_default() != WindowCoveringStatus::Stopped;
         let opening = data.status.clone().unwrap_or_default() == WindowCoveringStatus::GoingUp;
 
@@ -63,14 +60,14 @@ impl From<&WindowCoveringDeviceData> for WindowCoveringState {
             PositionState::Stopped
         };
         WindowCoveringState {
-            current_position: position,
-            target_position: position,
+            current_position: if opening { FULLY_CLOSED } else { FULLY_OPENED },
+            target_position: if opening { FULLY_OPENED } else { FULLY_CLOSED },
             position_state,
         }
     }
 }
 
-#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Debug)]
 #[repr(u8)]
 pub(crate) enum PositionState {
     MovingDown = 0, // Going to the minimum value specified in metadata (min is 0 that is FULLY CLOSED)

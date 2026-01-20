@@ -15,6 +15,10 @@ fn to_string(bytes: &[u8]) -> String {
 pub struct MacAddress([u8; 6]);
 
 impl MacAddress {
+    pub const fn new(bytes: [u8; 6]) -> Self {
+        Self(bytes)
+    }
+
     pub fn as_bytes(&self) -> &[u8; 6] {
         &self.0
     }
