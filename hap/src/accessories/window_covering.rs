@@ -414,7 +414,7 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             id
         );
         // stop moving
-        client.toggle_device_status(&id, !opening).await?;
+        client.toggle_device_status(&id, opening).await?;
         let mut state = state.lock().await;
         state.current_position = new_pos;
         state.position_state = PositionState::Stopped;
@@ -429,7 +429,7 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
         id: String,
         state: Arc<TokioMutex<WindowCoveringState>>,
         config: WindowCoveringConfig,
-        client: C,
+        _client: C,
         mut receiver: Receiver<MovingCommand>,
     ) -> Result<()> {
         loop {
@@ -437,9 +437,8 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             {
                 let mut state = state.lock().await;
                 let sign = if state.is_opening() { 1.0 } else { -1.0 };
-                let delta_pos = sign * 100.0 / config.opening_time.as_secs() as f32;
-                let current_position =
-                    (state.current_position as f32 + delta_pos.ceil()).ceil() as u8;
+                let delta_pos = sign * (100.0 / config.opening_time.as_secs() as f32).ceil();
+                let current_position = (state.current_position as f32 + delta_pos).ceil() as u8;
                 if state.is_opening() {
                     state.current_position = min(FULLY_OPENED, current_position);
                 } else {

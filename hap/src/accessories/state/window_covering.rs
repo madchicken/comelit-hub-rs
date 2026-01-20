@@ -79,3 +79,22 @@ pub(crate) enum PositionState {
     MovingUp = 1, // Going to the maximum value specified in metadata (max is 100 that is FULLY OPENED)
     Stopped = 2,  // Stopped
 }
+
+#[cfg(test)]
+mod test {
+    use crate::accessories::state::window_covering::{
+        FULLY_OPENED, PositionState, WindowCoveringState,
+    };
+
+    #[test]
+    fn test_decode() {
+        let message = r###"
+            {"id":"DOM#BL#20.1","type":2,"sub_type":7,"sched_status":"0","status":"0","powerst":"0","open_status":"1","ConsumptionThreshold":-1,"isShiomMis":0,"instant_power":0,"totalConsumption":-1,"isDetached":0,"scale":-1}
+        "###;
+        let data = serde_json::from_str(message).unwrap();
+        let state = WindowCoveringState::from(&data);
+        assert_eq!(state.current_position, FULLY_OPENED);
+        assert_eq!(state.target_position, FULLY_OPENED);
+        assert_eq!(state.position_state, PositionState::Stopped);
+    }
+}
