@@ -452,8 +452,8 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 );
                 if receiver.try_recv().is_ok() {
                     // we should send 1 (true) if the window is moving down or 0 (false) if it's moving up
-                    let on = state.position_state == PositionState::MovingDown;
-                    client.toggle_device_status(&id, on).await?; // stop the device
+                    // let on = state.position_state == PositionState::MovingDown;
+                    // client.toggle_device_status(&id, on).await?; // stop the device
                     state.position_state = PositionState::Stopped;
                     debug!("Stopped observing");
                     break Ok(());
