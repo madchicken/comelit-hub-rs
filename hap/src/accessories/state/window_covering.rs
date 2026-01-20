@@ -59,9 +59,14 @@ impl From<&WindowCoveringDeviceData> for WindowCoveringState {
         } else {
             PositionState::Stopped
         };
+        let current_position = if opening { FULLY_CLOSED } else { FULLY_OPENED };
         WindowCoveringState {
-            current_position: if opening { FULLY_CLOSED } else { FULLY_OPENED },
-            target_position: if opening { FULLY_OPENED } else { FULLY_CLOSED },
+            current_position,
+            target_position: if moving {
+                if opening { FULLY_OPENED } else { FULLY_CLOSED }
+            } else {
+                current_position
+            },
             position_state,
         }
     }
