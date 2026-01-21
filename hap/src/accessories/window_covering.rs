@@ -470,7 +470,8 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 );
                 if receiver.try_recv().is_ok() {
                     state.position_state = PositionState::Stopped;
-                    debug!("Stopped observing");
+                    state.target_position = state.current_position;
+                    info!("Received a stop signal");
                     break Ok(());
                 }
             }
@@ -722,6 +723,7 @@ pub mod testing {
             .unwrap();
         sleep(Duration::from_secs(1)).await;
         assert_eq!(window_covering.state.lock().await.current_position, 80);
+        assert_eq!(window_covering.state.lock().await.target_position, 80);
         assert_eq!(
             window_covering.state.lock().await.position_state,
             PositionState::Stopped
