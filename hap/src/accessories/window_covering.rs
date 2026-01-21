@@ -1,4 +1,3 @@
-use anyhow::anyhow;
 use anyhow::{Context, Result};
 use futures::FutureExt;
 use hap::characteristic::HapCharacteristic;
@@ -13,6 +12,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::oneshot::{Receiver, Sender};
+use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::accessories::ComelitAccessory;
@@ -274,23 +274,38 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
         }
 
         // Check if we are already moving
-        if let Some(observer) = self.observing_sender.take() {
+        if self.observing_sender.is_some() || self.moving_sender.is_some() {
             info!(
                 "Window covering {} was already moving, stopping it",
                 self.id
             );
-            if observer.send(MovingCommand::Stop).is_err() {
-                return Err(anyhow!("Failed to send message to observer"));
+            // Stop the movement: this will trigger an update event that will reset the state
+            // we should send 1 (true) if the window is moving down or 0 (false) if it's moving up
+            let on = {
+                let state = self.state.lock().await;
+                state.position_state == PositionState::MovingDown
+            };
+            self.client.toggle_device_status(&self.id, on).await?;
+            // wait a bit until the message is processed
+            loop {
+                sleep(Duration::from_millis(100)).await;
+                let stopped = {
+                    let state = self.state.lock().await;
+                    state.position_state == PositionState::Stopped
+                };
+                if stopped {
+                    break;
+                }
             }
         } else {
             info!("Window covering {} is not moving", self.id);
         }
+
         self.moving_status = MovingStatus::Moving; // the movement is initiated internally
         // Now move it in the new position
         let (moving_sender, moving_receiver) = tokio::sync::oneshot::channel::<MovingCommand>();
-        let id = self.id.clone();
         tokio::spawn(Self::start_moving(
-            id,
+            self.id.clone(),
             old_pos,
             new_pos,
             self.state.clone(),
@@ -298,7 +313,7 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             self.client.clone(),
             moving_receiver,
         ));
-        // spawn a task that waits for either the moving to finish or a cancellation
+        // spawn a task that monitors the position
         let (observing_sender, observe_receiver) = tokio::sync::oneshot::channel::<MovingCommand>();
         tokio::spawn(Self::start_observing(
             self.id.clone(),
@@ -339,9 +354,11 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                         self.moving_status = MovingStatus::Stopped;
                         if let Some(sender) = self.moving_sender.take() {
                             sender.send(MovingCommand::Stop).ok();
+                            self.moving_sender.take();
                         }
                         if let Some(observing_sender) = self.observing_sender.take() {
                             observing_sender.send(MovingCommand::Stop).ok();
+                            self.observing_sender.take();
                         }
                     }
                     PositionState::MovingUp => {}
@@ -349,15 +366,17 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 }
             }
             MovingStatus::MovingExternal => match new_state.position_state {
-                PositionState::MovingDown => todo!(),
-                PositionState::MovingUp => todo!(),
+                PositionState::MovingDown => {}
+                PositionState::MovingUp => {}
                 PositionState::Stopped => {
                     self.moving_status = MovingStatus::Stopped;
                     if let Some(sender) = self.moving_sender.take() {
                         sender.send(MovingCommand::Stop).ok();
+                        self.moving_sender.take();
                     }
                     if let Some(observing_sender) = self.observing_sender.take() {
                         observing_sender.send(MovingCommand::Stop).ok();
+                        self.observing_sender.take();
                     }
                 }
             },
@@ -450,9 +469,6 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                     state.current_position
                 );
                 if receiver.try_recv().is_ok() {
-                    // we should send 1 (true) if the window is moving down or 0 (false) if it's moving up
-                    // let on = state.position_state == PositionState::MovingDown;
-                    // client.toggle_device_status(&id, on).await?; // stop the device
                     state.position_state = PositionState::Stopped;
                     debug!("Stopped observing");
                     break Ok(());
