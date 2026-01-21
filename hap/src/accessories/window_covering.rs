@@ -333,9 +333,11 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
         match self.moving_status {
             MovingStatus::Stopped => {
                 state.position_state = new_state.position_state;
+                state.target_position = new_state.target_position;
                 let (observing_sender, observe_receiver) =
                     tokio::sync::oneshot::channel::<MovingCommand>();
                 self.moving_status = MovingStatus::MovingExternal; // the movement is initiated externally
+                info!("External move initiated: {new_state:?}");
                 tokio::spawn(Self::start_observing(
                     self.id.clone(),
                     self.state.clone(),

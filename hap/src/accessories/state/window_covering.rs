@@ -7,7 +7,7 @@ use tracing::info;
 pub const FULLY_OPENED: u8 = 100;
 pub const FULLY_CLOSED: u8 = 0;
 
-#[derive(Clone, Copy, Serialize, Deserialize)]
+#[derive(Clone, Copy, Serialize, Deserialize, Debug)]
 pub(crate) struct WindowCoveringState {
     pub(crate) current_position: u8,
     pub(crate) target_position: u8,
