@@ -354,13 +354,12 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                     PositionState::Stopped => {
                         // someone stopped the movement
                         self.moving_status = MovingStatus::Stopped;
+                        info!("Received a stop signal");
                         if let Some(sender) = self.moving_sender.take() {
                             sender.send(MovingCommand::Stop).ok();
-                            self.moving_sender.take();
                         }
                         if let Some(observing_sender) = self.observing_sender.take() {
                             observing_sender.send(MovingCommand::Stop).ok();
-                            self.observing_sender.take();
                         }
                     }
                     PositionState::MovingUp => {}
@@ -372,13 +371,12 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 PositionState::MovingUp => {}
                 PositionState::Stopped => {
                     self.moving_status = MovingStatus::Stopped;
+                    info!("Received a stop signal");
                     if let Some(sender) = self.moving_sender.take() {
                         sender.send(MovingCommand::Stop).ok();
-                        self.moving_sender.take();
                     }
                     if let Some(observing_sender) = self.observing_sender.take() {
                         observing_sender.send(MovingCommand::Stop).ok();
-                        self.observing_sender.take();
                     }
                 }
             },
