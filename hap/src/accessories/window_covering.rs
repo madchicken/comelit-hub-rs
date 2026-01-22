@@ -1,6 +1,8 @@
 use anyhow::{Context, Result};
 use futures::FutureExt;
+use hap::HapType;
 use hap::characteristic::HapCharacteristic;
+use hap::pointer::Accessory;
 use hap::{
     accessory::{AccessoryInformation, window_covering::WindowCoveringAccessory},
     characteristic::AsyncCharacteristicCallbacks,
@@ -30,6 +32,7 @@ pub struct WindowCoveringConfig {
 pub(crate) struct ComelitWindowCoveringAccessory {
     id: String,
     moving_observer: Arc<TokioMutex<MovingObserverTask<ComelitClient>>>,
+    accessory: Accessory,
 }
 
 impl ComelitWindowCoveringAccessory {
@@ -110,10 +113,11 @@ impl ComelitWindowCoveringAccessory {
         )));
         Self::setup_update_target_position(&mut wc_accessory, moving_observer.clone()).await;
 
-        server.add_accessory(wc_accessory).await?;
+        let accessory = server.add_accessory(wc_accessory).await?;
         Ok(Self {
             id: device_id.to_string(),
             moving_observer,
+            accessory,
         })
     }
 
@@ -213,7 +217,10 @@ impl ComelitAccessory<WindowCoveringDeviceData> for ComelitWindowCoveringAccesso
             info!("Window covering {} is {}", window_covering_data.id, *status);
             let new_state = WindowCoveringState::from(window_covering_data);
             let mut observer = self.moving_observer.lock().await;
-            observer.update(new_state).await?;
+            observer
+                .update(new_state, Some(self.accessory.clone()))
+                .await?;
+
             info!(
                 "Updated window covering {} position to {:?}",
                 self.id, status
@@ -328,7 +335,11 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
         Ok(())
     }
 
-    async fn update(&mut self, new_state: WindowCoveringState) -> Result<()> {
+    async fn update(
+        &mut self,
+        new_state: WindowCoveringState,
+        accessory: Option<Accessory>,
+    ) -> Result<()> {
         let mut state = self.state.lock().await;
         match self.moving_status {
             MovingStatus::Stopped => {
@@ -381,7 +392,30 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 }
             },
         }
+        if let Some(accessory) = accessory {
+            let mut accessory = accessory.lock().await;
+            let service = accessory.get_mut_service(HapType::WindowCovering).unwrap();
+            let characteristic = service
+                .get_mut_characteristic(HapType::CurrentPosition)
+                .unwrap();
+            characteristic
+                .update_value(Value::from(state.current_position))
+                .await?;
 
+            let characteristic = service
+                .get_mut_characteristic(HapType::TargetPosition)
+                .unwrap();
+            characteristic
+                .update_value(Value::from(state.target_position))
+                .await?;
+
+            let characteristic = service
+                .get_mut_characteristic(HapType::PositionState)
+                .unwrap();
+            characteristic
+                .update_value(Value::from(state.position_state as u8))
+                .await?;
+        }
         Ok(())
     }
 
@@ -701,11 +735,14 @@ pub mod testing {
             MovingObserverTask::new("123", Arc::new(TokioMutex::new(state)), client, config);
 
         window_covering
-            .update(WindowCoveringState {
-                current_position: FULLY_CLOSED,
-                target_position: FULLY_OPENED,
-                position_state: PositionState::MovingUp,
-            })
+            .update(
+                WindowCoveringState {
+                    current_position: FULLY_CLOSED,
+                    target_position: FULLY_OPENED,
+                    position_state: PositionState::MovingUp,
+                },
+                None,
+            )
             .await
             .unwrap();
         sleep(Duration::from_secs(1)).await;
@@ -714,11 +751,14 @@ pub mod testing {
         sleep(Duration::from_secs(3)).await;
         assert_eq!(window_covering.state.lock().await.current_position, 60);
         window_covering
-            .update(WindowCoveringState {
-                current_position: FULLY_OPENED,
-                target_position: FULLY_OPENED,
-                position_state: PositionState::Stopped,
-            })
+            .update(
+                WindowCoveringState {
+                    current_position: FULLY_OPENED,
+                    target_position: FULLY_OPENED,
+                    position_state: PositionState::Stopped,
+                },
+                None,
+            )
             .await
             .unwrap();
         sleep(Duration::from_secs(1)).await;

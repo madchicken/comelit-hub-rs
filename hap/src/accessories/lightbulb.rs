@@ -3,10 +3,12 @@ use std::sync::atomic::Ordering;
 
 use anyhow::Result;
 use futures::FutureExt;
+use hap::HapType;
 use hap::characteristic::{CharacteristicCallbacks, HapCharacteristic};
 use hap::{
     accessory::{AccessoryInformation, lightbulb::LightbulbAccessory},
     characteristic::AsyncCharacteristicCallbacks,
+    pointer::Accessory as AccessoryPointer,
     server::{IpServer, Server},
 };
 use serde_json::Value;
@@ -19,6 +21,7 @@ use comelit_hub_rs::{ComelitClient, DeviceStatus, LightDeviceData};
 pub(crate) struct ComelitLightbulbAccessory {
     id: String,
     state: Arc<LightState>,
+    accessory: AccessoryPointer,
 }
 
 impl ComelitLightbulbAccessory {
@@ -72,10 +75,11 @@ impl ComelitLightbulbAccessory {
         )
         .await;
 
-        server.add_accessory(lightbulb_accessory).await?;
+        let accessory = server.add_accessory(lightbulb_accessory).await?;
         Ok(Self {
             id: device_id,
             state,
+            accessory,
         })
     }
 
@@ -136,6 +140,14 @@ impl ComelitAccessory<LightDeviceData> for ComelitLightbulbAccessory {
         let id = self.get_comelit_id();
         let is_on = light_data.status.clone().unwrap_or_default() == DeviceStatus::On;
         self.state.on.store(is_on, Ordering::Release);
+        let mut accessory = self.accessory.lock().await;
+        let service = accessory.get_mut_service(HapType::Lightbulb).unwrap();
+        service
+            .get_mut_characteristic(HapType::PowerState)
+            .unwrap()
+            .update_value(Value::from(is_on))
+            .await?;
+
         info!(
             "Updated power state for device {id}: {:?}",
             if is_on { "On" } else { "Off" }
