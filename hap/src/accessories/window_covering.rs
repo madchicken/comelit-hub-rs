@@ -114,6 +114,10 @@ impl ComelitWindowCoveringAccessory {
         Self::setup_update_target_position(&mut wc_accessory, moving_observer.clone()).await;
 
         let accessory = server.add_accessory(wc_accessory).await?;
+        moving_observer
+            .lock()
+            .await
+            .set_accessory(accessory.clone());
         Ok(Self {
             id: device_id.to_string(),
             moving_observer,
@@ -197,6 +201,8 @@ impl ComelitWindowCoveringAccessory {
                 let moving_observer = moving_observer.clone();
                 async move {
                     let mut moving_observer = moving_observer.lock().await;
+                    info!("Calling Window covering move to with {old_pos} - {new_pos}");
+
                     match moving_observer.move_to(old_pos, new_pos).await {
                         Ok(_) => Ok(()),
                         Err(err) => Err(err.into()),
@@ -250,6 +256,7 @@ struct MovingObserverTask<C: ComelitClientTrait> {
     client: C,
     config: WindowCoveringConfig,
     moving_status: MovingStatus,
+    accessory: Option<Accessory>,
 }
 
 impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
@@ -267,7 +274,12 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             client,
             config,
             moving_status: MovingStatus::default(),
+            accessory: None,
         }
+    }
+
+    pub fn set_accessory(&mut self, accessory: Accessory) {
+        self.accessory = Some(accessory);
     }
 
     async fn move_to(&mut self, old_pos: u8, new_pos: u8) -> Result<()> {
@@ -293,6 +305,7 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 state.position_state == PositionState::MovingDown
             };
             self.client.toggle_device_status(&self.id, on).await?;
+            update_accessory_status(self.accessory.clone(), self.state.clone()).await?;
             // wait a bit until the message is processed
             loop {
                 sleep(Duration::from_millis(100)).await;
@@ -326,7 +339,6 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             self.id.clone(),
             self.state.clone(),
             self.config,
-            self.client.clone(),
             observe_receiver,
         ));
 
@@ -353,7 +365,6 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                     self.id.clone(),
                     self.state.clone(),
                     self.config,
-                    self.client.clone(),
                     observe_receiver,
                 ));
                 self.observing_sender = Some(observing_sender);
@@ -392,30 +403,8 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
                 }
             },
         }
-        if let Some(accessory) = accessory {
-            let mut accessory = accessory.lock().await;
-            let service = accessory.get_mut_service(HapType::WindowCovering).unwrap();
-            let characteristic = service
-                .get_mut_characteristic(HapType::CurrentPosition)
-                .unwrap();
-            characteristic
-                .update_value(Value::from(state.current_position))
-                .await?;
-
-            let characteristic = service
-                .get_mut_characteristic(HapType::TargetPosition)
-                .unwrap();
-            characteristic
-                .update_value(Value::from(state.target_position))
-                .await?;
-
-            let characteristic = service
-                .get_mut_characteristic(HapType::PositionState)
-                .unwrap();
-            characteristic
-                .update_value(Value::from(state.position_state as u8))
-                .await?;
-        }
+        drop(state);
+        update_accessory_status(accessory, self.state.clone()).await?;
         Ok(())
     }
 
@@ -482,7 +471,6 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
         id: String,
         state: Arc<TokioMutex<WindowCoveringState>>,
         config: WindowCoveringConfig,
-        _client: C,
         mut receiver: Receiver<MovingCommand>,
     ) -> Result<()> {
         loop {
@@ -511,6 +499,41 @@ impl<C: ComelitClientTrait + 'static> MovingObserverTask<C> {
             }
         }
     }
+}
+
+async fn update_accessory_status(
+    accessory: Option<Accessory>,
+    state: Arc<TokioMutex<WindowCoveringState>>,
+) -> Result<(), anyhow::Error> {
+    if let Some(accessory) = accessory {
+        let state = {
+            let s = state.lock().await;
+            *s
+        };
+        let mut accessory = accessory.lock().await;
+        let service = accessory.get_mut_service(HapType::WindowCovering).unwrap();
+        let characteristic = service
+            .get_mut_characteristic(HapType::CurrentPosition)
+            .unwrap();
+        characteristic
+            .update_value(Value::from(state.current_position))
+            .await?;
+
+        let characteristic = service
+            .get_mut_characteristic(HapType::TargetPosition)
+            .unwrap();
+        characteristic
+            .update_value(Value::from(state.target_position))
+            .await?;
+
+        let characteristic = service
+            .get_mut_characteristic(HapType::PositionState)
+            .unwrap();
+        characteristic
+            .update_value(Value::from(state.position_state as u8))
+            .await?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
