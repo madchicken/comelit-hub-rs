@@ -135,21 +135,36 @@ pub fn setup_sighup_handler(
 
     std::thread::spawn(move || {
         for _ in signals.forever() {
-            info!("Received SIGHUP, reopening log files...");
+            // Use eprintln for the initial message since the log file may have been rotated
+            // and we want to ensure this diagnostic message is visible
+            eprintln!("SIGHUP received, reopening log files...");
 
-            if let Some(ref handle) = log_handle
-                && let Err(e) = handle.reopen()
-            {
-                eprintln!("Failed to reopen log file: {}", e);
+            let mut success = true;
+
+            if let Some(ref handle) = log_handle {
+                match handle.reopen() {
+                    Ok(()) => eprintln!("Log file reopened successfully"),
+                    Err(e) => {
+                        eprintln!("Failed to reopen log file: {}", e);
+                        success = false;
+                    }
+                }
             }
 
-            if let Some(ref handle) = err_handle
-                && let Err(e) = handle.reopen()
-            {
-                eprintln!("Failed to reopen error log file: {}", e);
+            if let Some(ref handle) = err_handle {
+                match handle.reopen() {
+                    Ok(()) => eprintln!("Error log file reopened successfully"),
+                    Err(e) => {
+                        eprintln!("Failed to reopen error log file: {}", e);
+                        success = false;
+                    }
+                }
             }
 
-            info!("Log files reopened successfully");
+            if success {
+                // Now that files are reopened, log to the new file
+                info!("Log files reopened after SIGHUP");
+            }
         }
     })
 }
