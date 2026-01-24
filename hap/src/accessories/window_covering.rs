@@ -213,7 +213,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
         // Send toggle command to Comelit
         // For blinds: true = moving down (closing), false = moving up (opening)
         let opening = direction == PositionState::MovingUp;
-        self.client.toggle_device_status(&self.id, !opening).await?;
+        self.client.toggle_device_status(&self.id, opening).await?;
 
         // Enter waiting state
         self.worker_state = WorkerState::WaitingForMoveConfirmation {
