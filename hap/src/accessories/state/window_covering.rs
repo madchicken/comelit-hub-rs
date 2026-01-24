@@ -35,14 +35,6 @@ impl WindowCoveringState {
         Ok(t.save_bytes(key, &serde_json::to_vec(self).unwrap())
             .await?)
     }
-
-    pub fn is_moving(&self) -> bool {
-        self.position_state != PositionState::Stopped
-    }
-
-    pub fn is_opening(&self) -> bool {
-        self.current_position < self.target_position
-    }
 }
 
 impl From<&WindowCoveringDeviceData> for WindowCoveringState {
