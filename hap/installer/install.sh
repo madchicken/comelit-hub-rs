@@ -28,9 +28,27 @@ install_macos() {
 
   cp ./macos/com.comelit.hub.hap.plist \
      /Library/LaunchDaemons/
+  mkdir -p /etc/comelit-hub-hap
+  cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
+  cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
+  cp ./comelit-hub-wrapper.sh /usr/local/bin/comelit-hub-hap-wrapper.sh
+  chmod 755 /usr/local/bin/comelit-hub-hap-wrapper.sh
+
+  cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
+  chmod 755 /usr/local/bin/comelit-hub-ctl
+
+  # Create log files with proper ownership
+  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chown comelit:wheel /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
+
+  cp ./macos/comelit-hub-hap.conf \
+     /etc/newsyslog.d/comelit-hub-hap.conf
+
+  newsyslog -v -f /etc/newsyslog.d/comelit-hub-hap.conf
 
   echo "✔ Services macOS installed"
 }
@@ -49,6 +67,24 @@ install_linux() {
   systemctl enable comelit-hub-hap
   systemctl restart comelit-hub-hap
 
+  mkdir -p /etc/comelit-hub-hap
+  cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
+  cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
+  cp ./comelit-hub-wrapper.sh /usr/local/bin/comelit-hub-hap-wrapper.sh
+  chmod 755 /usr/local/bin/comelit-hub-hap-wrapper.sh
+
+  cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
+  chmod 755 /usr/local/bin/comelit-hub-ctl
+
+  # Create log files with proper ownership
+  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chown comelit:comelit /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+
+  cp ./linux/comelit-hub-hap.conf \
+     /etc/logrotate.d/comelit-hub-hap
+
+  logrotate -f /etc/logrotate.d/comelit-hub-hap
   echo "✔ Services Linux installed"
 }
 

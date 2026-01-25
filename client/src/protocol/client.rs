@@ -27,6 +27,72 @@ use tokio::time::{interval, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
+#[async_trait]
+pub trait ComelitClientTrait: Send + Sync + Clone {
+    fn mac_address(&self) -> &MacAddress;
+
+    async fn disconnect(&self) -> Result<(), ComelitClientError>;
+
+    async fn login(&self, state: State) -> Result<JoinHandle<()>, ComelitClientError>;
+
+    async fn info<T>(
+        &self,
+        device_id: &str,
+        detail_level: u8,
+    ) -> Result<Vec<T>, ComelitClientError>
+    where
+        T: serde::de::DeserializeOwned + Send;
+
+    async fn subscribe(&self, device_id: &str) -> Result<(), ComelitClientError>;
+
+    async fn fetch_index(
+        &self,
+        level: u8,
+    ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError>;
+
+    async fn fetch_external_devices(
+        &self,
+    ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError>;
+
+    async fn send_action(
+        &self,
+        device_id: &str,
+        action_type: ActionType,
+        value: i32,
+    ) -> Result<(), ComelitClientError>;
+
+    async fn toggle_device_status(&self, id: &str, on: bool) -> Result<(), ComelitClientError>;
+
+    async fn toggle_blind_position(&self, id: &str, position: u8)
+    -> Result<(), ComelitClientError>;
+
+    async fn set_thermostat_temperature(
+        &self,
+        id: &str,
+        temperature: i32,
+    ) -> Result<(), ComelitClientError>;
+
+    async fn set_thermostat_mode(
+        &self,
+        id: &str,
+        mode: ClimaMode,
+    ) -> Result<(), ComelitClientError>;
+
+    async fn set_thermostat_season(
+        &self,
+        id: &str,
+        mode: ThermoSeason,
+    ) -> Result<(), ComelitClientError>;
+
+    async fn toggle_thermostat_status(
+        &self,
+        id: &str,
+        mode: ClimaOnOff,
+    ) -> Result<(), ComelitClientError>;
+
+    async fn set_humidity(&self, id: &str, humidity: i32) -> Result<(), ComelitClientError>;
+}
+
 pub const ROOT_ID: &str = "GEN#17#13#1";
 
 #[derive(Error, Debug)]
@@ -146,11 +212,12 @@ pub trait StatusUpdate {
     async fn status_update(&self, device: &HomeDeviceData);
 }
 
-#[allow(dead_code)]
+pub type ComelitObserver = Arc<dyn StatusUpdate + Sync + Send>;
+
 impl ComelitClient {
     pub async fn new(
         options: ComelitOptions,
-        observer: Option<Arc<dyn StatusUpdate + Sync + Send>>,
+        observer: Option<ComelitObserver>,
     ) -> Result<Self, ComelitClientError> {
         let hub = options.get_hub_info().await?;
         if let Some(hub) = hub {
@@ -198,13 +265,6 @@ impl ComelitClient {
             let req_id = Arc::new(AtomicU32::new(1));
             let _event_loop_task =
                 Self::start_event_loop(event_loop, manager_clone, read_topic_clone, observer);
-            let _ping_task = Self::start_ping(
-                client.clone(),
-                session.clone(),
-                req_id.clone(),
-                write_topic.as_str(),
-                request_manager.clone(),
-            );
 
             Ok(ComelitClient {
                 inner: Arc::new(Inner {
@@ -248,7 +308,7 @@ impl ComelitClient {
         Ok(())
     }
 
-    pub async fn login(&self, state: State) -> Result<(), ComelitClientError> {
+    pub async fn login(&self, state: State) -> Result<JoinHandle<()>, ComelitClientError> {
         let mut state = state.clone();
         loop {
             // Get a read lock
@@ -296,7 +356,15 @@ impl ComelitClient {
                         session_token: session_token.clone(),
                         agent_id,
                     });
-                    break Ok(());
+                    let ping_task = Self::start_ping(
+                        self.inner.client.clone(),
+                        self.inner.session.clone(),
+                        self.inner.req_id.clone(),
+                        self.inner.write_topic.as_str(),
+                        self.inner.request_manager.clone(),
+                    );
+
+                    break Ok(ping_task);
                 }
             }
         }
@@ -485,6 +553,7 @@ impl ComelitClient {
             let req_id = req_id.clone();
             let mut interval = tokio::time::interval(Duration::from_secs(5));
             interval.tick().await; // first tick is immediate
+            let mut failed_ping_requests: u8 = 0;
             loop {
                 tokio::select! {
                     // Trigger periodic updates
@@ -505,6 +574,11 @@ impl ComelitClient {
                                         tokio::select! {
                                             _ = res_interval.tick() => {
                                                 error!("Ping response timed out");
+                                                failed_ping_requests += 1;
+                                                if failed_ping_requests >= 3 {
+                                                    state.write().await.take(); // invalidate session
+                                                    failed_ping_requests = 0;
+                                                }
                                             }
                                             res = receiver => {
                                                 match res {
@@ -527,8 +601,8 @@ impl ComelitClient {
                                 }
                             },
                             _ => {
-                                // Do nothing, we are not logged in
-                                debug!("Not logged in, skipping ping");
+                                warn!("Not logged in, exiting from ping thread");
+                                break;
                             }
                         }
                     }
@@ -726,5 +800,101 @@ impl ComelitClient {
         } else {
             Err(ComelitClientError::InvalidState)
         }
+    }
+}
+
+#[async_trait]
+impl ComelitClientTrait for ComelitClient {
+    fn mac_address(&self) -> &MacAddress {
+        &self.inner.mac_address
+    }
+
+    async fn disconnect(&self) -> Result<(), ComelitClientError> {
+        ComelitClient::disconnect(self).await
+    }
+
+    async fn login(&self, state: State) -> Result<JoinHandle<()>, ComelitClientError> {
+        ComelitClient::login(self, state).await
+    }
+
+    async fn info<T>(&self, device_id: &str, detail_level: u8) -> Result<Vec<T>, ComelitClientError>
+    where
+        T: serde::de::DeserializeOwned + Send,
+    {
+        ComelitClient::info(self, device_id, detail_level).await
+    }
+
+    async fn subscribe(&self, device_id: &str) -> Result<(), ComelitClientError> {
+        ComelitClient::subscribe(self, device_id).await
+    }
+
+    async fn fetch_index(
+        &self,
+        level: u8,
+    ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+        ComelitClient::fetch_index(self, level).await
+    }
+
+    async fn fetch_external_devices(
+        &self,
+    ) -> Result<DashMap<String, HomeDeviceData>, ComelitClientError> {
+        ComelitClient::fetch_external_devices(self).await
+    }
+
+    async fn send_action(
+        &self,
+        device_id: &str,
+        action_type: ActionType,
+        value: i32,
+    ) -> Result<(), ComelitClientError> {
+        ComelitClient::send_action(self, device_id, action_type, value).await
+    }
+
+    async fn toggle_device_status(&self, id: &str, on: bool) -> Result<(), ComelitClientError> {
+        ComelitClient::toggle_device_status(self, id, on).await
+    }
+
+    async fn toggle_blind_position(
+        &self,
+        id: &str,
+        position: u8,
+    ) -> Result<(), ComelitClientError> {
+        ComelitClient::toggle_blind_position(self, id, position).await
+    }
+
+    async fn set_thermostat_temperature(
+        &self,
+        id: &str,
+        temperature: i32,
+    ) -> Result<(), ComelitClientError> {
+        ComelitClient::set_thermostat_temperature(self, id, temperature).await
+    }
+
+    async fn set_thermostat_mode(
+        &self,
+        id: &str,
+        mode: ClimaMode,
+    ) -> Result<(), ComelitClientError> {
+        ComelitClient::set_thermostat_mode(self, id, mode).await
+    }
+
+    async fn set_thermostat_season(
+        &self,
+        id: &str,
+        mode: ThermoSeason,
+    ) -> Result<(), ComelitClientError> {
+        ComelitClient::set_thermostat_season(self, id, mode).await
+    }
+
+    async fn toggle_thermostat_status(
+        &self,
+        id: &str,
+        mode: ClimaOnOff,
+    ) -> Result<(), ComelitClientError> {
+        ComelitClient::toggle_thermostat_status(self, id, mode).await
+    }
+
+    async fn set_humidity(&self, id: &str, humidity: i32) -> Result<(), ComelitClientError> {
+        ComelitClient::set_humidity(self, id, humidity).await
     }
 }

@@ -118,272 +118,282 @@ pub async fn start_bridge(
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
     let updater = Arc::new(Updater::default());
     let client = ComelitClient::new(options, Some(updater.clone())).await?;
-    if let Err(e) = client.login(State::Disconnected).await {
-        error!("Login failed: {}", e);
-        return Err(e.into());
-    } else {
+    if let Ok(ping_task) = client.login(State::Disconnected).await {
         info!("Login successful");
-    }
 
-    let bridge_name = "ComelitHUB-HK";
-    let bridge = BridgeAccessory::new(
-        1,
-        AccessoryInformation {
-            name: bridge_name.into(),
-            serial_number: "20003150".into(),
-            manufacturer: "Comelit".into(),
-            model: "20003150".into(),
-            ..Default::default()
-        },
-    )?;
-
-    let mut storage = FileStorage::current_dir().await?;
-
-    let config = match storage.load_config().await {
-        Ok(mut config) => {
-            info!("Loaded config");
-            config.redetermine_local_ip();
-            storage.save_config(&config).await?;
-            config
-        }
-        Err(_) => {
-            info!(
-                "Creating new config, device id is {:?}",
-                client.mac_address()
-            );
-            let pin = loop {
-                if let Ok(pin) = Pin::new(settings.pairing_code) {
-                    break pin;
-                } else {
-                    continue;
-                }
-            };
-            let config = Config {
-                pin,
+        let bridge_name = "ComelitHUB-HK";
+        let bridge = BridgeAccessory::new(
+            1,
+            AccessoryInformation {
                 name: bridge_name.into(),
-                device_id: MacAddress::from(*client.mac_address().as_bytes()),
-                category: AccessoryCategory::Bridge,
+                serial_number: "20003150".into(),
+                manufacturer: "Comelit".into(),
+                model: "20003150".into(),
                 ..Default::default()
-            };
-            storage.save_config(&config).await?;
-            config
-        }
-    };
+            },
+        )?;
 
-    let pin = config.pin.clone().to_string();
-    let url = config.setup_url();
-    let server = IpServer::new(config, storage).await?;
-    info!("IP server created, adding bridge accessory...");
-    server.add_accessory(bridge).await?;
+        let mut storage = FileStorage::current_dir().await?;
 
-    info!("Fetching device index...");
-    let index = client
-        .fetch_index(1)
-        .await
-        .context("Failed to fetch index")?;
-
-    info!("Fetching device index...");
-    let external_index = client
-        .fetch_external_devices()
-        .await
-        .context("Failed to fetch index")?;
-
-    let mut lights = vec![];
-    let mut thermostats = vec![];
-    let mut window_coverings = vec![];
-    let mut doors = vec![];
-    let mut bells = vec![];
-    for (_, v) in index.clone().into_iter() {
-        match v {
-            HomeDeviceData::Light(light) => {
-                lights.push(light.clone());
+        let config = match storage.load_config().await {
+            Ok(mut config) => {
+                info!("Loaded config");
+                config.redetermine_local_ip();
+                storage.save_config(&config).await?;
+                config
             }
-            HomeDeviceData::WindowCovering(window_covering) => {
-                window_coverings.push(window_covering.clone());
+            Err(_) => {
+                info!(
+                    "Creating new config, device id is {:?}",
+                    client.mac_address()
+                );
+                let pin = loop {
+                    if let Ok(pin) = Pin::new(settings.pairing_code) {
+                        break pin;
+                    } else {
+                        continue;
+                    }
+                };
+                let config = Config {
+                    pin,
+                    name: bridge_name.into(),
+                    device_id: MacAddress::from(*client.mac_address().as_bytes()),
+                    category: AccessoryCategory::Bridge,
+                    ..Default::default()
+                };
+                storage.save_config(&config).await?;
+                config
             }
-            HomeDeviceData::Thermostat(thermo) => {
-                thermostats.push(thermo.clone());
-            }
-            _ => {}
-        }
-    }
-    for (_, v) in external_index.clone().into_iter() {
-        match v {
-            HomeDeviceData::Door(door) => {
-                doors.push(door.clone());
-            }
-            HomeDeviceData::Doorbell(bell) => {
-                bells.push(bell.clone());
-            }
-            _ => {}
-        }
-    }
+        };
 
-    lights.sort_by_key(|l| l.id.clone());
-    window_coverings.sort_by_key(|wc| wc.id.clone());
-    thermostats.sort_by_key(|t| t.id.clone());
-    doors.sort_by_key(|t| t.id.clone());
+        let pin = config.pin.clone().to_string();
+        let url = config.setup_url();
+        let server = IpServer::new(config, storage).await?;
+        info!("IP server created, adding bridge accessory...");
+        server.add_accessory(bridge).await?;
 
-    let mut i: u64 = 1;
-    for light in lights {
-        if settings.mount_lights.unwrap_or_default() {
-            i += 1;
-            info!("Adding light device: {} with id {i}", light.id);
-            match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
-                Ok(accessory) => {
-                    info!("Light {} added to the hub", accessory.get_comelit_id());
-                    updater
-                        .lights
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
-                }
-                Err(err) => error!("Failed to add light device: {}", err),
-            }
-        }
-    }
-
-    for window_covering in window_coverings {
-        if settings.mount_window_covering.unwrap_or_default() {
-            i += 1;
-            info!(
-                "Adding window covering device: {} with id {i}",
-                window_covering.id
-            );
-            match ComelitWindowCoveringAccessory::new(
-                i,
-                &window_covering,
-                client.clone(),
-                &server,
-                WindowCoveringConfig {
-                    closing_time: Duration::from_secs(settings.window_covering.closing_time),
-                    opening_time: Duration::from_secs(settings.window_covering.opening_time),
-                },
-            )
+        info!("Fetching device index...");
+        let index = client
+            .fetch_index(1)
             .await
-            {
-                Ok(accessory) => {
-                    info!(
-                        "Window covering {} added to the hub",
-                        accessory.get_comelit_id()
-                    );
-                    updater
-                        .window_coverings
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+            .context("Failed to fetch index")?;
+
+        info!("Fetching device index...");
+        let external_index = client
+            .fetch_external_devices()
+            .await
+            .context("Failed to fetch index")?;
+
+        let mut lights = vec![];
+        let mut thermostats = vec![];
+        let mut window_coverings = vec![];
+        let mut doors = vec![];
+        let mut bells = vec![];
+        for (_, v) in index.clone().into_iter() {
+            match v {
+                HomeDeviceData::Light(light) => {
+                    lights.push(light.clone());
                 }
-                Err(err) => error!("Failed to add window covering device: {}", err),
+                HomeDeviceData::WindowCovering(window_covering) => {
+                    window_coverings.push(window_covering.clone());
+                }
+                HomeDeviceData::Thermostat(thermo) => {
+                    thermostats.push(thermo.clone());
+                }
+                _ => {}
             }
         }
-    }
-
-    for thermostat in thermostats {
-        if settings.mount_thermo.unwrap_or_default() {
-            i += 1;
-            info!("Adding thermostat device: {} with id {i}", thermostat.id);
-            match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server).await {
-                Ok(accessory) => {
-                    updater
-                        .thermostats
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+        for (_, v) in external_index.clone().into_iter() {
+            match v {
+                HomeDeviceData::Door(door) => {
+                    doors.push(door.clone());
                 }
-                Err(err) => error!("Failed to add thermostat device: {}", err),
-            };
-        }
-    }
-
-    for door in doors {
-        if settings.mount_doors.unwrap_or_default() {
-            i += 1;
-            info!("Adding door device: {} with id {i}", door.id);
-            let data = client.info::<DoorDeviceData>(&door.id, 1).await?;
-            match ComelitDoorAccessory::new(
-                i,
-                data.first().unwrap(),
-                client.clone(),
-                &server,
-                DoorConfig {
-                    opening_closing_time: Duration::from_secs(settings.door.opening_closing_time),
-                    opened_time: Duration::from_secs(settings.door.opened_time),
-                    mount_as: crate::accessories::DoorType::Door,
-                },
-            )
-            .await
-            {
-                Ok(accessory) => {
-                    client.subscribe(&door.id).await?;
-                    updater
-                        .doors
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+                HomeDeviceData::Doorbell(bell) => {
+                    bells.push(bell.clone());
                 }
-                Err(err) => error!("Failed to add thermostat device: {}", err),
-            };
+                _ => {}
+            }
         }
-    }
 
-    for bell in bells {
-        if settings.mount_doorbells.unwrap_or_default() {
-            i += 1;
-            let data = client.info::<DoorbellDeviceData>(&bell.id, 1).await?;
-            match ComelitDoorbellAccessory::new(i, data.first().unwrap(), &server).await {
-                Ok(accessory) => {
-                    client.subscribe(&bell.id).await?;
-                    updater
-                        .doorbells
-                        .insert(accessory.get_comelit_id().to_string(), accessory);
+        lights.sort_by_key(|l| l.id.clone());
+        window_coverings.sort_by_key(|wc| wc.id.clone());
+        thermostats.sort_by_key(|t| t.id.clone());
+        doors.sort_by_key(|t| t.id.clone());
+
+        let mut i: u64 = 1;
+        for light in lights {
+            if settings.mount_lights.unwrap_or_default() {
+                i += 1;
+                info!("Adding light device: {} with id {i}", light.id);
+                match ComelitLightbulbAccessory::new(i, &light, client.clone(), &server).await {
+                    Ok(accessory) => {
+                        info!("Light {} added to the hub", accessory.get_comelit_id());
+                        updater
+                            .lights
+                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                    }
+                    Err(err) => error!("Failed to add light device: {}", err),
                 }
-                Err(err) => error!("Failed to add doorbell device: {}", err),
-            };
+            }
         }
-    }
 
-    info!("Starting HAP bridge server...");
-    let handle = server.run_handle();
-
-    // Use println! to ensure they are always printed
-    qr2term::print_qr(url)?;
-    println!("Pair your Comelit Bridge using pin code {pin}");
-
-    info!("Subscribing to root device updates...");
-    client.subscribe(ROOT_ID).await?;
-
-    let ctrl_c = async {
-        signal::ctrl_c()
-            .await
-            .expect("failed to install Ctrl+C handler");
-    };
-
-    #[cfg(unix)]
-    let terminate = async {
-        signal::unix::signal(signal::unix::SignalKind::terminate())
-            .expect("failed to install signal handler")
-            .recv()
-            .await;
-    };
-
-    #[cfg(not(unix))]
-    let terminate = std::future::pending::<()>();
-
-    tokio::select! {
-        res = handle => {
-            client
-                .disconnect()
+        for window_covering in window_coverings {
+            if settings.mount_window_covering.unwrap_or_default() {
+                i += 1;
+                info!(
+                    "Adding window covering device: {} with id {i}",
+                    window_covering.id
+                );
+                match ComelitWindowCoveringAccessory::new(
+                    i,
+                    &window_covering,
+                    client.clone(),
+                    &server,
+                    WindowCoveringConfig {
+                        closing_time: Duration::from_secs(settings.window_covering.closing_time),
+                        opening_time: Duration::from_secs(settings.window_covering.opening_time),
+                    },
+                )
                 .await
-                .context("Failed to disconnect client")?;
-            res.with_context(|| "Failed to disconnect client")
+                {
+                    Ok(accessory) => {
+                        info!(
+                            "Window covering {} added to the hub",
+                            accessory.get_comelit_id()
+                        );
+                        updater
+                            .window_coverings
+                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                    }
+                    Err(err) => error!("Failed to add window covering device: {}", err),
+                }
+            }
         }
-        _ = ctrl_c => {
-            info!("signal received, starting graceful shutdown");
-            client
-                .disconnect()
+
+        for thermostat in thermostats {
+            if settings.mount_thermo.unwrap_or_default() {
+                i += 1;
+                info!("Adding thermostat device: {} with id {i}", thermostat.id);
+                match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server).await
+                {
+                    Ok(accessory) => {
+                        updater
+                            .thermostats
+                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                    }
+                    Err(err) => error!("Failed to add thermostat device: {}", err),
+                };
+            }
+        }
+
+        for door in doors {
+            if settings.mount_doors.unwrap_or_default() {
+                i += 1;
+                info!("Adding door device: {} with id {i}", door.id);
+                let data = client.info::<DoorDeviceData>(&door.id, 1).await?;
+                match ComelitDoorAccessory::new(
+                    i,
+                    data.first().unwrap(),
+                    client.clone(),
+                    &server,
+                    DoorConfig {
+                        opening_closing_time: Duration::from_secs(
+                            settings.door.opening_closing_time,
+                        ),
+                        opened_time: Duration::from_secs(settings.door.opened_time),
+                        mount_as: crate::accessories::DoorType::Door,
+                    },
+                )
                 .await
-                .context("Failed to disconnect client")?;
-            Ok(())
-        },
-        _ = terminate => {
-            info!("signal received, starting graceful shutdown");
-            client
-                .disconnect()
+                {
+                    Ok(accessory) => {
+                        client.subscribe(&door.id).await?;
+                        updater
+                            .doors
+                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                    }
+                    Err(err) => error!("Failed to add thermostat device: {}", err),
+                };
+            }
+        }
+
+        for bell in bells {
+            if settings.mount_doorbells.unwrap_or_default() {
+                i += 1;
+                let data = client.info::<DoorbellDeviceData>(&bell.id, 1).await?;
+                match ComelitDoorbellAccessory::new(i, data.first().unwrap(), &server).await {
+                    Ok(accessory) => {
+                        client.subscribe(&bell.id).await?;
+                        updater
+                            .doorbells
+                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                    }
+                    Err(err) => error!("Failed to add doorbell device: {}", err),
+                };
+            }
+        }
+
+        info!("Starting HAP bridge server...");
+        let handle = server.run_handle();
+
+        // Use println! to ensure they are always printed
+        qr2term::print_qr(url)?;
+        println!("Pair your Comelit Bridge using pin code {pin}");
+
+        info!("Subscribing to root device updates...");
+        client.subscribe(ROOT_ID).await?;
+
+        let ctrl_c = async {
+            signal::ctrl_c()
                 .await
-                .context("Failed to disconnect client")?;
-            Ok(())
-        },
+                .expect("failed to install Ctrl+C handler");
+        };
+
+        #[cfg(unix)]
+        let terminate = async {
+            signal::unix::signal(signal::unix::SignalKind::terminate())
+                .expect("failed to install signal handler")
+                .recv()
+                .await;
+        };
+
+        #[cfg(not(unix))]
+        let terminate = std::future::pending::<()>();
+
+        tokio::select! {
+            _ = ping_task => {
+                info!("Ping task exited, gracefully shutting down");
+                client
+                    .disconnect()
+                    .await
+                    .context("Failed to disconnect client")?;
+                Ok(())
+            }
+            res = handle => {
+                client
+                    .disconnect()
+                    .await
+                    .context("Failed to disconnect client")?;
+                res.with_context(|| "Failed to disconnect client")
+            }
+            _ = ctrl_c => {
+                info!("signal received, starting graceful shutdown");
+                client
+                    .disconnect()
+                    .await
+                    .context("Failed to disconnect client")?;
+                Ok(())
+            },
+            _ = terminate => {
+                info!("signal received, starting graceful shutdown");
+                client
+                    .disconnect()
+                    .await
+                    .context("Failed to disconnect client")?;
+                Ok(())
+            },
+        }
+    } else {
+        Err(ComelitClientError::Login("Login failed".to_string()).into())
     }
 }
