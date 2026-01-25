@@ -366,31 +366,27 @@ pub async fn start_bridge(
                 client
                     .disconnect()
                     .await
-                    .context("Failed to disconnect client")?;
-                Ok(())
+                    .context("Failed to disconnect client")
             }
-            res = handle => {
+            _ = handle => {
                 client
                     .disconnect()
                     .await
-                    .context("Failed to disconnect client")?;
-                res.with_context(|| "Failed to disconnect client")
+                    .context("Failed to disconnect client")
             }
             _ = ctrl_c => {
                 info!("signal received, starting graceful shutdown");
                 client
                     .disconnect()
                     .await
-                    .context("Failed to disconnect client")?;
-                Ok(())
+                    .context("Failed to disconnect client")
             },
             _ = terminate => {
                 info!("signal received, starting graceful shutdown");
                 client
                     .disconnect()
                     .await
-                    .context("Failed to disconnect client")?;
-                Ok(())
+                    .context("Failed to disconnect client")
             },
         }
     } else {
