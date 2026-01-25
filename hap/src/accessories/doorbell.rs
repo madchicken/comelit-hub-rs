@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use comelit_hub_rs::DoorbellDeviceData;
-use futures_util::lock::Mutex;
+use futures::FutureExt;
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
-    characteristic::HapCharacteristic,
+    characteristic::{AsyncCharacteristicCallbacks, HapCharacteristic},
+    pointer::Accessory,
     server::{IpServer, Server},
     service::{
         HapService, accessory_information::AccessoryInformationService, doorbell::DoorbellService,
@@ -12,8 +15,7 @@ use hap::{
     },
 };
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::time::sleep;
+use tokio::{sync::Mutex, time::sleep};
 use tracing::info;
 
 use crate::accessories::ComelitAccessory;
@@ -102,9 +104,13 @@ impl Serialize for DoorbellAccessory {
     }
 }
 
+struct State {
+    accessory: Option<Accessory>,
+}
+
 pub(crate) struct ComelitDoorbellAccessory {
     pub(crate) id: String,
-    pub(crate) accessory_pointer: Arc<Mutex<Box<dyn HapAccessory + 'static>>>,
+    pub(crate) accessory: Accessory,
 }
 
 impl ComelitDoorbellAccessory {
@@ -136,10 +142,39 @@ impl ComelitDoorbellAccessory {
             .programmable_switch_event
             .set_event_notifications(Some(true));
 
-        let accessory_pointer = server.add_accessory(doorbell_accessory).await?;
+        let state = Arc::new(Mutex::new(State { accessory: None }));
+        let _state = state.clone();
+        doorbell_accessory.switch.power_state.on_update_async(Some(
+            move |_old_state, new_state| {
+                let state = _state.clone();
+                async move {
+                    if new_state {
+                        // Handle power state update here
+                        if let Some(accessory) = state.lock().await.accessory.as_ref() {
+                            let mut accessory = accessory.lock().await;
+                            let characteristic = accessory
+                                .get_mut_service(HapType::Switch)
+                                .unwrap()
+                                .get_mut_characteristic(HapType::PowerState)
+                                .unwrap();
+                            characteristic
+                                .set_value(Value::from(new_state))
+                                .await
+                                .unwrap();
+                        }
+                    }
+                    Ok(())
+                }
+                .boxed()
+            },
+        ));
+
+        let accessory = server.add_accessory(doorbell_accessory).await?;
+        state.lock().await.accessory = Some(accessory.clone());
+
         Ok(Self {
             id: device_id,
-            accessory_pointer,
+            accessory,
         })
     }
 }
@@ -152,7 +187,7 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
     async fn update(&mut self, _data: &DoorbellDeviceData) -> Result<()> {
         {
             info!("Doorbell {} just triggered!", self.id);
-            let mut accessory = self.accessory_pointer.lock().await;
+            let mut accessory = self.accessory.lock().await;
             let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
             let programmable_switch = service
                 .get_mut_characteristic(HapType::ProgrammableSwitchEvent)
@@ -162,7 +197,7 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
             let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
             power_state.set_value(Value::from(true)).await?;
         } // drop the lock
-        let accessory_pointer = self.accessory_pointer.clone();
+        let accessory_pointer = self.accessory.clone();
         tokio::spawn(async move {
             sleep(std::time::Duration::from_secs(2)).await;
             let mut accessory = accessory_pointer.lock().await;
