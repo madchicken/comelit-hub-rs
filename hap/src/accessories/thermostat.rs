@@ -192,6 +192,7 @@ impl ComelitThermostatAccessory {
         data: &ThermostatDeviceData,
         client: ComelitClient,
         server: &IpServer,
+        enable_thermostat_update: bool,
     ) -> Result<Self> {
         let name = data.description.clone().unwrap_or(data.id.clone());
         let comelit_id = data.id.clone();
@@ -452,7 +453,7 @@ impl ComelitThermostatAccessory {
             id: data.id.clone(),
             state: arc_state,
             accessory,
-            enable_update: false,
+            enable_update: enable_thermostat_update,
         })
     }
 }
