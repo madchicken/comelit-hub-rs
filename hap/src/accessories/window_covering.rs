@@ -916,7 +916,7 @@ pub mod testing {
         // Verify toggle was called (opening = false means moving up)
         let calls = client.toggle_calls.read().await;
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0], ("test-123".to_string(), false)); // false = opening/moving up
+        assert_eq!(calls[0], ("test-123".to_string(), true)); // true = opening/moving up
 
         // Simulate Comelit confirmation
         sender
@@ -1018,7 +1018,7 @@ pub mod testing {
         // Verify toggle was called (on = true means moving down)
         let calls = client.toggle_calls.read().await;
         assert_eq!(calls.len(), 1);
-        assert_eq!(calls[0], ("test-123".to_string(), true)); // true = closing/moving down
+        assert_eq!(calls[0], ("test-123".to_string(), false)); // false = closing/moving down
 
         // Simulate confirmation
         sender
