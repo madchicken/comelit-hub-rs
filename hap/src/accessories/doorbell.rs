@@ -150,17 +150,17 @@ impl ComelitDoorbellAccessory {
                 async move {
                     if new_state {
                         // Handle power state update here
-                        if let Some(accessory) = state.lock().await.accessory.as_ref() {
+                        if let Ok(state) = state.try_lock()
+                            && let Some(accessory) = state.accessory.as_ref()
+                        {
                             let mut accessory = accessory.lock().await;
                             let characteristic = accessory
-                                .get_mut_service(HapType::Switch)
+                                .get_mut_service(HapType::Doorbell)
                                 .unwrap()
-                                .get_mut_characteristic(HapType::PowerState)
+                                .get_mut_characteristic(HapType::ProgrammableSwitchEvent)
                                 .unwrap();
-                            characteristic
-                                .set_value(Value::from(new_state))
-                                .await
-                                .unwrap();
+
+                            characteristic.update_value(Value::from(1)).await.unwrap();
                         }
                     }
                     Ok(())
