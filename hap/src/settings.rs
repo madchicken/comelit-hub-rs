@@ -54,7 +54,7 @@ impl Default for Settings {
             mount_doorbells: Some(false),
             window_covering: WindowCoveringSettings::default(),
             door: DoorSettings::default(),
-            enable_thermostat_update: false,
+            enable_thermostat_update: true,
         }
     }
 }

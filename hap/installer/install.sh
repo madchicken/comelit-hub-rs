@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -e
 
+BIN_TYPE="release"
 BIN_NAME="comelit-hub-hap"
-BIN_SRC="../../target/release/$BIN_NAME"
+BIN_SRC="../../target/$BIN_TYPE/$BIN_NAME"
 BIN_DST="/usr/local/bin/$BIN_NAME"
 LOG_DIR="/var/log/comelit-hub-hap"
 
