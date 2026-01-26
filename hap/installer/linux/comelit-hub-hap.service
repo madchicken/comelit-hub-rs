@@ -20,7 +20,7 @@ PIDFile=/run/comelit-hub-hap/comelit-hub-hap.pid
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/comelit-hub-hap /var/log /var/run
+ReadWritePaths=/var/lib/comelit-hub-hap /var/log/comelit-hub-hap /var/run
 
 [Install]
 WantedBy=multi-user.target

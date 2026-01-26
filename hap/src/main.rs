@@ -8,10 +8,9 @@ pub use bridge::start_bridge;
 use anyhow::Result;
 use clap::Parser;
 use clap_derive::Parser;
-use logging::{ReopenableFile, ReopenableFileHandle, setup_sighup_handler};
+use logging::{LogConfig, LogGuard, RotationPeriod};
 use settings::Settings;
 use tracing::warn;
-use tracing_subscriber::EnvFilter;
 
 #[derive(Parser, Debug)]
 pub struct Params {
@@ -30,23 +29,31 @@ pub struct Params {
     /// Settings file path for the Comelit Bridge (if not set, it will use default settings)
     #[clap(long)]
     settings: Option<String>,
-    /// Log file path (if not set, logs to stdout)
+
+    // Logging options
+    /// Directory for log files (if not set, logs to stdout)
     #[clap(long)]
-    log_file: Option<String>,
-    /// Error log file path (if not set, errors go to stderr)
+    log_dir: Option<String>,
+    /// Prefix for log file names (default: "comelit-hub")
+    #[clap(long, default_value = "comelit-hub")]
+    log_prefix: String,
+    /// Log rotation period: minutely, hourly, daily, never (default: daily)
+    #[clap(long, default_value = "daily")]
+    log_rotation: String,
+    /// Maximum number of log files to keep, 0 for unlimited (default: 7)
+    #[clap(long, default_value = "7")]
+    max_log_files: usize,
+    /// Also output logs to console when file logging is enabled
     #[clap(long)]
-    error_log_file: Option<String>,
+    log_to_console: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let params = Params::parse();
 
-    // Set up logging based on whether file paths are provided
-    let (log_handle, err_handle) = setup_logging(&params)?;
-
-    // Set up SIGHUP handler for log rotation
-    let _signal_thread = setup_sighup_handler(log_handle, err_handle);
+    // Set up logging based on whether a log directory is provided
+    let _log_guard = setup_logging(&params)?;
 
     let settings = if let Some(path) = params.settings {
         if let Ok(read_to_string) = std::fs::read_to_string(path) {
@@ -71,45 +78,34 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-fn setup_logging(
-    params: &Params,
-) -> Result<(Option<ReopenableFileHandle>, Option<ReopenableFileHandle>)> {
-    match (&params.log_file, &params.error_log_file) {
-        (Some(log_path), Some(err_path)) => {
-            // Both log and error files specified
-            let log_file = ReopenableFile::new(log_path)?;
-            let err_file = ReopenableFile::new(err_path)?;
-            let log_handle = ReopenableFileHandle::new(log_file);
-            let err_handle = ReopenableFileHandle::new(err_file);
+fn setup_logging(params: &Params) -> Result<LogGuard> {
+    match &params.log_dir {
+        Some(log_dir) => {
+            // Parse rotation period
+            let rotation: RotationPeriod = params
+                .log_rotation
+                .parse()
+                .map_err(|e: String| anyhow::anyhow!(e))?;
 
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .with_writer(log_handle.clone())
-                .with_ansi(false)
-                .init();
+            let config = LogConfig {
+                log_dir: log_dir.clone(),
+                log_prefix: params.log_prefix.clone(),
+                rotation,
+                max_log_files: params.max_log_files,
+            };
 
-            Ok((Some(log_handle), Some(err_handle)))
+            // Create the log directory if it doesn't exist
+            std::fs::create_dir_all(log_dir)?;
+
+            if params.log_to_console {
+                Ok(logging::setup_dual_logging(config)?)
+            } else {
+                Ok(logging::setup_file_logging(config)?)
+            }
         }
-        (Some(log_path), None) => {
-            // Only log file specified, errors also go to log file
-            let log_file = ReopenableFile::new(log_path)?;
-            let log_handle = ReopenableFileHandle::new(log_file);
-
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .with_writer(log_handle.clone())
-                .with_ansi(false)
-                .init();
-
-            Ok((Some(log_handle), None))
-        }
-        (None, _) => {
-            // No log file specified, log to stdout/stderr
-            tracing_subscriber::fmt()
-                .with_env_filter(EnvFilter::from_default_env())
-                .init();
-
-            Ok((None, None))
+        None => {
+            // No log directory specified, log to console only
+            Ok(logging::setup_console_logging())
         }
     }
 }

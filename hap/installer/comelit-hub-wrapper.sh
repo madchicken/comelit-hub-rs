@@ -25,5 +25,7 @@ exec /usr/local/bin/comelit-hub-hap \
     --settings "$COMELIT_CONFIG" \
     --user "$COMELIT_USER" \
     --password "$COMELIT_PASSWORD" \
-    --log-file /var/log/comelit-hub-hap.log \
-    --error-log-file /var/log/comelit-hub-hap.err
+    --log-dir "$COMELIT_LOG_DIR" \
+    --log-prefix "$COMELIT_LOG_PREFIX" \
+    --log-rotation "$COMELIT_LOG_ROTATION" \
+    --max-log-files "$COMELIT_MAX_LOG_FILES"

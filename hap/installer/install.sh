@@ -4,6 +4,7 @@ set -e
 BIN_NAME="comelit-hub-hap"
 BIN_SRC="../../target/release/$BIN_NAME"
 BIN_DST="/usr/local/bin/$BIN_NAME"
+LOG_DIR="/var/log/comelit-hub-hap"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run this script as root (sudo)"
@@ -37,20 +38,20 @@ install_macos() {
   cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
   chmod 755 /usr/local/bin/comelit-hub-ctl
 
-  # Create log files with proper ownership
-  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chown comelit:wheel /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  # Create log directory with proper ownership
+  # Log rotation is handled internally by the application
+  mkdir -p "$LOG_DIR"
+  chown comelit:wheel "$LOG_DIR"
+  chmod 750 "$LOG_DIR"
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
 
-  cp ./macos/comelit-hub-hap.conf \
-     /etc/newsyslog.d/comelit-hub-hap.conf
-
-  newsyslog -v -f /etc/newsyslog.d/comelit-hub-hap.conf
-
   echo "✔ Services macOS installed"
+  echo ""
+  echo "Note: Log rotation is handled automatically by the application."
+  echo "      Logs are stored in: $LOG_DIR"
+  echo "      Configure rotation settings in: /etc/comelit-hub-hap/comelit-hub-hap.env"
 }
 
 install_linux() {
@@ -63,10 +64,6 @@ install_linux() {
   cp ./linux/comelit-hub-hap.service \
      /etc/systemd/system/
 
-  systemctl daemon-reload
-  systemctl enable comelit-hub-hap
-  systemctl restart comelit-hub-hap
-
   mkdir -p /etc/comelit-hub-hap
   cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
   cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
@@ -76,16 +73,21 @@ install_linux() {
   cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
   chmod 755 /usr/local/bin/comelit-hub-ctl
 
-  # Create log files with proper ownership
-  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chown comelit:comelit /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  # Create log directory with proper ownership
+  # Log rotation is handled internally by the application
+  mkdir -p "$LOG_DIR"
+  chown comelit:comelit "$LOG_DIR"
+  chmod 750 "$LOG_DIR"
 
-  cp ./linux/comelit-hub-hap.conf \
-     /etc/logrotate.d/comelit-hub-hap
+  systemctl daemon-reload
+  systemctl enable comelit-hub-hap
+  systemctl restart comelit-hub-hap
 
-  logrotate -f /etc/logrotate.d/comelit-hub-hap
   echo "✔ Services Linux installed"
+  echo ""
+  echo "Note: Log rotation is handled automatically by the application."
+  echo "      Logs are stored in: $LOG_DIR"
+  echo "      Configure rotation settings in: /etc/comelit-hub-hap/comelit-hub-hap.env"
 }
 
 create_macos_user() {
