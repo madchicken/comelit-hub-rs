@@ -48,7 +48,7 @@ impl StatusUpdate for Updater {
                         );
                     });
                 } else {
-                    warn!("Received update for unknown light device");
+                    warn!("Received update for unknown light device: {}", device.id());
                 }
             }
             HomeDeviceData::WindowCovering(data) => {
@@ -61,7 +61,10 @@ impl StatusUpdate for Updater {
                         );
                     })
                 } else {
-                    warn!("Received update for unknown window covering device");
+                    warn!(
+                        "Received update for unknown window covering device: {}",
+                        device.id()
+                    );
                 }
             }
             HomeDeviceData::Outlet(_outlet_device_data) => {}
@@ -76,7 +79,10 @@ impl StatusUpdate for Updater {
                         );
                     });
                 } else {
-                    warn!("Received update for unknown thermostat/dehumidifier device");
+                    warn!(
+                        "Received update for unknown thermostat/dehumidifier device: {}",
+                        device.id()
+                    );
                 }
             }
             HomeDeviceData::Supplier(supplier_device_data) => {
@@ -92,7 +98,7 @@ impl StatusUpdate for Updater {
                             error!("Failed to update door accessory {}: {}", device.id(), e);
                         });
                 } else {
-                    warn!("Received update for unknown door device");
+                    warn!("Received update for unknown door device: {}", device.id());
                 }
             }
         }
@@ -274,7 +280,14 @@ pub async fn start_bridge(
             if settings.mount_thermo.unwrap_or_default() {
                 i += 1;
                 info!("Adding thermostat device: {} with id {i}", thermostat.id);
-                match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server, settings.enable_thermostat_update).await
+                match ComelitThermostatAccessory::new(
+                    i,
+                    &thermostat,
+                    client.clone(),
+                    &server,
+                    settings.enable_thermostat_update,
+                )
+                .await
                 {
                     Ok(accessory) => {
                         updater
