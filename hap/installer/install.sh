@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -e
 
-BIN_TYPE="release"
+BIN_TYPE="${BIN_TYPE:-release}"
 BIN_NAME="comelit-hub-hap"
 BIN_SRC="../../target/$BIN_TYPE/$BIN_NAME"
 BIN_DST="/usr/local/bin/$BIN_NAME"
