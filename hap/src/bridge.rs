@@ -163,7 +163,14 @@ pub async fn start_bridge(
                 let config = Config {
                     pin,
                     name: bridge_name.into(),
-                    device_id: MacAddress::from(*client.mac_address().as_bytes()),
+                    device_id: MacAddress::from([
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                    ]), //MacAddress::from(*client.mac_address().as_bytes()),
                     category: AccessoryCategory::Bridge,
                     ..Default::default()
                 };
