@@ -106,7 +106,7 @@ pub(crate) struct ComelitThermostatAccessory {
     id: String,
     state: Arc<Mutex<ThermostatState>>,
     accessory: Accessory,
-    enable_update: bool,
+    enable_live_update: bool,
 }
 
 impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
@@ -124,12 +124,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
         state.target_humidity = new_state.target_humidity;
         state.target_heating_cooling_state = new_state.target_heating_cooling_state;
 
-        if self.enable_update {
-            let state = {
-                let s = self.state.lock().await;
-                s.clone()
-            };
-
+        if self.enable_live_update {
             let mut accessory = self.accessory.lock().await;
             let service = accessory
                 .get_mut_service(HapType::Thermostat)
@@ -453,7 +448,7 @@ impl ComelitThermostatAccessory {
             id: data.id.clone(),
             state: arc_state,
             accessory,
-            enable_update: enable_thermostat_update,
+            enable_live_update: enable_thermostat_update,
         })
     }
 }
