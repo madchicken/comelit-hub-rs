@@ -155,7 +155,7 @@ impl ComelitOptions {
     async fn get_hub_info(&self) -> Result<Option<ComelitHUB>, ComelitClientError> {
         if let Some(host) = &self.host {
             info!("Scanning address {host} at port {SCAN_PORT}");
-            let hub = Scanner::scan_address(host, None)
+            let hub = Scanner::scan_address(host, Some(Duration::from_secs(2)))
                 .await
                 .map_err(|e| ComelitClientError::Scanner(e.to_string()))?;
             Ok(hub)

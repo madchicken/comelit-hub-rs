@@ -3,6 +3,8 @@ mod bridge;
 mod logging;
 mod settings;
 
+use std::process::exit;
+
 pub use bridge::start_bridge;
 
 use anyhow::Result;
@@ -76,8 +78,7 @@ async fn main() -> Result<()> {
     .await?;
 
     info!("Bridge ended");
-
-    Ok(())
+    exit(0); // force exit
 }
 
 fn setup_logging(params: &Params) -> Result<LogGuard> {
