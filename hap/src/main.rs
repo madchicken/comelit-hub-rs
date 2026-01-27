@@ -10,7 +10,7 @@ use clap::Parser;
 use clap_derive::Parser;
 use logging::{LogConfig, LogGuard, RotationPeriod};
 use settings::Settings;
-use tracing::warn;
+use tracing::{info, warn};
 
 #[derive(Parser, Debug)]
 pub struct Params {
@@ -74,6 +74,8 @@ async fn main() -> Result<()> {
         settings,
     )
     .await?;
+
+    info!("Bridge ended");
 
     Ok(())
 }
