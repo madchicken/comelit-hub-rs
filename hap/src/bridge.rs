@@ -350,8 +350,8 @@ pub async fn start_bridge(
         let handle = server.run_handle();
 
         // Use println! to ensure they are always printed
-        qr2term::print_qr(url)?;
-        println!("Pair your Comelit Bridge using pin code {pin}");
+        info!("QR code: \n{}", qr2term::generate_qr_string(url)?);
+        info!("Pair your Comelit Bridge using pin code {pin}");
 
         info!("Subscribing to root device updates...");
         client.subscribe(ROOT_ID).await?;
