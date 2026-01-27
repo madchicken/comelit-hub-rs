@@ -25,7 +25,6 @@ install_binary() {
 
 install_macos() {
   echo "→ macOS detected"
-  create_macos_user
   install_binary
 
   cp ./macos/com.comelit.hub.hap.plist \
@@ -42,7 +41,8 @@ install_macos() {
   # Create log directory with proper ownership
   # Log rotation is handled internally by the application
   mkdir -p "$LOG_DIR"
-  chown comelit:wheel "$LOG_DIR"
+  touch "$LOG_DIR/comelit-hub-hap.log"
+  touch "$LOG_DIR/comelit-hub-hap.err"
   chmod 750 "$LOG_DIR"
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
@@ -57,7 +57,6 @@ install_macos() {
 
 install_linux() {
   echo "→ Linux detected"
-  create_linux_user
   install_binary
 
   mkdir -p /var/lib/comelit-hub-hap
@@ -77,7 +76,8 @@ install_linux() {
   # Create log directory with proper ownership
   # Log rotation is handled internally by the application
   mkdir -p "$LOG_DIR"
-  chown comelit:comelit "$LOG_DIR"
+  touch "$LOG_DIR/comelit-hub-hap.log"
+  touch "$LOG_DIR/comelit-hub-hap.err"
   chmod 750 "$LOG_DIR"
 
   systemctl daemon-reload
@@ -89,41 +89,6 @@ install_linux() {
   echo "Note: Log rotation is handled automatically by the application."
   echo "      Logs are stored in: $LOG_DIR"
   echo "      Configure rotation settings in: /etc/comelit-hub-hap/comelit-hub-hap.env"
-}
-
-create_macos_user() {
-  if id comelit &>/dev/null; then
-    echo "→ User comelit already exists"
-    return
-  fi
-
-  echo "→ Creating system user comelit"
-
-  sysadminctl -addUser comelit \
-    -system \
-    -shell /usr/bin/false \
-    -home /var/lib/comelit-hub-hap
-
-  mkdir -p /var/lib/comelit-hub-hap
-  chown -R comelit:wheel /var/lib/comelit-hub-hap
-}
-
-create_linux_user() {
-  if id comelit &>/dev/null; then
-    echo "→ User comelit already exists"
-    return
-  fi
-
-  echo "→ Creating system user comelit"
-
-  useradd \
-    --system \
-    --no-create-home \
-    --shell /usr/sbin/nologin \
-    comelit
-
-  mkdir -p /var/lib/comelit-hub-hap
-  chown -R comelit:comelit /var/lib/comelit-hub-hap
 }
 
 case "$(uname -s)" in

@@ -5,8 +5,6 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/comelit-hub-hap-wrapper.sh
-User=comelit
-Group=comelit
 Restart=always
 RestartSec=5
 WorkingDirectory=/var/lib/comelit-hub-hap

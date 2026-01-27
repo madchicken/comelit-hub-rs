@@ -287,14 +287,7 @@ pub async fn start_bridge(
             if settings.mount_thermo.unwrap_or_default() {
                 i += 1;
                 info!("Adding thermostat device: {} with id {i}", thermostat.id);
-                match ComelitThermostatAccessory::new(
-                    i,
-                    &thermostat,
-                    client.clone(),
-                    &server,
-                    settings.enable_thermostat_update,
-                )
-                .await
+                match ComelitThermostatAccessory::new(i, &thermostat, client.clone(), &server).await
                 {
                     Ok(accessory) => {
                         updater

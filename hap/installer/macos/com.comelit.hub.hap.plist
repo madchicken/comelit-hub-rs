@@ -19,10 +19,5 @@
 
     <key>WorkingDirectory</key>
     <string>/var/lib/comelit-hub-hap</string>
-
-    <key>UserName</key>
-    <string>comelit</string>
-    <key>GroupName</key>
-    <string>wheel</string>
 </dict>
 </plist>

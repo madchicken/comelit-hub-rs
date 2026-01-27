@@ -106,7 +106,6 @@ pub(crate) struct ComelitThermostatAccessory {
     id: String,
     state: Arc<Mutex<ThermostatState>>,
     accessory: Accessory,
-    enable_live_update: bool,
 }
 
 impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
@@ -124,58 +123,53 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
         state.target_humidity = new_state.target_humidity;
         state.target_heating_cooling_state = new_state.target_heating_cooling_state;
 
-        if self.enable_live_update {
-            let mut accessory = self.accessory.lock().await;
-            let service = accessory
-                .get_mut_service(HapType::Thermostat)
-                .context("Thermostat service not found")?;
+        let mut accessory = self.accessory.lock().await;
+        let service = accessory
+            .get_mut_service(HapType::Thermostat)
+            .context("Thermostat service not found")?;
 
-            if let Some(characteristic) =
-                service.get_mut_characteristic(HapType::CurrentTemperature)
-            {
-                characteristic
-                    .update_value(Value::from(state.temperature))
-                    .await?;
-            }
+        if let Some(characteristic) = service.get_mut_characteristic(HapType::CurrentTemperature) {
+            characteristic
+                .update_value(Value::from(state.temperature))
+                .await?;
+        }
 
-            if let Some(characteristic) = service.get_mut_characteristic(HapType::TargetTemperature)
-            {
-                characteristic
-                    .update_value(Value::from(state.target_temperature))
-                    .await?;
-            }
+        if let Some(characteristic) = service.get_mut_characteristic(HapType::TargetTemperature) {
+            characteristic
+                .update_value(Value::from(state.target_temperature))
+                .await?;
+        }
 
-            if let Some(characteristic) =
-                service.get_mut_characteristic(HapType::CurrentHeatingCoolingState)
-            {
-                characteristic
-                    .update_value(Value::from(state.heating_cooling_state as u8))
-                    .await?;
-            }
+        if let Some(characteristic) =
+            service.get_mut_characteristic(HapType::CurrentHeatingCoolingState)
+        {
+            characteristic
+                .update_value(Value::from(state.heating_cooling_state as u8))
+                .await?;
+        }
 
-            if let Some(characteristic) =
-                service.get_mut_characteristic(HapType::TargetHeatingCoolingState)
-            {
-                characteristic
-                    .update_value(Value::from(state.target_heating_cooling_state as u8))
-                    .await?;
-            }
+        if let Some(characteristic) =
+            service.get_mut_characteristic(HapType::TargetHeatingCoolingState)
+        {
+            characteristic
+                .update_value(Value::from(state.target_heating_cooling_state as u8))
+                .await?;
+        }
 
-            if let Some(characteristic) =
-                service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
-            {
-                characteristic
-                    .update_value(Value::from(state.humidity))
-                    .await?;
-            }
+        if let Some(characteristic) =
+            service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
+        {
+            characteristic
+                .update_value(Value::from(state.humidity))
+                .await?;
+        }
 
-            if let Some(characteristic) =
-                service.get_mut_characteristic(HapType::TargetRelativeHumidity)
-            {
-                characteristic
-                    .update_value(Value::from(state.target_humidity))
-                    .await?;
-            }
+        if let Some(characteristic) =
+            service.get_mut_characteristic(HapType::TargetRelativeHumidity)
+        {
+            characteristic
+                .update_value(Value::from(state.target_humidity))
+                .await?;
         }
         Ok(())
     }
@@ -187,7 +181,6 @@ impl ComelitThermostatAccessory {
         data: &ThermostatDeviceData,
         client: ComelitClient,
         server: &IpServer,
-        enable_thermostat_update: bool,
     ) -> Result<Self> {
         let name = data.description.clone().unwrap_or(data.id.clone());
         let comelit_id = data.id.clone();
@@ -448,7 +441,6 @@ impl ComelitThermostatAccessory {
             id: data.id.clone(),
             state: arc_state,
             accessory,
-            enable_live_update: enable_thermostat_update,
         })
     }
 }
