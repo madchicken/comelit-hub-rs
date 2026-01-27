@@ -17,6 +17,7 @@ set -e
 SERVICE_NAME="comelit-hub-hap"
 PLIST_NAME="com.comelit.hub.hap"
 LOG_DIR="/var/log/comelit-hub-hap"
+DATA_DIR="/var/lib/comelit-hub-hap"
 
 # Colors for output
 RED='\033[0;31m'
@@ -38,8 +39,8 @@ OS=$(detect_os)
 # Set platform-specific PID file location
 case "$OS" in
     linux)  PID_FILE="/run/comelit-hub-hap/comelit-hub-hap.pid" ;;
-    macos)  PID_FILE="/var/lib/comelit-hub-hap/comelit-hub-hap.pid" ;;
-    *)      PID_FILE="/var/lib/comelit-hub-hap/comelit-hub-hap.pid" ;;
+    macos)  PID_FILE="$DATA_DIR/comelit-hub-hap.pid" ;;
+    *)      PID_FILE="$DATA_DIR/comelit-hub-hap.pid" ;;
 esac
 
 # Print colored output
@@ -277,6 +278,30 @@ do_list_logs() {
     ls -lh "$LOG_DIR"/*.log 2>/dev/null || print_warn "No log files found"
 }
 
+# Reset the service configuration
+do_reset() {
+    print_info "Resetting service configuration..."
+    echo ""
+
+    if [ ! -d "$LOG_DIR" ]; then
+        print_warn "Log directory not found: ${LOG_DIR}"
+        return
+    fi
+
+    rm -f "$LOG_DIR/comelit-hub-hap.log"
+    rm -f "$LOG_DIR/comelit-hub-hap.err"
+    touch "$LOG_DIR/comelit-hub-hap.log"
+    touch "$LOG_DIR/comelit-hub-hap.err"
+    chmod 644 "$LOG_DIR/comelit-hub-hap.log"
+    chmod 644 "$LOG_DIR/comelit-hub-hap.err"
+    rm -rf "$DATA_DIR/data"
+
+    systemctl daemon-reload
+    systemctl enable comelit-hub-hap
+
+    print_info "Service configuration reset successfully"
+}
+
 # Show usage
 usage() {
     cat << EOF
@@ -291,6 +316,7 @@ Commands:
     status      Show service status
     logs        Show recent logs from the latest log file
     list-logs   List all log files
+    reset       Reset the service configuration
 
 Log options:
     -f, --follow    Follow log output (like tail -f)
@@ -331,6 +357,9 @@ case "${1:-}" in
         ;;
     list-logs)
         do_list_logs
+        ;;
+    reset)
+        do_reset
         ;;
     -h|--help|help)
         usage

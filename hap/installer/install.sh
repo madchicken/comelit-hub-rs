@@ -43,7 +43,9 @@ install_macos() {
   mkdir -p "$LOG_DIR"
   touch "$LOG_DIR/comelit-hub-hap.log"
   touch "$LOG_DIR/comelit-hub-hap.err"
-  chmod 750 "$LOG_DIR"
+  chmod 755 "$LOG_DIR"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.log"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.err"
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
@@ -78,7 +80,9 @@ install_linux() {
   mkdir -p "$LOG_DIR"
   touch "$LOG_DIR/comelit-hub-hap.log"
   touch "$LOG_DIR/comelit-hub-hap.err"
-  chmod 750 "$LOG_DIR"
+  chmod 755 "$LOG_DIR"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.log"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.err"
 
   systemctl daemon-reload
   systemctl enable comelit-hub-hap
