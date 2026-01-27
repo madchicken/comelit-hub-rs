@@ -112,7 +112,7 @@ struct State {
 pub(crate) struct ComelitDoorbellAccessory {
     pub(crate) id: String,
     pub(crate) accessory: Accessory,
-    pub(crate) state: Arc<Mutex<State>>,
+    state: Arc<Mutex<State>>,
 }
 
 impl ComelitDoorbellAccessory {
