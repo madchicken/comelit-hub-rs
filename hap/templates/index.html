@@ -1,10 +1,5 @@
-{% extends "base.html" %}
-
-{% block content %}
-{% if last_error %}
-<div class="error-banner">
-    <strong>Error:</strong> {{ last_error }}
-</div>
+{% extends "base.html" %} {% block content %} {% if last_error %}
+<div class="error-banner"><strong>Error:</strong> {{ last_error }}</div>
 {% endif %}
 
 <div class="grid">
@@ -13,7 +8,9 @@
         <div class="stat">
             <span class="stat-label">Connection</span>
             <span class="stat-value">
-                <span class="status-badge status-{{ connection_status }}">{{ connection_status }}</span>
+                <span class="status-badge status-{{ connection_status }}"
+                    >{{ connection_status }}</span
+                >
             </span>
         </div>
         <div class="stat">
@@ -42,14 +39,42 @@
                 {% endif %}
             </span>
         </div>
-        {% if not is_paired and pairing_pin %}
         <div class="stat">
             <span class="stat-label">Pairing Code</span>
             <span class="stat-value">
                 <span class="pairing-code">{{ pairing_pin }}</span>
             </span>
         </div>
-        {% endif %}
+        <div
+            class="qr-code-container"
+            style="
+                text-align: center;
+                margin-top: 20px;
+                padding: 15px;
+                background-color: var(--accent);
+                border-radius: var(--border-radius);
+            "
+        >
+            <p
+                style="
+                    color: var(--text-muted);
+                    margin-bottom: 15px;
+                    font-size: 0.9rem;
+                "
+            >
+                Scan with your iOS device to pair:
+            </p>
+            <img
+                src="/qrcode.svg"
+                alt="HomeKit Pairing QR Code"
+                style="
+                    max-width: 220px;
+                    height: auto;
+                    border-radius: 10px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+                "
+            />
+        </div>
     </div>
 
     <div class="card">
@@ -69,11 +94,8 @@
         <div class="stat">
             <span class="stat-label">Last Ping</span>
             <span class="stat-value">
-                {% if last_ping_seconds_ago %}
-                {{ last_ping_seconds_ago }}s ago
-                {% else %}
-                Never
-                {% endif %}
+                {% if last_ping_seconds_ago %} {{ last_ping_seconds_ago }}s ago
+                {% else %} Never {% endif %}
             </span>
         </div>
     </div>

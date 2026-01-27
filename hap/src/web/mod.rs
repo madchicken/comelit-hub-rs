@@ -4,6 +4,7 @@
 //! and a Prometheus metrics endpoint for external monitoring.
 
 pub mod metrics;
+pub mod qrcode_template;
 pub mod state;
 
 use axum::{
@@ -93,6 +94,7 @@ pub async fn start_web_server(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/status", get(api_status_handler))
+        .route("/qrcode.svg", get(qrcode_handler))
         .with_state(app_state);
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
@@ -268,6 +270,27 @@ async fn metrics_handler(State(state): State<AppState>) -> Response {
         metrics,
     )
         .into_response()
+}
+
+/// QR code SVG endpoint - returns an SVG image with the HomeKit pairing QR code.
+async fn qrcode_handler(State(state): State<AppState>) -> Response {
+    let summary = state.bridge_state.summary();
+
+    if summary.pairing_url.is_empty() || summary.pairing_pin.is_empty() {
+        return (StatusCode::NOT_FOUND, "Pairing info not available").into_response();
+    }
+
+    match qrcode_template::generate_qr_svg(&summary.pairing_url, &summary.pairing_pin) {
+        Ok(svg) => (StatusCode::OK, [("content-type", "image/svg+xml")], svg).into_response(),
+        Err(e) => {
+            error!("Failed to generate QR code: {}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to generate QR code",
+            )
+                .into_response()
+        }
+    }
 }
 
 /// API status endpoint - returns JSON status.
