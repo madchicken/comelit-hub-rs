@@ -14,6 +14,7 @@ use comelit_hub_rs::{
 };
 use comelit_hub_rs::{DoorDeviceData, ROOT_ID};
 use dashmap::DashMap;
+use hap::BonjourStatusFlag;
 use hap::{
     Config, MacAddress, Pin,
     accessory::{AccessoryCategory, AccessoryInformation, bridge::BridgeAccessory},
@@ -243,6 +244,7 @@ pub async fn start_bridge(
             }
         };
 
+        bridge_state.set_paired(config.status_flag == BonjourStatusFlag::Zero);
         let pin = config.pin.clone().to_string();
         let url = config.setup_url();
 
