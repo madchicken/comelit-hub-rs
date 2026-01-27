@@ -105,12 +105,14 @@ impl Serialize for DoorbellAccessory {
 }
 
 struct State {
+    pressed: bool,
     accessory: Option<Accessory>,
 }
 
 pub(crate) struct ComelitDoorbellAccessory {
     pub(crate) id: String,
     pub(crate) accessory: Accessory,
+    pub(crate) state: Arc<Mutex<State>>,
 }
 
 impl ComelitDoorbellAccessory {
@@ -142,7 +144,23 @@ impl ComelitDoorbellAccessory {
             .programmable_switch_event
             .set_event_notifications(Some(true));
 
-        let state = Arc::new(Mutex::new(State { accessory: None }));
+        let state = Arc::new(Mutex::new(State {
+            pressed: false,
+            accessory: None,
+        }));
+        let _state = state.clone();
+        doorbell_accessory
+            .switch
+            .power_state
+            .on_read_async(Some(move || {
+                let state = _state.clone();
+                async move {
+                    let s = state.lock().await.pressed;
+                    Ok(Some(s))
+                }
+                .boxed()
+            }));
+
         let _state = state.clone();
         doorbell_accessory.switch.power_state.on_update_async(Some(
             move |_old_state, new_state| {
@@ -150,9 +168,10 @@ impl ComelitDoorbellAccessory {
                 async move {
                     if new_state {
                         // Handle power state update here
-                        if let Ok(state) = state.try_lock()
-                            && let Some(accessory) = state.accessory.as_ref()
+                        if let Ok(mut state) = state.try_lock()
+                            && let Some(accessory) = state.accessory.clone().as_ref()
                         {
+                            state.pressed = true;
                             let mut accessory = accessory.lock().await;
                             let characteristic = accessory
                                 .get_mut_service(HapType::Doorbell)
@@ -175,6 +194,7 @@ impl ComelitDoorbellAccessory {
         Ok(Self {
             id: device_id,
             accessory,
+            state,
         })
     }
 }
@@ -195,15 +215,19 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
             programmable_switch.set_value(Value::from(0)).await?; // single press (doorbell ring)
             let switch = accessory.get_mut_service(HapType::Switch).unwrap();
             let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-            power_state.set_value(Value::from(true)).await?;
+            power_state.update_value(Value::from(true)).await?;
         } // drop the lock
         let accessory_pointer = self.accessory.clone();
+        let state = self.state.clone();
         tokio::spawn(async move {
             sleep(std::time::Duration::from_secs(2)).await;
             let mut accessory = accessory_pointer.lock().await;
             let switch = accessory.get_mut_service(HapType::Switch).unwrap();
             let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-            power_state.set_value(Value::from(false)).await.unwrap();
+            power_state.update_value(Value::from(false)).await.unwrap();
+            if let Ok(mut state) = state.try_lock() {
+                state.pressed = false;
+            }
         });
         Ok(())
     }
