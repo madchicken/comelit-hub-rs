@@ -17,6 +17,7 @@ use hap::{
     server::{IpServer, Server},
     storage::{FileStorage, Storage},
 };
+use qrcode_gen::QrCode;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -350,7 +351,13 @@ pub async fn start_bridge(
         let handle = server.run_handle();
 
         // Use println! to ensure they are always printed
-        info!("QR code: \n{}", qr2term::generate_qr_string(url)?);
+        let code = QrCode::new(url.as_bytes())?;
+        let code_string = code
+            .render::<char>()
+            .quiet_zone(false)
+            .module_dimensions(2, 1)
+            .build();
+        info!("QR code: \n{}", code_string);
         info!("Pair your Comelit Bridge using pin code {pin}");
 
         info!("Subscribing to root device updates...");
