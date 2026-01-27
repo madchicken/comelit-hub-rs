@@ -2,6 +2,7 @@ mod accessories;
 mod bridge;
 mod logging;
 mod settings;
+mod web;
 
 use std::process::exit;
 
@@ -13,6 +14,8 @@ use clap_derive::Parser;
 use logging::{LogConfig, LogGuard, RotationPeriod};
 use settings::Settings;
 use tracing::{info, warn};
+use web::WebConfig;
+use web::state::BridgeState;
 
 #[derive(Parser, Debug)]
 pub struct Params {
@@ -48,6 +51,14 @@ pub struct Params {
     /// Also output logs to console when file logging is enabled
     #[clap(long)]
     log_to_console: bool,
+
+    // Web UI options
+    /// Enable the web UI and metrics endpoint
+    #[clap(long, default_value = "true")]
+    web_enabled: bool,
+    /// Port for the web UI and metrics endpoint (default: 8080)
+    #[clap(long, default_value = "8080")]
+    web_port: u16,
 }
 
 #[tokio::main]
@@ -56,6 +67,19 @@ async fn main() -> Result<()> {
 
     // Set up logging based on whether a log directory is provided
     let _log_guard = setup_logging(&params)?;
+
+    // Create shared bridge state
+    let bridge_state = BridgeState::new();
+
+    // Start web server if enabled
+    let web_config = WebConfig {
+        port: params.web_port,
+        enabled: params.web_enabled,
+    };
+
+    if web_config.enabled {
+        web::start_web_server(web_config, bridge_state.clone()).await?;
+    }
 
     let settings = if let Some(path) = params.settings {
         if let Ok(read_to_string) = std::fs::read_to_string(path) {
@@ -74,6 +98,7 @@ async fn main() -> Result<()> {
         params.host,
         params.port,
         settings,
+        bridge_state,
     )
     .await?;
 

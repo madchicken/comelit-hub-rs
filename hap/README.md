@@ -61,6 +61,63 @@ comelit-hub-hap --log-dir ./logs --log-to-console
 
 Log files are named with timestamps, for example: `comelit-hub.2024-01-15.log` (for daily rotation).
 
+### Web UI and Prometheus Metrics
+
+The application includes a built-in web UI and Prometheus metrics endpoint for monitoring:
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--web-enabled <BOOL>` | Enable or disable the web UI and metrics endpoint | `true` |
+| `--web-port <PORT>` | Port for the web UI and metrics server | `8080` |
+
+#### Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `http://localhost:8080/` | Dashboard with bridge status overview |
+| `http://localhost:8080/devices` | List of all registered devices |
+| `http://localhost:8080/health` | Health check endpoint (returns 200 if healthy) |
+| `http://localhost:8080/metrics` | Prometheus metrics endpoint |
+| `http://localhost:8080/api/status` | JSON API status endpoint |
+
+#### Available Metrics
+
+The following Prometheus metrics are exposed:
+
+| Metric | Type | Description |
+|--------|------|-------------|
+| `comelit_bridge_info` | Gauge | Bridge version information (labels: version) |
+| `comelit_bridge_uptime_seconds` | Gauge | Time since bridge started |
+| `comelit_bridge_paired` | Gauge | HomeKit pairing status (1=paired, 0=not paired) |
+| `comelit_connection_status` | Gauge | MQTT connection status (1=connected, 0=disconnected) |
+| `comelit_devices_total` | Gauge | Number of devices by type (labels: type) |
+| `comelit_device_updates_total` | Counter | Device status updates received (labels: type) |
+| `comelit_device_update_errors_total` | Counter | Device update errors (labels: type) |
+| `comelit_ping_total` | Counter | Total ping attempts |
+| `comelit_ping_success_total` | Counter | Successful pings |
+| `comelit_ping_failure_total` | Counter | Failed pings |
+| `comelit_ping_last_success_timestamp` | Gauge | Unix timestamp of last successful ping |
+
+#### Examples
+
+```bash
+# Run with web UI on default port 8080
+comelit-hub-hap --user admin --password admin
+
+# Run with web UI on custom port
+comelit-hub-hap --user admin --password admin --web-port 9090
+
+# Disable web UI
+comelit-hub-hap --user admin --password admin --web-enabled false
+
+# Prometheus scrape config example
+# Add to your prometheus.yml:
+# scrape_configs:
+#   - job_name: 'comelit-hub'
+#     static_configs:
+#       - targets: ['localhost:8080']
+```
+
 ## Installation
 
 You can install the Comelit Hub HAP as a service. The installer handles all configuration automatically.
