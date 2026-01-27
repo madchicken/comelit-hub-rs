@@ -208,7 +208,7 @@ async fn ring(
         let programmable_switch = service
             .get_mut_characteristic(HapType::ProgrammableSwitchEvent)
             .unwrap();
-        programmable_switch.set_value(Value::from(0)).await?; // single press (doorbell ring)
+        programmable_switch.update_value(Value::from(1)).await?; // single press (doorbell ring)
         let switch = accessory.get_mut_service(HapType::Switch).unwrap();
         let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
         power_state.update_value(Value::from(true)).await?;
