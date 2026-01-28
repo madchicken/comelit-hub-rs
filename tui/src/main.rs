@@ -1,5 +1,5 @@
 use anyhow::Result;
-use comelit_hub_rs::{
+use comelit_client_rs::{
     ComelitClient, ComelitClientError, ComelitOptions, DeviceStatus, get_secrets,
 };
 use ratatui::{

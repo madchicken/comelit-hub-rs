@@ -1,6 +1,6 @@
 use std::sync::atomic::AtomicBool;
 
-use comelit_hub_rs::{DeviceStatus, LightDeviceData};
+use comelit_client_rs::{DeviceStatus, LightDeviceData};
 
 #[derive(Debug)]
 pub(crate) struct LightState {

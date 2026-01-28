@@ -1,5 +1,5 @@
 use anyhow::Result;
-use comelit_hub_rs::{WindowCoveringDeviceData, WindowCoveringStatus};
+use comelit_client_rs::{WindowCoveringDeviceData, WindowCoveringStatus};
 use hap::storage::{FileStorage, Storage};
 use serde::{Deserialize, Serialize};
 use tracing::info;

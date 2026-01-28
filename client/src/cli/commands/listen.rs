@@ -5,7 +5,7 @@ use std::{
 };
 
 use async_trait::async_trait;
-use comelit_hub_rs::{
+use comelit_client_rs::{
     ActionType, ComelitClientError, DeviceStatus, HomeDeviceData, LightDeviceData, ROOT_ID, State,
     StatusUpdate,
 };

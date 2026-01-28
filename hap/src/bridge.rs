@@ -7,12 +7,12 @@ use crate::web::metrics::Metrics;
 use crate::web::state::{BridgeState, ConnectionStatus, DeviceInfo, DeviceType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use comelit_hub_rs::DeviceStatus;
-use comelit_hub_rs::{
+use comelit_client_rs::DeviceStatus;
+use comelit_client_rs::{
     ComelitClient, ComelitClientError, ComelitOptions, DoorbellDeviceData, HomeDeviceData, State,
     StatusUpdate, get_secrets,
 };
-use comelit_hub_rs::{DoorDeviceData, ROOT_ID};
+use comelit_client_rs::{DoorDeviceData, ROOT_ID};
 use dashmap::DashMap;
 use hap::BonjourStatusFlag;
 use hap::{

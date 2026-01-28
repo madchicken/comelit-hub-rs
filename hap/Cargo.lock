@@ -282,7 +282,7 @@ dependencies = [
  "async-trait",
  "clap",
  "clap_derive",
- "comelit_hub_rs",
+ "comelit_client_rs",
  "crossterm 0.29.0",
  "dashmap",
  "derive_builder",
@@ -303,7 +303,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "comelit_hub_rs"
+name = "comelit_client_rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",

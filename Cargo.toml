@@ -8,6 +8,7 @@ members = [
     "client",
     "hap",
     "tui",
+    "viper-client",
 ]
 
 [lib]

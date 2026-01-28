@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use comelit_hub_rs::{ComelitClient, DoorDeviceData};
+use comelit_client_rs::{ComelitClient, DoorDeviceData};
 use futures::FutureExt;
 use hap::{
     accessory::{AccessoryInformation, door::DoorAccessory},

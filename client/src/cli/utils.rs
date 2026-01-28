@@ -1,4 +1,4 @@
-use comelit_hub_rs::{
+use comelit_client_rs::{
     ComelitClient, ComelitClientError, ComelitObserver, ComelitOptions, get_secrets,
 };
 

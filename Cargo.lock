@@ -453,6 +453,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
+name = "comelit-client-rs"
+version = "0.1.1"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "clap",
+ "clap_derive",
+ "crossterm 0.26.1",
+ "dashmap",
+ "derive_builder",
+ "futures",
+ "futures-util",
+ "mac_address",
+ "rand 0.9.2",
+ "rumqttc",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber 0.3.22",
+ "uuid",
+]
+
+[[package]]
 name = "comelit-hub-hap"
 version = "0.1.1"
 dependencies = [
@@ -461,7 +487,7 @@ dependencies = [
  "axum",
  "clap",
  "clap_derive",
- "comelit_hub_rs",
+ "comelit-client-rs",
  "crossterm 0.29.0",
  "dashmap",
  "derive_builder",
@@ -496,7 +522,7 @@ dependencies = [
  "clap",
  "clap_derive",
  "color-eyre",
- "comelit_hub_rs",
+ "comelit-client-rs",
  "crossterm 0.26.1",
  "ratatui",
  "tokio",
@@ -505,32 +531,6 @@ dependencies = [
 [[package]]
 name = "comelit-rs"
 version = "0.1.0"
-
-[[package]]
-name = "comelit_hub_rs"
-version = "0.1.1"
-dependencies = [
- "anyhow",
- "async-trait",
- "base64",
- "clap",
- "clap_derive",
- "crossterm 0.26.1",
- "dashmap",
- "derive_builder",
- "futures",
- "futures-util",
- "mac_address",
- "rand 0.9.2",
- "rumqttc",
- "serde",
- "serde_json",
- "thiserror 2.0.18",
- "tokio",
- "tracing",
- "tracing-subscriber 0.3.22",
- "uuid",
-]
 
 [[package]]
 name = "compact_str"
@@ -3461,6 +3461,16 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "viper-client"
+version = "0.1.0"
+dependencies = [
+ "rand 0.8.5",
+ "serde",
+ "serde_json",
+ "tracing",
+]
 
 [[package]]
 name = "want"

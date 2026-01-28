@@ -1,4 +1,4 @@
-use comelit_hub_rs::{ComelitClientError, DeviceStatus, HomeDeviceData, State};
+use comelit_client_rs::{ComelitClientError, DeviceStatus, HomeDeviceData, State};
 
 use crate::{Params, utils::create_client};
 
