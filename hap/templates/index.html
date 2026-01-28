@@ -1,0 +1,137 @@
+{% extends "base.html" %} {% block content %} {% if last_error %}
+<div class="error-banner"><strong>Error:</strong> {{ last_error }}</div>
+{% endif %}
+
+<div class="grid">
+    <div class="card">
+        <h2 class="card-title">Bridge Status</h2>
+        <div class="stat">
+            <span class="stat-label">Connection</span>
+            <span class="stat-value">
+                <span class="status-badge status-{{ connection_status }}"
+                    >{{ connection_status }}</span
+                >
+            </span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Uptime</span>
+            <span class="stat-value">{{ uptime }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Hub Host</span>
+            <span class="stat-value">{{ hub_host }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Total Devices</span>
+            <span class="stat-value">{{ device_count }}</span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 class="card-title">HomeKit Pairing</h2>
+        <div class="stat">
+            <span class="stat-label">Status</span>
+            <span class="stat-value">
+                {% if is_paired %}
+                <span class="status-badge status-connected">Paired</span>
+                {% else %}
+                <span class="status-badge status-disconnected">Not Paired</span>
+                {% endif %}
+            </span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Pairing Code</span>
+            <span class="stat-value">
+                <span class="pairing-code">{{ pairing_pin }}</span>
+            </span>
+        </div>
+        <div
+            class="qr-code-container"
+            style="
+                text-align: center;
+                margin-top: 20px;
+                padding: 15px;
+                background-color: var(--accent);
+                border-radius: var(--border-radius);
+            "
+        >
+            <p
+                style="
+                    color: var(--text-muted);
+                    margin-bottom: 15px;
+                    font-size: 0.9rem;
+                "
+            >
+                Scan with your iOS device to pair:
+            </p>
+            <img
+                src="/qrcode.svg"
+                alt="HomeKit Pairing QR Code"
+                style="
+                    max-width: 220px;
+                    height: auto;
+                    border-radius: 10px;
+                    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+                "
+            />
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 class="card-title">Health</h2>
+        <div class="stat">
+            <span class="stat-label">Ping Count</span>
+            <span class="stat-value">{{ ping_count }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Ping Failures</span>
+            <span class="stat-value">{{ ping_failures }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Success Rate</span>
+            <span class="stat-value">{{ ping_success_rate }}%</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">Last Ping</span>
+            <span class="stat-value">
+                {% if last_ping_seconds_ago %} {{ last_ping_seconds_ago }}s ago
+                {% else %} Never {% endif %}
+            </span>
+        </div>
+    </div>
+
+    <div class="card">
+        <h2 class="card-title">Activity</h2>
+        <div class="stat">
+            <span class="stat-label">Updates Received</span>
+            <span class="stat-value">{{ update_count }}</span>
+        </div>
+    </div>
+</div>
+
+<div class="card">
+    <h2 class="card-title">Device Summary</h2>
+    <div class="grid">
+        <div class="stat">
+            <span class="stat-label">💡 Lights</span>
+            <span class="stat-value">{{ light_count }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">🌡️ Thermostats</span>
+            <span class="stat-value">{{ thermostat_count }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">🪟 Window Coverings</span>
+            <span class="stat-value">{{ window_covering_count }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">🚪 Doors</span>
+            <span class="stat-value">{{ door_count }}</span>
+        </div>
+        <div class="stat">
+            <span class="stat-label">🔔 Doorbells</span>
+            <span class="stat-value">{{ doorbell_count }}</span>
+        </div>
+    </div>
+</div>
+{% endblock %}

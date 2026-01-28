@@ -50,7 +50,7 @@ impl Default for Settings {
             mount_window_covering: Some(true),
             mount_thermo: Some(true),
             mount_doors: Some(true),
-            mount_doorbells: Some(true),
+            mount_doorbells: Some(false),
             window_covering: WindowCoveringSettings::default(),
             door: DoorSettings::default(),
         }

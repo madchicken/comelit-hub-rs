@@ -123,11 +123,6 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
         state.target_humidity = new_state.target_humidity;
         state.target_heating_cooling_state = new_state.target_heating_cooling_state;
 
-        let state = {
-            let s = self.state.lock().await;
-            s.clone()
-        };
-
         let mut accessory = self.accessory.lock().await;
         let service = accessory
             .get_mut_service(HapType::Thermostat)

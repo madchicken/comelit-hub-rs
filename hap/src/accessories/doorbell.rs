@@ -1,10 +1,13 @@
+use std::sync::Arc;
+
 use anyhow::Result;
 use comelit_hub_rs::DoorbellDeviceData;
-use futures_util::lock::Mutex;
+use futures::FutureExt;
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
-    characteristic::HapCharacteristic,
+    characteristic::{AsyncCharacteristicCallbacks, HapCharacteristic},
+    pointer::Accessory,
     server::{IpServer, Server},
     service::{
         HapService, accessory_information::AccessoryInformationService, doorbell::DoorbellService,
@@ -12,8 +15,7 @@ use hap::{
     },
 };
 use serde_json::Value;
-use std::sync::Arc;
-use tokio::time::sleep;
+use tokio::{sync::Mutex, time::sleep};
 use tracing::info;
 
 use crate::accessories::ComelitAccessory;
@@ -102,9 +104,15 @@ impl Serialize for DoorbellAccessory {
     }
 }
 
+struct State {
+    pressed: bool,
+    accessory: Option<Accessory>,
+}
+
 pub(crate) struct ComelitDoorbellAccessory {
     pub(crate) id: String,
-    pub(crate) accessory_pointer: Arc<Mutex<Box<dyn HapAccessory + 'static>>>,
+    pub(crate) accessory: Accessory,
+    state: Arc<Mutex<State>>,
 }
 
 impl ComelitDoorbellAccessory {
@@ -136,12 +144,88 @@ impl ComelitDoorbellAccessory {
             .programmable_switch_event
             .set_event_notifications(Some(true));
 
-        let accessory_pointer = server.add_accessory(doorbell_accessory).await?;
+        let state = Arc::new(Mutex::new(State {
+            pressed: false,
+            accessory: None,
+        }));
+        let _state = state.clone();
+        doorbell_accessory
+            .switch
+            .power_state
+            .on_read_async(Some(move || {
+                let state = _state.clone();
+                async move {
+                    let s = state.lock().await.pressed;
+                    Ok(Some(s))
+                }
+                .boxed()
+            }));
+
+        let _state = state.clone();
+        let _id = device_id.clone();
+        doorbell_accessory.switch.power_state.on_update_async(Some(
+            move |_old_state, new_state| {
+                let state = _state.clone();
+                let _id = _id.clone();
+                async move {
+                    if new_state {
+                        // Handle power state update here
+                        let state = state.clone();
+                        if let Ok(mut _state) = state.try_lock()
+                            && let Some(_accessory) = _state.accessory.clone().as_ref()
+                        {
+                            info!("Doorbell pressed");
+                            _state.pressed = true;
+                            ring(_id.as_str(), _accessory.clone(), state.clone()).await?;
+                        }
+                    }
+                    Ok(())
+                }
+                .boxed()
+            },
+        ));
+
+        let accessory = server.add_accessory(doorbell_accessory).await?;
+        state.lock().await.accessory = Some(accessory.clone());
+
         Ok(Self {
             id: device_id,
-            accessory_pointer,
+            accessory,
+            state,
         })
     }
+}
+
+async fn ring(
+    id: &str,
+    accessory: Accessory,
+    state: Arc<Mutex<State>>,
+) -> Result<(), anyhow::Error> {
+    {
+        info!("Doorbell {} just triggered!", id);
+        let mut accessory = accessory.lock().await;
+        let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
+        let programmable_switch = service
+            .get_mut_characteristic(HapType::ProgrammableSwitchEvent)
+            .unwrap();
+        programmable_switch.update_value(Value::from(1)).await?; // single press (doorbell ring)
+        let switch = accessory.get_mut_service(HapType::Switch).unwrap();
+        let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
+        power_state.update_value(Value::from(true)).await?;
+    }
+    let accessory_pointer = accessory.clone();
+    let state = state.clone();
+    tokio::spawn(async move {
+        sleep(std::time::Duration::from_secs(2)).await;
+        let mut accessory = accessory_pointer.lock().await;
+        let switch = accessory.get_mut_service(HapType::Switch).unwrap();
+        let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
+        power_state.update_value(Value::from(false)).await.unwrap();
+        if let Ok(mut state) = state.try_lock() {
+            state.pressed = false;
+        }
+    });
+    Ok(())
 }
 
 impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
@@ -149,27 +233,8 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
         &self.id
     }
 
-    async fn update(&mut self, _data: &DoorbellDeviceData) -> Result<()> {
-        {
-            info!("Doorbell {} just triggered!", self.id);
-            let mut accessory = self.accessory_pointer.lock().await;
-            let service = accessory.get_mut_service(HapType::Doorbell).unwrap();
-            let programmable_switch = service
-                .get_mut_characteristic(HapType::ProgrammableSwitchEvent)
-                .unwrap();
-            programmable_switch.set_value(Value::from(0)).await?; // single press (doorbell ring)
-            let switch = accessory.get_mut_service(HapType::Switch).unwrap();
-            let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-            power_state.set_value(Value::from(true)).await?;
-        } // drop the lock
-        let accessory_pointer = self.accessory_pointer.clone();
-        tokio::spawn(async move {
-            sleep(std::time::Duration::from_secs(2)).await;
-            let mut accessory = accessory_pointer.lock().await;
-            let switch = accessory.get_mut_service(HapType::Switch).unwrap();
-            let power_state = switch.get_mut_characteristic(HapType::PowerState).unwrap();
-            power_state.set_value(Value::from(false)).await.unwrap();
-        });
+    async fn update(&mut self, data: &DoorbellDeviceData) -> Result<()> {
+        ring(data.id.as_str(), self.accessory.clone(), self.state.clone()).await?;
         Ok(())
     }
 }

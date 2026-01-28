@@ -1,229 +1,339 @@
-//! Logging module with support for reopening log files on SIGHUP.
+//! Logging module with built-in log rotation using tracing-appender.
 //!
-//! This module provides a `ReopenableFile` writer that can be used with
-//! `tracing-subscriber` and supports reopening the underlying file when
-//! a SIGHUP signal is received (for logrotate compatibility).
+//! This module provides a rolling file appender that handles log rotation
+//! internally, without requiring external tools like logrotate.
+//! This works natively on all platforms including macOS.
 
-use parking_lot::RwLock;
-use std::fs::{File, OpenOptions};
-use std::io::{self, Write};
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use tracing::info;
+use std::path::Path;
+use tracing_appender::non_blocking::WorkerGuard;
+use tracing_appender::rolling::{RollingFileAppender, Rotation};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::fmt::Layer;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 
-/// A file writer that can be reopened without dropping the writer.
-///
-/// This is useful for log rotation scenarios where an external tool
-/// (like logrotate or newsyslog) moves the log file and sends SIGHUP
-/// to signal the application to reopen the log file.
-#[derive(Debug)]
-pub struct ReopenableFile {
-    path: PathBuf,
-    file: RwLock<File>,
-    reopen_flag: AtomicBool,
+/// Rotation period for log files.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum RotationPeriod {
+    /// Rotate log files every minute.
+    Minutely,
+    /// Rotate log files every hour.
+    Hourly,
+    /// Rotate log files every day (default).
+    #[default]
+    Daily,
+    /// Never rotate log files.
+    Never,
 }
 
-impl ReopenableFile {
-    /// Creates a new `ReopenableFile` that writes to the specified path.
-    ///
-    /// The file is opened in append mode, creating it if it doesn't exist.
-    pub fn new(path: impl Into<PathBuf>) -> io::Result<Self> {
-        let path = path.into();
-        let file = Self::open_file(&path)?;
-        Ok(Self {
-            path,
-            file: RwLock::new(file),
-            reopen_flag: AtomicBool::new(false),
-        })
-    }
+impl std::str::FromStr for RotationPeriod {
+    type Err = String;
 
-    fn open_file(path: &PathBuf) -> io::Result<File> {
-        OpenOptions::new().create(true).append(true).open(path)
-    }
-
-    /// Signals that the file should be reopened on the next write.
-    ///
-    /// This is typically called from a signal handler.
-    pub fn signal_reopen(&self) {
-        self.reopen_flag.store(true, Ordering::SeqCst);
-    }
-
-    /// Reopens the underlying file.
-    ///
-    /// This should be called after log rotation to ensure new log entries
-    /// go to the new file instead of the rotated one.
-    pub fn reopen(&self) -> io::Result<()> {
-        let new_file = Self::open_file(&self.path)?;
-        let mut file_guard = self.file.write();
-        *file_guard = new_file;
-        Ok(())
-    }
-
-    /// Checks if a reopen was signaled and performs it if necessary.
-    fn check_and_reopen(&self) -> io::Result<()> {
-        if self.reopen_flag.swap(false, Ordering::SeqCst) {
-            self.reopen()?;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "minutely" | "minute" => Ok(RotationPeriod::Minutely),
+            "hourly" | "hour" => Ok(RotationPeriod::Hourly),
+            "daily" | "day" => Ok(RotationPeriod::Daily),
+            "never" | "none" => Ok(RotationPeriod::Never),
+            _ => Err(format!(
+                "Invalid rotation period '{}'. Valid options: minutely, hourly, daily, never",
+                s
+            )),
         }
-        Ok(())
     }
 }
 
-impl Write for &ReopenableFile {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        // Check if we need to reopen before writing
-        self.check_and_reopen()?;
-        self.file.write().write(buf)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.file.write().flush()
+impl From<RotationPeriod> for Rotation {
+    fn from(period: RotationPeriod) -> Self {
+        match period {
+            RotationPeriod::Minutely => Rotation::MINUTELY,
+            RotationPeriod::Hourly => Rotation::HOURLY,
+            RotationPeriod::Daily => Rotation::DAILY,
+            RotationPeriod::Never => Rotation::NEVER,
+        }
     }
 }
 
-/// A handle to a `ReopenableFile` that can be cloned and shared.
-///
-/// This is the type you pass to `tracing_subscriber::fmt().with_writer()`.
-#[derive(Clone, Debug)]
-pub struct ReopenableFileHandle {
-    inner: Arc<ReopenableFile>,
+/// Configuration for file-based logging with rotation.
+#[derive(Debug, Clone)]
+pub struct LogConfig {
+    /// Directory where log files will be stored.
+    pub log_dir: String,
+    /// Prefix for log file names.
+    pub log_prefix: String,
+    /// How often to rotate log files.
+    pub rotation: RotationPeriod,
+    /// Maximum number of log files to keep (0 = unlimited).
+    pub max_log_files: usize,
 }
 
-impl ReopenableFileHandle {
-    /// Creates a new handle wrapping a `ReopenableFile`.
-    pub fn new(file: ReopenableFile) -> Self {
+impl Default for LogConfig {
+    fn default() -> Self {
         Self {
-            inner: Arc::new(file),
+            log_dir: ".".to_string(),
+            log_prefix: "comelit-hub".to_string(),
+            rotation: RotationPeriod::Daily,
+            max_log_files: 7,
         }
     }
-
-    /// Signals that the file should be reopened on the next write.
-    #[allow(dead_code)]
-    pub fn signal_reopen(&self) {
-        self.inner.signal_reopen();
-    }
-
-    /// Immediately reopens the underlying file.
-    pub fn reopen(&self) -> io::Result<()> {
-        self.inner.reopen()
-    }
 }
 
-impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for ReopenableFileHandle {
-    type Writer = &'a ReopenableFile;
-
-    fn make_writer(&'a self) -> Self::Writer {
-        &self.inner
-    }
-}
-
-/// Sets up the SIGHUP signal handler to reopen log files.
+/// Guard that must be kept alive to ensure logs are flushed.
 ///
-/// Returns the signal handler thread's join handle.
+/// When this guard is dropped, any remaining logs will be flushed to the output.
+/// Keep this value alive for the duration of your program.
+pub struct LogGuard {
+    _guards: Vec<WorkerGuard>,
+}
+
+/// Sets up console-only logging (stdout/stderr).
+///
+/// Returns a guard that must be kept alive for the duration of the program.
+pub fn setup_console_logging() -> LogGuard {
+    tracing_subscriber::fmt()
+        .with_env_filter(EnvFilter::from_default_env())
+        .init();
+
+    LogGuard { _guards: vec![] }
+}
+
+/// Sets up file-based logging with automatic rotation.
+///
+/// Log files will be created in the specified directory with the given prefix.
+/// Files are automatically rotated based on the configured rotation period.
 ///
 /// # Arguments
 ///
-/// * `log_handle` - Optional handle to the main log file
-/// * `err_handle` - Optional handle to the error log file
-pub fn setup_sighup_handler(
-    log_handle: Option<ReopenableFileHandle>,
-    err_handle: Option<ReopenableFileHandle>,
-) -> std::thread::JoinHandle<()> {
-    use signal_hook::{consts::SIGHUP, iterator::Signals};
+/// * `config` - Configuration for the log files
+///
+/// # Returns
+///
+/// A guard that must be kept alive for the duration of the program.
+/// When the guard is dropped, remaining logs will be flushed.
+///
+/// # Example
+///
+/// ```ignore
+/// let config = LogConfig {
+///     log_dir: "/var/log/comelit".to_string(),
+///     log_prefix: "comelit-hub".to_string(),
+///     rotation: RotationPeriod::Daily,
+///     max_log_files: 7,
+/// };
+/// let _guard = setup_file_logging(config)?;
+/// // ... application runs ...
+/// // guard is dropped here, flushing any remaining logs
+/// ```
+pub fn setup_file_logging(config: LogConfig) -> std::io::Result<LogGuard> {
+    let log_dir = Path::new(&config.log_dir);
 
-    let mut signals = Signals::new([SIGHUP]).expect("Failed to register SIGHUP handler");
+    // Clean up old log files if max_log_files is set
+    if config.max_log_files > 0 {
+        cleanup_old_logs(log_dir, &config.log_prefix, config.max_log_files)?;
+    }
 
-    std::thread::spawn(move || {
-        for _ in signals.forever() {
-            // Use eprintln for the initial message since the log file may have been rotated
-            // and we want to ensure this diagnostic message is visible
-            eprintln!("SIGHUP received, reopening log files...");
+    // Create the rolling file appender
+    let file_appender = RollingFileAppender::builder()
+        .rotation(config.rotation.into())
+        .filename_prefix(&config.log_prefix)
+        .filename_suffix("log")
+        .max_log_files(config.max_log_files)
+        .build(log_dir)
+        .map_err(std::io::Error::other)?;
 
-            let mut success = true;
+    // Use non-blocking writer for better performance
+    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-            if let Some(ref handle) = log_handle {
-                match handle.reopen() {
-                    Ok(()) => eprintln!("Log file reopened successfully"),
-                    Err(e) => {
-                        eprintln!("Failed to reopen log file: {}", e);
-                        success = false;
-                    }
-                }
-            }
+    // Build the subscriber with file output
+    let file_layer = Layer::default()
+        .with_writer(non_blocking)
+        .with_ansi(false)
+        .with_target(true)
+        .with_thread_ids(false)
+        .with_file(true)
+        .with_line_number(true);
 
-            if let Some(ref handle) = err_handle {
-                match handle.reopen() {
-                    Ok(()) => eprintln!("Error log file reopened successfully"),
-                    Err(e) => {
-                        eprintln!("Failed to reopen error log file: {}", e);
-                        success = false;
-                    }
-                }
-            }
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(file_layer)
+        .init();
 
-            if success {
-                // Now that files are reopened, log to the new file
-                info!("Log files reopened after SIGHUP");
-            }
-        }
+    Ok(LogGuard {
+        _guards: vec![guard],
     })
+}
+
+/// Sets up logging with both file and console output.
+///
+/// Logs at INFO level and above go to the file, while console output
+/// respects the RUST_LOG environment variable.
+///
+/// # Arguments
+///
+/// * `config` - Configuration for the log files
+///
+/// # Returns
+///
+/// A guard that must be kept alive for the duration of the program.
+pub fn setup_dual_logging(config: LogConfig) -> std::io::Result<LogGuard> {
+    let log_dir = Path::new(&config.log_dir);
+
+    // Clean up old log files if max_log_files is set
+    if config.max_log_files > 0 {
+        cleanup_old_logs(log_dir, &config.log_prefix, config.max_log_files)?;
+    }
+
+    // Create the rolling file appender
+    let file_appender = RollingFileAppender::builder()
+        .rotation(config.rotation.into())
+        .filename_prefix(&config.log_prefix)
+        .filename_suffix("log")
+        .max_log_files(config.max_log_files)
+        .build(log_dir)
+        .map_err(std::io::Error::other)?;
+
+    // Use non-blocking writer for better performance
+    let (non_blocking_file, file_guard) = tracing_appender::non_blocking(file_appender);
+
+    // File layer - no ANSI codes
+    let file_layer = Layer::default()
+        .with_writer(non_blocking_file)
+        .with_ansi(false)
+        .with_target(true)
+        .with_file(true)
+        .with_line_number(true);
+
+    // Console layer - with ANSI colors
+    let console_layer = Layer::default()
+        .with_writer(std::io::stdout)
+        .with_ansi(true)
+        .with_target(true)
+        .with_level(true);
+
+    tracing_subscriber::registry()
+        .with(EnvFilter::from_default_env())
+        .with(file_layer)
+        .with(console_layer)
+        .init();
+
+    Ok(LogGuard {
+        _guards: vec![file_guard],
+    })
+}
+
+/// Cleans up old log files, keeping only the most recent ones.
+///
+/// This is called automatically when `max_log_files` is set and > 0.
+fn cleanup_old_logs(log_dir: &Path, prefix: &str, max_files: usize) -> std::io::Result<()> {
+    if !log_dir.exists() {
+        return Ok(());
+    }
+
+    let mut log_files: Vec<_> = std::fs::read_dir(log_dir)?
+        .filter_map(|entry| entry.ok())
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .map(|name| name.starts_with(prefix) && name.ends_with(".log"))
+                .unwrap_or(false)
+        })
+        .filter_map(|entry| {
+            entry
+                .metadata()
+                .ok()
+                .and_then(|m| m.modified().ok())
+                .map(|mtime| (entry.path(), mtime))
+        })
+        .collect();
+
+    // Sort by modification time, newest first
+    log_files.sort_by(|a, b| b.1.cmp(&a.1));
+
+    // Remove files beyond the limit
+    for (path, _) in log_files.into_iter().skip(max_files) {
+        if let Err(e) = std::fs::remove_file(&path) {
+            eprintln!("Warning: failed to remove old log file {:?}: {}", path, e);
+        }
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Read;
+    use tempfile::TempDir;
 
     #[test]
-    fn test_reopenable_file_write() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join(format!("test_log_{}.log", std::process::id()));
-
-        let reopenable = ReopenableFile::new(&path).unwrap();
-        let mut writer: &ReopenableFile = &reopenable;
-        writer.write_all(b"test line\n").unwrap();
-        writer.flush().unwrap();
-
-        let mut contents = String::new();
-        File::open(&path)
-            .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
-        assert_eq!(contents, "test line\n");
-
-        // Cleanup
-        std::fs::remove_file(&path).ok();
+    fn test_rotation_period_from_str() {
+        assert_eq!(
+            "daily".parse::<RotationPeriod>().unwrap(),
+            RotationPeriod::Daily
+        );
+        assert_eq!(
+            "hourly".parse::<RotationPeriod>().unwrap(),
+            RotationPeriod::Hourly
+        );
+        assert_eq!(
+            "minutely".parse::<RotationPeriod>().unwrap(),
+            RotationPeriod::Minutely
+        );
+        assert_eq!(
+            "never".parse::<RotationPeriod>().unwrap(),
+            RotationPeriod::Never
+        );
+        assert!("invalid".parse::<RotationPeriod>().is_err());
     }
 
     #[test]
-    fn test_reopenable_file_reopen() {
-        let temp_dir = std::env::temp_dir();
-        let path = temp_dir.join(format!("test_log_reopen_{}.log", std::process::id()));
+    fn test_rotation_period_case_insensitive() {
+        assert_eq!(
+            "DAILY".parse::<RotationPeriod>().unwrap(),
+            RotationPeriod::Daily
+        );
+        assert_eq!(
+            "Daily".parse::<RotationPeriod>().unwrap(),
+            RotationPeriod::Daily
+        );
+    }
 
-        let reopenable = ReopenableFile::new(&path).unwrap();
-        let mut writer: &ReopenableFile = &reopenable;
-        writer.write_all(b"before reopen\n").unwrap();
-        writer.flush().unwrap();
+    #[test]
+    fn test_cleanup_old_logs() {
+        let temp_dir = TempDir::new().unwrap();
+        let log_dir = temp_dir.path();
 
-        // Simulate log rotation by renaming the file
-        let rotated_path = path.with_extension("rotated");
-        std::fs::rename(&path, &rotated_path).unwrap();
+        // Create some fake log files
+        for i in 0..5 {
+            let path = log_dir.join(format!("test-{}.log", i));
+            std::fs::write(&path, format!("log content {}", i)).unwrap();
+            // Add a small delay to ensure different modification times
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
 
-        // Reopen should create a new file at the original path
-        reopenable.reopen().unwrap();
-        writer.write_all(b"after reopen\n").unwrap();
-        writer.flush().unwrap();
+        // Keep only 2 files
+        cleanup_old_logs(log_dir, "test-", 2).unwrap();
 
-        // Check that the new file has only the new content
-        let mut contents = String::new();
-        File::open(&path)
+        let remaining: Vec<_> = std::fs::read_dir(log_dir)
             .unwrap()
-            .read_to_string(&mut contents)
-            .unwrap();
-        assert_eq!(contents, "after reopen\n");
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_str()
+                    .map(|n| n.starts_with("test-") && n.ends_with(".log"))
+                    .unwrap_or(false)
+            })
+            .collect();
 
-        // Clean up
-        std::fs::remove_file(&path).ok();
-        std::fs::remove_file(rotated_path).ok();
+        assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn test_log_config_default() {
+        let config = LogConfig::default();
+        assert_eq!(config.log_dir, ".");
+        assert_eq!(config.log_prefix, "comelit-hub");
+        assert_eq!(config.rotation, RotationPeriod::Daily);
+        assert_eq!(config.max_log_files, 7);
     }
 }

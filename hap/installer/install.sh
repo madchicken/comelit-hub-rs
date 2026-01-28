@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 set -e
 
+BIN_TYPE="${BIN_TYPE:-release}"
 BIN_NAME="comelit-hub-hap"
-BIN_SRC="../../target/release/$BIN_NAME"
+BIN_SRC="../../target/$BIN_TYPE/$BIN_NAME"
 BIN_DST="/usr/local/bin/$BIN_NAME"
+LOG_DIR="/var/log/comelit-hub-hap"
 
 if [[ $EUID -ne 0 ]]; then
   echo "Run this script as root (sudo)"
@@ -23,7 +25,6 @@ install_binary() {
 
 install_macos() {
   echo "→ macOS detected"
-  create_macos_user
   install_binary
 
   cp ./macos/com.comelit.hub.hap.plist \
@@ -37,35 +38,33 @@ install_macos() {
   cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
   chmod 755 /usr/local/bin/comelit-hub-ctl
 
-  # Create log files with proper ownership
-  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chown comelit:wheel /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  # Create log directory with proper ownership
+  # Log rotation is handled internally by the application
+  mkdir -p "$LOG_DIR"
+  touch "$LOG_DIR/comelit-hub-hap.log"
+  touch "$LOG_DIR/comelit-hub-hap.err"
+  chmod 755 "$LOG_DIR"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.log"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.err"
 
   launchctl unload /Library/LaunchDaemons/com.comelit.hub.hap.plist 2>/dev/null || true
   launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
 
-  cp ./macos/comelit-hub-hap.conf \
-     /etc/newsyslog.d/comelit-hub-hap.conf
-
-  newsyslog -v -f /etc/newsyslog.d/comelit-hub-hap.conf
-
   echo "✔ Services macOS installed"
+  echo ""
+  echo "Note: Log rotation is handled automatically by the application."
+  echo "      Logs are stored in: $LOG_DIR"
+  echo "      Configure rotation settings in: /etc/comelit-hub-hap/comelit-hub-hap.env"
 }
 
 install_linux() {
   echo "→ Linux detected"
-  create_linux_user
   install_binary
 
   mkdir -p /var/lib/comelit-hub-hap
 
   cp ./linux/comelit-hub-hap.service \
      /etc/systemd/system/
-
-  systemctl daemon-reload
-  systemctl enable comelit-hub-hap
-  systemctl restart comelit-hub-hap
 
   mkdir -p /etc/comelit-hub-hap
   cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
@@ -76,51 +75,24 @@ install_linux() {
   cp ./comelit-hub-ctl.sh /usr/local/bin/comelit-hub-ctl
   chmod 755 /usr/local/bin/comelit-hub-ctl
 
-  # Create log files with proper ownership
-  touch /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chown comelit:comelit /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
-  chmod 640 /var/log/comelit-hub-hap.log /var/log/comelit-hub-hap.err
+  # Create log directory with proper ownership
+  # Log rotation is handled internally by the application
+  mkdir -p "$LOG_DIR"
+  touch "$LOG_DIR/comelit-hub-hap.log"
+  touch "$LOG_DIR/comelit-hub-hap.err"
+  chmod 755 "$LOG_DIR"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.log"
+  chmod 644 "$LOG_DIR/comelit-hub-hap.err"
 
-  cp ./linux/comelit-hub-hap.conf \
-     /etc/logrotate.d/comelit-hub-hap
+  systemctl daemon-reload
+  systemctl enable comelit-hub-hap
+  systemctl restart comelit-hub-hap
 
-  logrotate -f /etc/logrotate.d/comelit-hub-hap
   echo "✔ Services Linux installed"
-}
-
-create_macos_user() {
-  if id comelit &>/dev/null; then
-    echo "→ User comelit already exists"
-    return
-  fi
-
-  echo "→ Creating system user comelit"
-
-  sysadminctl -addUser comelit \
-    -system \
-    -shell /usr/bin/false \
-    -home /var/lib/comelit-hub-hap
-
-  mkdir -p /var/lib/comelit-hub-hap
-  chown -R comelit:wheel /var/lib/comelit-hub-hap
-}
-
-create_linux_user() {
-  if id comelit &>/dev/null; then
-    echo "→ User comelit already exists"
-    return
-  fi
-
-  echo "→ Creating system user comelit"
-
-  useradd \
-    --system \
-    --no-create-home \
-    --shell /usr/sbin/nologin \
-    comelit
-
-  mkdir -p /var/lib/comelit-hub-hap
-  chown -R comelit:comelit /var/lib/comelit-hub-hap
+  echo ""
+  echo "Note: Log rotation is handled automatically by the application."
+  echo "      Logs are stored in: $LOG_DIR"
+  echo "      Configure rotation settings in: /etc/comelit-hub-hap/comelit-hub-hap.env"
 }
 
 case "$(uname -s)" in

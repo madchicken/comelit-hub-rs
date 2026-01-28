@@ -10,16 +10,14 @@
 #   restart     Restart the service
 #   status      Show service status
 #   logs        Show recent logs (use -f to follow)
-#   errors      Show recent error logs (use -f to follow)
-#   reload      Send SIGHUP to reopen log files
 #
 
 set -e
 
 SERVICE_NAME="comelit-hub-hap"
 PLIST_NAME="com.comelit.hub.hap"
-LOG_FILE="/var/log/comelit-hub-hap.log"
-ERR_FILE="/var/log/comelit-hub-hap.err"
+LOG_DIR="/var/log/comelit-hub-hap"
+DATA_DIR="/var/lib/comelit-hub-hap"
 
 # Colors for output
 RED='\033[0;31m'
@@ -41,8 +39,8 @@ OS=$(detect_os)
 # Set platform-specific PID file location
 case "$OS" in
     linux)  PID_FILE="/run/comelit-hub-hap/comelit-hub-hap.pid" ;;
-    macos)  PID_FILE="/var/lib/comelit-hub-hap/comelit-hub-hap.pid" ;;
-    *)      PID_FILE="/var/lib/comelit-hub-hap/comelit-hub-hap.pid" ;;
+    macos)  PID_FILE="$DATA_DIR/comelit-hub-hap.pid" ;;
+    *)      PID_FILE="$DATA_DIR/comelit-hub-hap.pid" ;;
 esac
 
 # Print colored output
@@ -187,10 +185,19 @@ do_status() {
     esac
 }
 
+# Find the most recent log file
+find_latest_log() {
+    if [ -d "$LOG_DIR" ]; then
+        # Find the most recently modified .log file
+        ls -t "$LOG_DIR"/*.log 2>/dev/null | head -1
+    fi
+}
+
 # Show logs
 do_logs() {
     FOLLOW=""
     LINES="50"
+    ALL_FILES=""
 
     # Parse arguments
     while [ $# -gt 0 ]; do
@@ -203,17 +210,18 @@ do_logs() {
                 LINES="$2"
                 shift 2
                 ;;
+            -a|--all)
+                ALL_FILES="yes"
+                shift
+                ;;
             *)
                 shift
                 ;;
         esac
     done
 
-    print_info "Showing logs from ${LOG_FILE}:"
-    echo ""
-
-    if [ ! -f "$LOG_FILE" ]; then
-        print_warn "Log file not found: ${LOG_FILE}"
+    if [ ! -d "$LOG_DIR" ]; then
+        print_warn "Log directory not found: ${LOG_DIR}"
 
         # On Linux, try journalctl as fallback
         if [ "$OS" = "linux" ]; then
@@ -227,92 +235,71 @@ do_logs() {
         return
     fi
 
-    if [ -n "$FOLLOW" ]; then
-        tail -f "$LOG_FILE"
+    if [ -n "$ALL_FILES" ]; then
+        # Show all log files concatenated
+        print_info "Showing all logs from ${LOG_DIR}:"
+        echo ""
+        if [ -n "$FOLLOW" ]; then
+            # Follow all files
+            tail -f "$LOG_DIR"/*.log 2>/dev/null
+        else
+            # Show last N lines from all files combined, sorted by time
+            cat "$LOG_DIR"/*.log 2>/dev/null | tail -n "$LINES"
+        fi
     else
-        tail -n "$LINES" "$LOG_FILE"
+        # Show only the latest log file
+        LATEST_LOG=$(find_latest_log)
+        if [ -z "$LATEST_LOG" ]; then
+            print_warn "No log files found in ${LOG_DIR}"
+            return
+        fi
+
+        print_info "Showing logs from ${LATEST_LOG}:"
+        echo ""
+
+        if [ -n "$FOLLOW" ]; then
+            tail -f "$LATEST_LOG"
+        else
+            tail -n "$LINES" "$LATEST_LOG"
+        fi
     fi
 }
 
-# Show error logs
-do_errors() {
-    FOLLOW=""
-    LINES="50"
-
-    # Parse arguments
-    while [ $# -gt 0 ]; do
-        case "$1" in
-            -f|--follow)
-                FOLLOW="yes"
-                shift
-                ;;
-            -n|--lines)
-                LINES="$2"
-                shift 2
-                ;;
-            *)
-                shift
-                ;;
-        esac
-    done
-
-    print_info "Showing error logs from ${ERR_FILE}:"
+# List all log files
+do_list_logs() {
+    print_info "Log files in ${LOG_DIR}:"
     echo ""
 
-    if [ ! -f "$ERR_FILE" ]; then
-        print_warn "Error log file not found: ${ERR_FILE}"
+    if [ ! -d "$LOG_DIR" ]; then
+        print_warn "Log directory not found: ${LOG_DIR}"
         return
     fi
 
-    if [ -n "$FOLLOW" ]; then
-        tail -f "$ERR_FILE"
-    else
-        tail -n "$LINES" "$ERR_FILE"
-    fi
+    ls -lh "$LOG_DIR"/*.log 2>/dev/null || print_warn "No log files found"
 }
 
-# Send SIGHUP to reload logs
-do_reload() {
-    check_root
-    print_info "Sending SIGHUP to ${SERVICE_NAME} to reopen log files..."
+# Reset the service configuration
+do_reset() {
+    print_info "Resetting service configuration..."
+    echo ""
 
-    case "$OS" in
-        linux)
-            if systemctl is-active --quiet "$SERVICE_NAME"; then
-                systemctl kill -s HUP "$SERVICE_NAME"
-                print_success "SIGHUP sent"
-            else
-                print_error "Service is not running"
-                exit 1
-            fi
-            ;;
-        macos)
-            if [ -f "$PID_FILE" ]; then
-                PID=$(cat "$PID_FILE")
-                if ps -p "$PID" > /dev/null 2>&1; then
-                    kill -HUP "$PID"
-                    print_success "SIGHUP sent to PID $PID"
-                else
-                    print_error "Process not running (stale PID file)"
-                    exit 1
-                fi
-            else
-                # Try to find the process
-                PID=$(pgrep -f "comelit-hub-hap" | head -1)
-                if [ -n "$PID" ]; then
-                    kill -HUP "$PID"
-                    print_success "SIGHUP sent to PID $PID"
-                else
-                    print_error "Could not find running process"
-                    exit 1
-                fi
-            fi
-            ;;
-        *)
-            print_error "Unsupported operating system"
-            exit 1
-            ;;
-    esac
+    if [ ! -d "$LOG_DIR" ]; then
+        print_warn "Log directory not found: ${LOG_DIR}"
+        return
+    fi
+
+    rm -f "$LOG_DIR/comelit-hub-hap.log"
+    rm -f "$LOG_DIR/comelit-hub-hap.err"
+    touch "$LOG_DIR/comelit-hub-hap.log"
+    touch "$LOG_DIR/comelit-hub-hap.err"
+    chmod 644 "$LOG_DIR/comelit-hub-hap.log"
+    chmod 644 "$LOG_DIR/comelit-hub-hap.err"
+    rm -rf "$DATA_DIR/data"
+
+    systemctl daemon-reload
+    systemctl enable comelit-hub-hap
+
+    print_info "Service configuration reset successfully"
 }
 
 # Show usage
@@ -327,19 +314,25 @@ Commands:
     stop        Stop the service
     restart     Restart the service
     status      Show service status
-    logs        Show recent logs
-    errors      Show recent error logs
-    reload      Send SIGHUP to reopen log files (for log rotation)
+    logs        Show recent logs from the latest log file
+    list-logs   List all log files
+    reset       Reset the service configuration
 
 Log options:
     -f, --follow    Follow log output (like tail -f)
     -n, --lines N   Show last N lines (default: 50)
+    -a, --all       Show logs from all files (not just the latest)
 
 Examples:
-    $(basename "$0") start
+    $(
+basename "$0") start
     $(basename "$0") logs -f
     $(basename "$0") logs -n 100
-    $(basename "$0") errors -f
+    $(basename "$0") logs -a -n 200
+    $(basename "$0") list-logs
+
+Note: Log rotation is handled automatically by the application.
+      Old log files are cleaned up based on the max-log-files setting.
 
 EOF
 }
@@ -362,12 +355,11 @@ case "${1:-}" in
         shift
         do_logs "$@"
         ;;
-    errors)
-        shift
-        do_errors "$@"
+    list-logs)
+        do_list_logs
         ;;
-    reload)
-        do_reload
+    reset)
+        do_reset
         ;;
     -h|--help|help)
         usage

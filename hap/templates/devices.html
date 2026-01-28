@@ -1,0 +1,142 @@
+{% extends "base.html" %} {% block content %}
+<div class="card">
+    <h2 class="card-title">All Devices ({{ total_count }})</h2>
+</div>
+
+{% if lights %}
+<div class="card">
+    <h2 class="card-title">💡 Lights ({{ lights|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Last Update</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in lights %}
+            <tr>
+                <td>{{ device.name }}</td>
+                <td><code>{{ device.id }}</code></td>
+                <td>
+                    <span class="status-badge status-{{ device.status }}"
+                        >{{ device.status }}</span
+                    >
+                </td>
+                <td>{{ device.last_update }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %} {% if thermostats %}
+<div class="card">
+    <h2 class="card-title">🌡️ Thermostats ({{ thermostats|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Last Update</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in thermostats %}
+            <tr>
+                <td>{{ device.name }}</td>
+                <td><code>{{ device.id }}</code></td>
+                <td>{{ device.status }}</td>
+                <td>{{ device.last_update }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %} {% if window_coverings %}
+<div class="card">
+    <h2 class="card-title">
+        🪟 Window Coverings ({{ window_coverings|length }})
+    </h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Last Update</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in window_coverings %}
+            <tr>
+                <td>{{ device.name }}</td>
+                <td><code>{{ device.id }}</code></td>
+                <td>{{ device.status }}</td>
+                <td>{{ device.last_update }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %} {% if doors %}
+<div class="card">
+    <h2 class="card-title">🚪 Doors ({{ doors|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Last Update</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in doors %}
+            <tr>
+                <td>{{ device.name }}</td>
+                <td><code>{{ device.id }}</code></td>
+                <td>{{ device.status }}</td>
+                <td>{{ device.last_update }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %} {% if doorbells %}
+<div class="card">
+    <h2 class="card-title">🔔 Doorbells ({{ doorbells|length }})</h2>
+    <table>
+        <thead>
+            <tr>
+                <th>Name</th>
+                <th>ID</th>
+                <th>Status</th>
+                <th>Last Update</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for device in doorbells %}
+            <tr>
+                <td>{{ device.name }}</td>
+                <td><code>{{ device.id }}</code></td>
+                <td>{{ device.status }}</td>
+                <td>{{ device.last_update }}</td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+{% endif %} {% if total_count == 0 %}
+<div class="card">
+    <div class="empty-state">
+        <p>No devices registered yet.</p>
+        <p>
+            Devices will appear here once the bridge connects to the Comelit
+            HUB.
+        </p>
+    </div>
+</div>
+{% endif %} {% endblock %}

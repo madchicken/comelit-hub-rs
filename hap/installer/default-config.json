@@ -7,5 +7,10 @@
   "door": {
     "opening_closing_time": 60,
     "opened_time": 60
-  }
+  },
+  "mount_lights": true,
+  "mount_window_covering": true,
+  "mount_thermo": true,
+  "mount_doors": true,
+  "mount_doorbells": false
 }

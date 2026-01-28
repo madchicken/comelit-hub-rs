@@ -5,8 +5,6 @@ After=network.target
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/comelit-hub-hap-wrapper.sh
-User=comelit
-Group=comelit
 Restart=always
 RestartSec=5
 WorkingDirectory=/var/lib/comelit-hub-hap
@@ -20,7 +18,7 @@ PIDFile=/run/comelit-hub-hap/comelit-hub-hap.pid
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/comelit-hub-hap /var/log /var/run
+ReadWritePaths=/var/lib/comelit-hub-hap /var/log/comelit-hub-hap /var/run
 
 [Install]
 WantedBy=multi-user.target
