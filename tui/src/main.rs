@@ -43,6 +43,7 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
+#[allow(dead_code)]
 struct App {
     should_exit: bool,
     accessory_list: AccessoryList,
@@ -56,6 +57,7 @@ struct AccessoryList {
 }
 
 #[derive(Debug, Default)]
+#[allow(dead_code)]
 struct AccessoryItem {
     id: String,
     description: String,
