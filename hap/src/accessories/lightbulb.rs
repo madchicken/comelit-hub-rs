@@ -16,7 +16,7 @@ use tracing::{debug, error, info};
 
 use crate::accessories::comelit_accessory::ComelitAccessory;
 use crate::accessories::state::light::LightState;
-use comelit_hub_rs::{ComelitClient, DeviceStatus, LightDeviceData};
+use comelit_client_rs::{ComelitClient, DeviceStatus, LightDeviceData};
 
 pub(crate) struct ComelitLightbulbAccessory {
     id: String,

@@ -10,7 +10,6 @@ pub use bridge::start_bridge;
 
 use anyhow::Result;
 use clap::Parser;
-use clap_derive::Parser;
 use logging::{LogConfig, LogGuard, RotationPeriod};
 use settings::Settings;
 use tracing::{info, warn};

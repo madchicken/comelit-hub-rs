@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use anyhow::Result;
-use comelit_hub_rs::DoorbellDeviceData;
+use comelit_client_rs::DoorbellDeviceData;
 use futures::FutureExt;
 use hap::{
     HapType,

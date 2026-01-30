@@ -1,4 +1,4 @@
-use comelit_hub_rs::{DeviceStatus, DoorDeviceData};
+use comelit_client_rs::{DeviceStatus, DoorDeviceData};
 
 pub(crate) const FULLY_OPENED: u8 = 100;
 pub(crate) const FULLY_CLOSED: u8 = 0;

@@ -21,7 +21,7 @@ use crate::accessories::ComelitAccessory;
 use crate::accessories::state::window_covering::{
     FULLY_CLOSED, FULLY_OPENED, PositionState, WindowCoveringState,
 };
-use comelit_hub_rs::{ComelitClient, ComelitClientTrait, WindowCoveringDeviceData};
+use comelit_client_rs::{ComelitClient, ComelitClientTrait, WindowCoveringDeviceData};
 
 #[derive(Clone, Copy)]
 pub struct WindowCoveringConfig {
@@ -722,7 +722,7 @@ impl Drop for ComelitWindowCoveringAccessory {
 #[cfg(test)]
 pub mod testing {
     use async_trait::async_trait;
-    use comelit_hub_rs::{
+    use comelit_client_rs::{
         ActionType, ClimaMode, ClimaOnOff, ComelitClientError, ComelitClientTrait, HomeDeviceData,
         MacAddress, State, ThermoSeason,
     };

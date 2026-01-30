@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use comelit_hub_rs::{ComelitClientError, Scanner};
+use comelit_client_rs::{ComelitClientError, Scanner};
 
 use crate::Params;
 

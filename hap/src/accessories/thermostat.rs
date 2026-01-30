@@ -28,7 +28,7 @@ use crate::accessories::{
     ComelitAccessory,
     state::thermostat::{TargetHeatingCoolingState, ThermostatState},
 };
-use comelit_hub_rs::{ClimaMode, ClimaOnOff, ComelitClient, ThermoSeason, ThermostatDeviceData};
+use comelit_client_rs::{ClimaMode, ClimaOnOff, ComelitClient, ThermoSeason, ThermostatDeviceData};
 
 #[derive(Debug)]
 struct ComelitThermostat {

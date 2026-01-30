@@ -1,4 +1,4 @@
-use comelit_hub_rs::{ClimaMode, ThermoSeason, ThermostatDeviceData};
+use comelit_client_rs::{ClimaMode, ThermoSeason, ThermostatDeviceData};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ThermostatState {

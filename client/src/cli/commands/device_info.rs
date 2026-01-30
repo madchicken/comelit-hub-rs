@@ -1,4 +1,4 @@
-use comelit_hub_rs::{ComelitClientError, State};
+use comelit_client_rs::{ComelitClientError, State};
 use serde_json::Value;
 
 use crate::{Params, utils::create_client};

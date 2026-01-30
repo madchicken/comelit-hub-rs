@@ -1,9 +1,8 @@
 mod commands;
 mod utils;
 
-use clap::Parser;
-use clap_derive::{Parser, Subcommand};
-use comelit_hub_rs::ComelitClientError;
+use clap::{Parser, Subcommand};
+use comelit_client_rs::ComelitClientError;
 
 use crate::commands::listen;
 

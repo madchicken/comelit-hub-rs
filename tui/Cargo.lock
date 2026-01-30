@@ -293,7 +293,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b05b61dc5112cbb17e4b6cd61790d9845d13888356391624cbe7e41efeac1e75"
 
 [[package]]
-name = "comelit_hub_rs"
+name = "comelit_client_rs"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -1652,7 +1652,7 @@ dependencies = [
  "clap",
  "clap_derive",
  "color-eyre",
- "comelit_hub_rs",
+ "comelit_client_rs",
  "crossterm 0.26.1",
  "ratatui",
 ]
