@@ -461,7 +461,6 @@ dependencies = [
  "async-trait",
  "base64",
  "clap",
- "clap_derive",
  "crossterm 0.26.1",
  "dashmap",
  "derive_builder",
