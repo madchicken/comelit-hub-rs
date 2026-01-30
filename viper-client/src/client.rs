@@ -1,6 +1,10 @@
+use std::time::Duration;
+
 use serde::Deserialize;
+use tracing::debug;
 
 use crate::{
+    JSONResult, ViperError,
     channel::Channel,
     command::CommandKind,
     command_response::{
@@ -9,8 +13,9 @@ use crate::{
     ctpp_channel::CTPPChannel,
     helper::Helper,
     stream_wrapper::StreamWrapper,
-    JSONResult, ViperError,
 };
+
+pub const ICONA_BRIDGE_PORT: u16 = 64100;
 
 pub struct ViperClient {
     stream: StreamWrapper,
@@ -18,7 +23,28 @@ pub struct ViperClient {
 }
 
 impl ViperClient {
-    pub fn new(ip: &String, port: &String) -> ViperClient {
+    pub async fn scan() -> Option<(String, u16)> {
+        let scanner = comelit_client_rs::Scanner::scan(Some(Duration::from_secs(2))).await;
+        if let Ok(devices) = scanner {
+            devices
+                .iter()
+                .find(|d| d.app_id() == "HSrv" && d.address().is_some())
+                .map(|d| {
+                    let mut x = d.address().unwrap().split(":");
+                    let ip = x.next().unwrap();
+                    let port = x
+                        .next()
+                        .unwrap_or(ICONA_BRIDGE_PORT.to_string().as_str())
+                        .parse()
+                        .unwrap();
+                    (ip.to_string(), port)
+                })
+        } else {
+            None
+        }
+    }
+
+    pub fn new(ip: &str, port: u16) -> ViperClient {
         let doorbell = format!("{}:{}", ip, port);
 
         ViperClient {
@@ -27,7 +53,7 @@ impl ViperClient {
         }
     }
 
-    pub fn sign_up(&mut self, email: &String) -> JSONResult<ActivateUserResponse> {
+    pub fn sign_up(&mut self, email: &str) -> JSONResult<ActivateUserResponse> {
         let fact_channel = self.channel("FACT");
         self.stream.execute(&fact_channel.open())?;
         let activate_user = CommandKind::ActivateUser(String::from(email));
@@ -48,8 +74,8 @@ impl ViperClient {
         Self::json(&rem_bytes)
     }
 
-    pub fn authorize(&mut self, token: String) -> JSONResult<AuthResponse> {
-        let uaut = CommandKind::UAUT(token);
+    pub fn authorize(&mut self, token: &str) -> JSONResult<AuthResponse> {
+        let uaut = CommandKind::UAUT(token.into());
         let uaut_channel = self.channel("UAUT");
         self.stream.execute(&uaut_channel.open())?;
         let uaut_bytes = self.stream.execute(&uaut_channel.com(uaut))?;
@@ -59,12 +85,14 @@ impl ViperClient {
         json_response
     }
 
-    pub fn configuration(&mut self, addressbooks: String) -> JSONResult<ConfigurationResponse> {
-        let ucfg = CommandKind::UCFG(addressbooks);
+    pub fn configuration(&mut self, addressbooks: &str) -> JSONResult<ConfigurationResponse> {
+        let ucfg = CommandKind::UCFG(addressbooks.into());
         let ucfg_channel = self.channel("UCFG");
         self.stream.execute(&ucfg_channel.open())?;
         let ucfg_bytes = self.stream.execute(&ucfg_channel.com(ucfg))?;
 
+        let str = String::from_utf8_lossy(&ucfg_bytes);
+        debug!("Configuration response: {}", str);
         let json_response = Self::json(&ucfg_bytes);
         self.stream.execute(&ucfg_channel.close())?;
         json_response
@@ -106,7 +134,7 @@ impl ViperClient {
 
         loop {
             let resp = self.stream.read()?;
-            println!("{:02x?}", resp);
+            debug!("{:02x?}", resp);
             if ctpp_channel.confirm_handshake(&resp) {
                 break;
             }
@@ -167,7 +195,7 @@ mod tests {
     #[test]
     fn test_tick() {
         let _listener = SimpleTcpListener::new("127.0.0.1:3340");
-        let mut client = ViperClient::new(&String::from("127.0.0.1"), &String::from("3340"));
+        let mut client = ViperClient::new("127.0.0.1", 3340);
 
         let c = client.control;
         client.tick();
@@ -178,7 +206,7 @@ mod tests {
     #[test]
     fn test_authorize() {
         let listener = SimpleTcpListener::new("127.0.0.1:3341");
-        let mut client = ViperClient::new(&String::from("127.0.0.1"), &String::from("3341"));
+        let mut client = ViperClient::new("127.0.0.1", 3341);
 
         thread::spawn(move || {
             let mocked_open = [
@@ -200,7 +228,7 @@ mod tests {
             ])
         });
 
-        let resp = client.authorize(String::from("TESTTOKEN")).unwrap();
+        let resp = client.authorize("TESTTOKEN").unwrap();
         assert_eq!(resp.response.response_string, "Access Granted");
         assert_eq!(resp.response.response_code, 200)
     }

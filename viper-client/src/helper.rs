@@ -1,4 +1,4 @@
-use rand::distributions::{Distribution, Uniform};
+use rand::Rng;
 
 const START: u8 = 0x01;
 
@@ -11,21 +11,15 @@ pub struct Helper {}
 
 impl Helper {
     pub fn gen_ran(size: usize) -> Vec<u8> {
-        let mut rng = rand::thread_rng();
-        let die = Uniform::from(START..END);
+        let mut rng = rand::rng();
 
         (0..size)
-            .map(|_| die.sample(&mut rng))
+            .map(|_| rng.random_range(START..END))
             .collect::<Vec<u8>>()
     }
 
     pub fn control() -> [u8; 2] {
-        let mut rng = rand::thread_rng();
-        let die = Uniform::from(START..END);
-
-        [
-            die.sample(&mut rng),
-            die.sample(&mut rng)
-        ]
+        let mut rng = rand::rng();
+        [rng.random_range(START..END), rng.random_range(START..END)]
     }
 }

@@ -1,6 +1,6 @@
-use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
@@ -13,16 +13,14 @@ pub struct BaseResponse {
     pub response_string: String,
 }
 
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct AuthResponse {
     #[serde(flatten)]
-    pub response: BaseResponse
+    pub response: BaseResponse,
 }
 
-#[allow(dead_code)]
-#[derive(Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct InfoResponse {
     pub model: String,
@@ -34,7 +32,7 @@ pub struct InfoResponse {
     pub channel_details: HashMap<String, Value>,
 
     #[serde(flatten)]
-    pub response: BaseResponse
+    pub response: BaseResponse,
 }
 
 #[allow(dead_code)]
@@ -43,8 +41,8 @@ pub struct InfoResponse {
 pub struct ActivateUserResponse {
     pub user_token: String,
 
-     #[serde(flatten)]
-    pub response: BaseResponse
+    #[serde(flatten)]
+    pub response: BaseResponse,
 }
 
 #[allow(dead_code)]
@@ -56,14 +54,14 @@ pub struct ViperServerResponse {
     pub local_udp_port: u16,
     pub remote_address: String,
     pub remote_tcp_port: u16,
-    pub remote_udp_port: u16
+    pub remote_udp_port: u16,
 }
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct ViperClientResponse {
-    pub description: String
+    pub description: String,
 }
 
 #[allow(dead_code)]
@@ -73,7 +71,7 @@ pub struct AptConfigResponse {
     pub description: String,
     pub call_divert_busy_en: bool,
     pub call_divert_address: String,
-    pub virtual_key_enabled: bool
+    pub virtual_key_enabled: bool,
 }
 
 #[allow(dead_code)]
@@ -83,7 +81,7 @@ pub struct Switchboard {
     pub id: String,
     pub name: String,
     pub apt_address: String,
-    pub emergency_calls: bool
+    pub emergency_calls: bool,
 }
 
 #[allow(dead_code)]
@@ -103,28 +101,28 @@ pub struct Actuator {
     pub name: String,
     pub apt_address: String,
     pub module_index: u8,
-    pub output_index: u8
+    pub output_index: u8,
 }
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct Opendoor {
-    pub id: String,
+    pub id: u8,
     pub name: String,
     pub apt_address: String,
     pub output_index: u8,
-    pub secure_mode: bool
+    pub secure_mode: bool,
 }
 
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct OpendoorAction {
-    pub id: String,
+    pub id: u8,
     pub action: String,
     pub apt_address: String,
-    pub output_index: u8
+    pub output_index: u8,
 }
 
 #[allow(dead_code)]
@@ -132,14 +130,23 @@ pub struct OpendoorAction {
 #[serde(rename_all = "kebab-case")]
 pub struct UserParametersResponse {
     pub forced: bool,
+    #[serde(default)]
     pub apt_address_book: Vec<HashMap<String, Value>>,
+    #[serde(default)]
     pub camera_address_book: Vec<HashMap<String, Value>>,
+    #[serde(default)]
     pub rtsp_camera_address_book: Vec<HashMap<String, Value>>,
+    #[serde(default)]
     pub switchboard_address_book: Vec<Switchboard>,
+    #[serde(default)]
     pub entrance_address_book: Vec<Entrance>,
+    #[serde(default)]
     pub actuator_address_book: Vec<Actuator>,
+    #[serde(default)]
     pub opendoor_address_book: Vec<Opendoor>,
+    #[serde(default)]
     pub opendoor_actions: Vec<OpendoorAction>,
+    #[serde(default)]
     pub additional_actuator: Vec<Actuator>,
 }
 
@@ -152,7 +159,7 @@ pub struct VipResponse {
     pub apt_subaddress: u16,
     pub logical_subaddress: u16,
     pub apt_config: AptConfigResponse,
-    pub user_parameters: UserParametersResponse
+    pub user_parameters: UserParametersResponse,
 }
 
 #[allow(dead_code)]
@@ -164,5 +171,5 @@ pub struct ConfigurationResponse {
     pub vip: VipResponse,
 
     #[serde(flatten)]
-    pub response: BaseResponse
+    pub response: BaseResponse,
 }
