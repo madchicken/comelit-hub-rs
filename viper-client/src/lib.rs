@@ -5,6 +5,7 @@ pub mod command_response;
 mod ctpp_channel;
 pub mod device;
 mod helper;
+mod rtsp_channel;
 mod stream_wrapper;
 
 pub use client::{ICONA_BRIDGE_PORT, ViperClient};
