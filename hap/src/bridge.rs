@@ -218,20 +218,18 @@ pub async fn start_bridge(
                     "Creating new config, pairing code is {:?}",
                     settings.pairing_code
                 );
-                // let pin = Pin::new(settings.pairing_code).expect("Invalid pairing code");
+                let pin = Pin::new(settings.pairing_code).expect("Invalid pairing code");
                 let config = Config {
-                    pin: Pin::new([1, 1, 1, 2, 2, 3, 3, 3])?,
+                    pin,
                     name: bridge_name.into(),
-                    device_id: MacAddress::from([10, 20, 30, 40, 50, 60]),
-                    // device_id: MacAddress::from([
-                    //     rand::random::<u8>(),
-                    //     rand::random::<u8>(),
-                    //     rand::random::<u8>(),
-                    //     rand::random::<u8>(),
-                    //     rand::random::<u8>(),
-                    //     rand::random::<u8>(),
-                    // ]),
-                    // device_id: MacAddress::from([10, 20, 30, 40, 50, 60]),
+                    device_id: MacAddress::from([
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                        rand::random::<u8>(),
+                    ]),
                     category: AccessoryCategory::Bridge,
                     ..Default::default()
                 };
