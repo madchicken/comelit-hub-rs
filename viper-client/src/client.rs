@@ -7,9 +7,7 @@ use crate::{
     JSONResult, ViperError,
     channel::Channel,
     command::CommandKind,
-    command_response::{
-        ActivateUserResponse, AuthResponse, ConfigurationResponse, InfoResponse, VipResponse,
-    },
+    command_response::{ActivateUserResponse, AuthResponse, ConfigurationResponse, InfoResponse},
     ctpp_channel::CTPPChannel,
     helper::Helper,
     stream_wrapper::StreamWrapper,
@@ -121,16 +119,19 @@ impl ViperClient {
     }
 
     // TODO: This function is not finished
-    pub fn open_door(&mut self, vip: &VipResponse) -> Result<(), std::io::Error> {
-        let addr = vip.apt_address.to_string();
-        let sub = format!("{}{}", addr, vip.apt_subaddress);
-        let act = vip.user_parameters.opendoor_address_book[0]
-            .apt_address
-            .to_string();
+    pub fn open_door(
+        &mut self,
+        vip_apt_address: &str,
+        vip_apt_subaddress: u16,
+        door_apt_address: &str,
+    ) -> Result<(), std::io::Error> {
+        let sub = format!("{}{}", vip_apt_address, vip_apt_subaddress);
+        let act = door_apt_address.to_string();
 
         let mut ctpp_channel = self.ctpp_channel();
         self.stream.execute(&ctpp_channel.open(&sub))?;
-        self.stream.write(&ctpp_channel.connect_hs(&sub, &addr))?;
+        self.stream
+            .write(&ctpp_channel.connect_hs(&sub, vip_apt_address))?;
 
         loop {
             let resp = self.stream.read()?;
@@ -140,8 +141,10 @@ impl ViperClient {
             }
         }
 
-        self.stream.write(&ctpp_channel.ack(0x00, &sub, &addr))?;
-        self.stream.write(&ctpp_channel.ack(0x20, &sub, &addr))?;
+        self.stream
+            .write(&ctpp_channel.ack(0x00, &sub, vip_apt_address))?;
+        self.stream
+            .write(&ctpp_channel.ack(0x20, &sub, vip_apt_address))?;
         self.stream
             .write(&ctpp_channel.link_actuators(&act, &sub))?;
 

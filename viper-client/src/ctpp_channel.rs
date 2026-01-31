@@ -51,7 +51,7 @@ impl CTPPChannel {
     // the CTPP channel is opened
     // You have to read replies (max times is 2) until a response
     // is returned that starts with [0x60, 0x18]
-    pub fn connect_hs(&self, a1: &String, a2: &String) -> Vec<u8> {
+    pub fn connect_hs(&self, a1: &String, a2: &str) -> Vec<u8> {
         let mut req = [&HS_TEMPLATE[..], &TAIL_TEMPLATE[..]].concat();
 
         CTPPChannel::set_bytes(&mut req, &self.bitmask, 2);
@@ -74,7 +74,7 @@ impl CTPPChannel {
             && self.bitmask[3] == r[4]
     }
 
-    pub fn ack(&mut self, prefix: u8, a1: &String, a2: &String) -> Vec<u8> {
+    pub fn ack(&mut self, prefix: u8, a1: &String, a2: &str) -> Vec<u8> {
         let mut req = [&ACK_TEMPLATE[..], &TAIL_TEMPLATE[..]].concat();
 
         if prefix == 0x00 {
@@ -89,7 +89,7 @@ impl CTPPChannel {
         Command::make(&req, &self.control)
     }
 
-    pub fn link_actuators(&mut self, a1: &String, a2: &String) -> Vec<u8> {
+    pub fn link_actuators(&mut self, a1: &String, a2: &str) -> Vec<u8> {
         let mut req = [&OPEN_DOOR_TEMPLATE[..], &TAIL_TEMPLATE[..]].concat();
 
         self.bitmask = Helper::gen_ran(4);
@@ -184,9 +184,7 @@ mod tests {
 
         assert!(ctpp.confirm_handshake(&[0x60, 0x18, 0xc2, 0x70, 0x50, 0x30]));
 
-        assert!(
-            !ctpp.confirm_handshake(&[0x60, 0x18, 0xc1, 0x70, 0x50, 0x30])
-        );
+        assert!(!ctpp.confirm_handshake(&[0x60, 0x18, 0xc1, 0x70, 0x50, 0x30]));
     }
 
     #[test]

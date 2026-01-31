@@ -1,7 +1,16 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
 use viper_client::device::Device;
 use viper_client::{ICONA_BRIDGE_PORT, ViperClient, ViperError};
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    Info,
+    OpenDoor {
+        #[arg(long, default_value = None)]
+        door_name: String,
+    },
+}
 
 #[derive(Parser, Debug)]
 struct Params {
@@ -13,6 +22,9 @@ struct Params {
 
     #[clap(short, long, env = "ICONA_TOKEN")]
     token: Option<String>,
+
+    #[command(subcommand)]
+    command: Command,
 }
 
 #[tokio::main]
@@ -48,7 +60,12 @@ async fn main() -> Result<(), ViperError> {
         }
 
         println!("Connected!");
-        on_connect(ip.as_str(), port, &params.token.unwrap())?;
+        match params.command {
+            Command::Info => {
+                on_connect(ip.as_str(), port, &params.token.unwrap())?;
+            }
+            Command::OpenDoor { door_name } => todo!(),
+        }
     } else {
         println!("Device is down, please check the device status");
     }
@@ -66,15 +83,29 @@ fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
         "UAUT: {:?}\n",
         serde_json::to_string_pretty(&client.authorize(token)?).unwrap()
     );
-    println!(
-        "UCFG: {}\n",
-        serde_json::to_string_pretty(&client.configuration("all")?).unwrap()
-    );
+    let cfg = client.configuration("all")?;
+    println!("UCFG: {}\n", serde_json::to_string_pretty(&cfg).unwrap());
     if let Ok(params) = client.face_recognition_params() {
         println!("FCRG: {:?}\n", params);
     } else {
         println!("Failed to get face recognition parameters");
     }
+
+    let vip_apt_address = cfg.vip.apt_address.as_str();
+    let vip_apt_sybaddress = cfg.vip.apt_subaddress;
+
+    let door_address = cfg
+        .vip
+        .user_parameters
+        .opendoor_address_book
+        .first()
+        .unwrap();
+
+    client.open_door(
+        vip_apt_address,
+        vip_apt_sybaddress,
+        &door_address.apt_address.as_str(),
+    )?;
 
     println!("Shutting down...");
     client.shutdown();
