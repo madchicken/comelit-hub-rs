@@ -34,6 +34,13 @@ impl StreamWrapper {
         }
     }
 
+    pub fn execute_no_read(&mut self, b: &[u8]) -> ByteResult {
+        match self.write(b) {
+            Ok(_) => Ok(vec![]),
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn die(&mut self) {
         self.stream
             .shutdown(Shutdown::Both)

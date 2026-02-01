@@ -31,6 +31,8 @@ struct Params {
 async fn main() -> Result<(), ViperError> {
     dotenv().ok();
 
+    tracing_subscriber::fmt::init();
+
     let mut params = Params::parse();
     if params.ip.is_none() {
         if let Some((ip, port)) = ViperClient::scan().await {
@@ -64,7 +66,14 @@ async fn main() -> Result<(), ViperError> {
             Command::Info => {
                 on_connect(ip.as_str(), port, &params.token.unwrap())?;
             }
-            Command::OpenDoor { door_name } => todo!(),
+            Command::OpenDoor { door_name } => {
+                let mut client = ViperClient::new(ip.as_str(), port);
+                client.authorize(params.token.unwrap().as_str())?;
+                let vip_reponse = client.configuration("all")?;
+                println!("Opening door {door_name}");
+                client.open_door(&vip_reponse.vip, door_name.as_str())?;
+                client.shutdown();
+            }
         }
     } else {
         println!("Device is down, please check the device status");
@@ -91,9 +100,6 @@ fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
         println!("Failed to get face recognition parameters");
     }
 
-    let vip_apt_address = cfg.vip.apt_address.as_str();
-    let vip_apt_sybaddress = cfg.vip.apt_subaddress;
-
     let door_address = cfg
         .vip
         .user_parameters
@@ -101,11 +107,7 @@ fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
         .first()
         .unwrap();
 
-    client.open_door(
-        vip_apt_address,
-        vip_apt_sybaddress,
-        &door_address.apt_address.as_str(),
-    )?;
+    client.open_door(&cfg.vip, door_address.name.as_str())?;
 
     println!("Shutting down...");
     client.shutdown();

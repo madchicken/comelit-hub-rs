@@ -153,7 +153,7 @@ pub struct UserParametersResponse {
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
-pub struct VipResponse {
+pub struct VipConfig {
     pub enabled: bool,
     pub apt_address: String,
     pub apt_subaddress: u16,
@@ -168,7 +168,7 @@ pub struct VipResponse {
 pub struct ConfigurationResponse {
     pub viper_server: ViperServerResponse,
     pub viper_client: ViperClientResponse,
-    pub vip: VipResponse,
+    pub vip: VipConfig,
 
     #[serde(flatten)]
     pub response: BaseResponse,

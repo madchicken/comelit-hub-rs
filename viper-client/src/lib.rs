@@ -21,6 +21,7 @@ type JSONResult<T> = Result<T, ViperError>;
 pub enum ViperError {
     IOError(io::Error),
     JSONError(serde_json::Error),
+    Generic(String),
 }
 
 impl Display for ViperError {
@@ -28,6 +29,7 @@ impl Display for ViperError {
         match self {
             ViperError::IOError(io_error) => write!(f, "{}", io_error),
             ViperError::JSONError(json_error) => write!(f, "{}", json_error),
+            ViperError::Generic(generic_error) => write!(f, "{}", generic_error),
         }
     }
 }
