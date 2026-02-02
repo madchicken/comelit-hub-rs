@@ -1,3 +1,4 @@
+mod audio_video;
 mod channel;
 mod client;
 pub mod command;
