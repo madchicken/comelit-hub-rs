@@ -1,19 +1,20 @@
 use std::time::Duration;
 
-use serde::Deserialize;
-use tracing::debug;
-
 use crate::{
     JSONResult, ViperError,
+    audio_video::{Args, read_av_stream},
     channel::Channel,
     command::CommandKind,
     command_response::{
-        ActivateUserResponse, AuthResponse, ConfigurationResponse, InfoResponse, VipResponse,
+        ActivateUserResponse, AuthResponse, ConfigurationResponse, InfoResponse, VipConfig,
     },
     ctpp_channel::CTPPChannel,
     helper::Helper,
+    rtsp_channel::RTSPChannel,
     stream_wrapper::StreamWrapper,
 };
+use serde::Deserialize;
+use tracing::debug;
 
 pub const ICONA_BRIDGE_PORT: u16 = 64100;
 
@@ -120,40 +121,111 @@ impl ViperClient {
         json_response
     }
 
-    // TODO: This function is not finished
-    pub fn open_door(&mut self, vip: &VipResponse) -> Result<(), std::io::Error> {
-        let addr = vip.apt_address.to_string();
-        let sub = format!("{}{}", addr, vip.apt_subaddress);
-        let act = vip.user_parameters.opendoor_address_book[0]
-            .apt_address
-            .to_string();
+    pub fn open_door(&mut self, vip: &VipConfig, door_name: &str) -> Result<(), ViperError> {
+        let sub = format!("{}{}", vip.apt_address, vip.apt_subaddress);
+        let door_item = vip
+            .user_parameters
+            .opendoor_address_book
+            .iter()
+            .find(|d| d.name.as_str() == door_name)
+            .ok_or(ViperError::Generic("Door not found".to_string()))?;
 
-        let mut ctpp_channel = self.ctpp_channel();
+        let ctpp_channel = self.ctpp_channel();
         self.stream.execute(&ctpp_channel.open(&sub))?;
-        self.stream.write(&ctpp_channel.connect_hs(&sub, &addr))?;
+        debug!("CTPP Channel opened");
 
-        loop {
-            let resp = self.stream.read()?;
-            debug!("{:02x?}", resp);
-            if ctpp_channel.confirm_handshake(&resp) {
-                break;
-            }
-        }
-
-        self.stream.write(&ctpp_channel.ack(0x00, &sub, &addr))?;
-        self.stream.write(&ctpp_channel.ack(0x20, &sub, &addr))?;
         self.stream
-            .write(&ctpp_channel.link_actuators(&act, &sub))?;
+            .execute(&ctpp_channel.get_unknown_open_door_message(vip))?;
+        debug!("Unknown sent");
+        self.stream.read()?;
+        debug!("Read 1");
 
-        let resp = self.stream.read()?;
-        if ctpp_channel.confirm(&resp) {
-            // ????
-        } else {
-            // raise an error
-        }
+        self.stream
+            .execute_no_read(&ctpp_channel.get_open_door_message(vip, door_item, false))?;
+        debug!("Open sent (false)");
+        self.stream
+            .execute_no_read(&ctpp_channel.get_open_door_message(vip, door_item, true))?;
+        debug!("Open sent (true)");
+        self.stream
+            .execute_no_read(&ctpp_channel.get_init_open_door_message(vip, door_item))?;
+        debug!("Init sent");
+        self.stream.read()?;
+        debug!("Read 2");
+        self.stream.read()?;
+        debug!("Read 3");
+
+        self.stream
+            .execute_no_read(&ctpp_channel.get_open_door_message(vip, door_item, false))?;
+        self.stream
+            .execute_no_read(&ctpp_channel.get_open_door_message(vip, door_item, true))?;
 
         // Close the remaining channels
         self.stream.execute(&ctpp_channel.close())?;
+        Ok(())
+    }
+
+    pub fn open_actuator(&mut self, vip: &VipConfig, door_name: &str) -> Result<(), ViperError> {
+        let sub = format!("{}{}", vip.apt_address, vip.apt_subaddress);
+        let door_item = vip
+            .user_parameters
+            .actuator_address_book
+            .iter()
+            .find(|d| d.name.as_str() == door_name)
+            .ok_or(ViperError::Generic("Actuator not found".to_string()))?;
+
+        let ctpp_channel = self.ctpp_channel();
+        self.stream.execute(&ctpp_channel.open(&sub))?;
+        debug!("CTPP Channel opened");
+
+        self.stream
+            .execute(&ctpp_channel.get_unknown_open_door_message(vip))?;
+        debug!("Unknown sent");
+        self.stream.read()?;
+        debug!("Read 1");
+
+        self.stream
+            .execute_no_read(&ctpp_channel.get_init_open_actuator_message(vip, door_item))?;
+        self.stream.read()?;
+        debug!("Read 2");
+        self.stream.read()?;
+        debug!("Read 3");
+
+        self.stream
+            .execute_no_read(&ctpp_channel.get_open_actuator_message(vip, door_item, false))?;
+        self.stream
+            .execute_no_read(&ctpp_channel.get_open_actuator_message(vip, door_item, true))?;
+
+        // Close the remaining channels
+        self.stream.execute(&ctpp_channel.close())?;
+        Ok(())
+    }
+
+    pub async fn start_video(
+        &mut self,
+        ip: &str,
+        port: u16,
+        output_file: &str,
+    ) -> Result<(), ViperError> {
+        let rtsp_channel = self.rtsp_channel();
+        self.stream.execute(&rtsp_channel.open())?;
+        debug!("RTSP Channel opened");
+        self.stream.execute_no_read(&rtsp_channel.open_stream())?;
+        debug!("RTSP Channel initialized");
+        let args = Args::builder()
+            .no_video(false)
+            .no_audio(false)
+            .max_packets(100000)
+            .remote(ip.into())
+            .bind("0.0.0.0".into())
+            .audio_output(format!("{}.pcm", output_file).into())
+            .video_output(format!("{}.h264", output_file).into())
+            .port(port)
+            .build();
+        debug!("Start audio video recording...");
+        read_av_stream(args)
+            .await
+            .map_err(|e| ViperError::Generic(e.to_string()))?;
+        rtsp_channel.close();
         Ok(())
     }
 
@@ -167,6 +239,12 @@ impl ViperClient {
         self.tick();
 
         CTPPChannel::new(&self.control)
+    }
+
+    fn rtsp_channel(&mut self) -> RTSPChannel {
+        self.tick();
+
+        RTSPChannel::new(&self.control)
     }
 
     fn json<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> JSONResult<T> {

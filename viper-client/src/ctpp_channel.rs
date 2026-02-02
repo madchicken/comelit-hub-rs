@@ -1,45 +1,34 @@
 use crate::command::Command;
-use crate::helper::Helper;
+use crate::command_response::{Actuator, Opendoor, VipConfig};
 
-// Every replaceable character in this template
-// is marked as 0xFF not 0xff.
-const HS_TEMPLATE: [u8; 28] = [
-    0xc0, 0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x11, 0x00, 0x40, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x10, 0x0e, 0x00, 0x00, 0x00, 0x00,
-];
+#[repr(u8)]
+pub enum MessageType {
+    OpenDoor = 0x00,        // valore da definire in base al tuo codice
+    OpenDoorConfirm = 0x20, // valore da definire in base al tuo codice
+}
 
-const OPEN_DOOR_TEMPLATE: [u8; 48] = [
-    0xc0, 0x18, 0xFF, 0xFF, 0xFF, 0xFF, // 4 random bytes
-    0x00, 0x28, 0x00, 0x01, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-    0xFF, // Actuator 1
-    0x00, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Actuator 2
-    0x00, 0x00, 0x01, 0x20, 0xFF, 0xFF, 0xFF, 0xFF, // 4 other random bytes
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, // Actuator 1
-    0x00, 0x49, 0x49,
-];
+// Helper function to convert a string to a buffer with optional null termination
+fn string_to_buffer(s: &str, null_terminated: bool) -> Vec<u8> {
+    let mut buffer = s.as_bytes().to_vec();
+    if null_terminated {
+        buffer.push(0x00);
+    }
+    buffer
+}
 
-const ACK_TEMPLATE: [u8; 8] = [0xFF, 0x18, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00];
-
-const TAIL_TEMPLATE: [u8; 24] = [
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0xFF, 0xFF,
-    0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00,
-];
+const NULL: &[u8] = &[0x00];
 
 #[derive(Debug)]
 pub struct CTPPChannel {
     control: [u8; 2],
-    bitmask: Vec<u8>,
 }
 
 impl CTPPChannel {
     pub fn new(control: &[u8; 2]) -> CTPPChannel {
-        CTPPChannel {
-            control: *control,
-            bitmask: Helper::gen_ran(4),
-        }
+        CTPPChannel { control: *control }
     }
 
-    pub fn open(&self, sub: &String) -> Vec<u8> {
+    pub fn open(&self, sub: &str) -> Vec<u8> {
         Command::channel(&String::from("CTPP"), &self.control, Some(sub.as_bytes()))
     }
 
@@ -47,72 +36,123 @@ impl CTPPChannel {
         Command::close(&self.control)
     }
 
-    // This is the initial call that's made right after
-    // the CTPP channel is opened
-    // You have to read replies (max times is 2) until a response
-    // is returned that starts with [0x60, 0x18]
-    pub fn connect_hs(&self, a1: &String, a2: &String) -> Vec<u8> {
-        let mut req = [&HS_TEMPLATE[..], &TAIL_TEMPLATE[..]].concat();
+    pub fn get_unknown_open_door_message(&self, vip: &VipConfig) -> Vec<u8> {
+        let apt_combined = format!("{}{}", vip.apt_address, vip.apt_subaddress);
 
-        CTPPChannel::set_bytes(&mut req, &self.bitmask, 2);
-        CTPPChannel::set_bytes(&mut req, &Helper::gen_ran(2), 10);
-        CTPPChannel::set_bytes(&mut req, a1.as_bytes(), 12);
-        CTPPChannel::set_bytes(&mut req, a1.as_bytes(), 32);
-        CTPPChannel::set_bytes(&mut req, a2.as_bytes(), 42);
+        let req = [
+            vec![0xc0, 0x18, 0x5c, 0x8b],
+            vec![0x2b, 0x73, 0x00, 0x11],
+            vec![0x00, 0x40, 0xac, 0x23],
+            string_to_buffer(&apt_combined, true),
+            vec![0x10, 0x0e],
+            vec![0x00, 0x00, 0x00, 0x00],
+            vec![0xff, 0xff, 0xff, 0xff],
+            string_to_buffer(&apt_combined, true),
+            string_to_buffer(&vip.apt_address, true),
+            NULL.to_vec(),
+        ]
+        .concat();
 
         Command::make(&req, &self.control)
     }
 
-    pub fn confirm_handshake(&self, r: &[u8]) -> bool {
-        r[0] == 0x60 && self.confirm(r)
-    }
+    pub fn get_open_door_message(
+        &self,
+        vip: &VipConfig,
+        door_item: &Opendoor,
+        confirm: bool,
+    ) -> Vec<u8> {
+        let message_type = if confirm {
+            MessageType::OpenDoorConfirm as u8
+        } else {
+            MessageType::OpenDoor as u8
+        };
 
-    pub fn confirm(&self, r: &[u8]) -> bool {
-        self.bitmask[0] + 0x80 == r[2]
-            && self.bitmask[1] == r[3]
-            && self.bitmask[2] == r[5] - 1
-            && self.bitmask[3] == r[4]
-    }
+        let apt_with_output = format!("{}{}", vip.apt_address, door_item.output_index);
 
-    pub fn ack(&mut self, prefix: u8, a1: &String, a2: &String) -> Vec<u8> {
-        let mut req = [&ACK_TEMPLATE[..], &TAIL_TEMPLATE[..]].concat();
-
-        if prefix == 0x00 {
-            self.tick_mask();
+        let mut req = [
+            vec![message_type],
+            vec![0x5c, 0x8b],
+            vec![0x2c, 0x74, 0x00, 0x00],
+            vec![0xff, 0xff, 0xff, 0xff],
+            string_to_buffer(&apt_with_output, true),
+            string_to_buffer(&door_item.apt_address, true),
+            NULL.to_vec(),
+        ]
+        .concat();
+        if !req.len().is_multiple_of(2) {
+            req.extend(NULL);
         }
-
-        CTPPChannel::set_bytes(&mut req, &[prefix], 0);
-        CTPPChannel::set_bytes(&mut req, &self.bitmask, 2);
-        CTPPChannel::set_bytes(&mut req, a1.as_bytes(), 12);
-        CTPPChannel::set_bytes(&mut req, a2.as_bytes(), 22);
-
         Command::make(&req, &self.control)
     }
 
-    pub fn link_actuators(&mut self, a1: &String, a2: &String) -> Vec<u8> {
-        let mut req = [&OPEN_DOOR_TEMPLATE[..], &TAIL_TEMPLATE[..]].concat();
+    pub fn get_init_open_door_message(&self, vip: &VipConfig, door_item: &Opendoor) -> Vec<u8> {
+        let apt_with_output = format!("{}{}", vip.apt_address, door_item.output_index);
 
-        self.bitmask = Helper::gen_ran(4);
-
-        CTPPChannel::set_bytes(&mut req, &self.bitmask, 2);
-        CTPPChannel::set_bytes(&mut req, a1.as_bytes(), 10);
-        CTPPChannel::set_bytes(&mut req, a2.as_bytes(), 20);
-        CTPPChannel::set_bytes(&mut req, &Helper::gen_ran(4), 32);
-        CTPPChannel::set_bytes(&mut req, a1.as_bytes(), 36);
-        CTPPChannel::set_bytes(&mut req, a1.as_bytes(), 52);
-        CTPPChannel::set_bytes(&mut req, a2.as_bytes(), 62);
-
-        Command::make(&req, &self.control)
-    }
-
-    fn tick_mask(&mut self) {
-        self.bitmask[3] += 1;
-    }
-
-    fn set_bytes(template: &mut [u8], bytes: &[u8], offset: usize) {
-        for (i, b) in bytes.iter().enumerate() {
-            template[i + offset] = *b;
+        let mut req = [
+            vec![0xc0, 0x18, 0x70, 0xab],
+            vec![0x29, 0x9f, 0x00, 0x0d],
+            vec![0x00, 0x2d],
+            string_to_buffer(&door_item.apt_address, true),
+            NULL.to_vec(),
+            vec![door_item.output_index, 0x00, 0x00, 0x00],
+            vec![0xff, 0xff, 0xff, 0xff],
+            string_to_buffer(&apt_with_output, true),
+            string_to_buffer(&door_item.apt_address, true),
+            NULL.to_vec(),
+        ]
+        .concat();
+        if !req.len().is_multiple_of(2) {
+            req.extend(NULL);
         }
+        Command::make(&req, &self.control)
+    }
+
+    pub fn get_init_open_actuator_message(
+        &self,
+        vip: &VipConfig,
+        actuator_door_item: &Actuator,
+    ) -> Vec<u8> {
+        let apt_with_output = format!("{}{}", vip.apt_address, actuator_door_item.output_index);
+
+        let mut req = [
+            vec![0xc0, 0x18, 0x45, 0xbe],
+            vec![0x8f, 0x5c, 0x00, 0x04],
+            vec![0x00, 0x20, 0xff, 0x01],
+            vec![0xff, 0xff, 0xff, 0xff],
+            string_to_buffer(&apt_with_output, true),
+            string_to_buffer(&actuator_door_item.apt_address, true),
+            NULL.to_vec(),
+        ]
+        .concat();
+        if !req.len().is_multiple_of(2) {
+            req.extend(NULL);
+        }
+        Command::make(&req, &self.control)
+    }
+
+    pub fn get_open_actuator_message(
+        &self,
+        vip: &VipConfig,
+        actuator_door_item: &Actuator,
+        confirm: bool,
+    ) -> Vec<u8> {
+        let first_byte = if confirm { 0x20 } else { 0x00 };
+        let apt_with_output = format!("{}{}", vip.apt_address, actuator_door_item.output_index);
+
+        let mut req = [
+            vec![first_byte, 0x18, 0x45, 0xbe],
+            vec![0x8f, 0x5c, 0x00, 0x04],
+            vec![0xff, 0xff, 0xff, 0xff],
+            string_to_buffer(&apt_with_output, true),
+            string_to_buffer(&actuator_door_item.apt_address, true),
+            NULL.to_vec(),
+        ]
+        .concat();
+        if !req.len().is_multiple_of(2) {
+            req.extend(NULL);
+        }
+        Command::make(&req, &self.control)
     }
 }
 
@@ -134,74 +174,5 @@ mod tests {
         assert_eq!(str::from_utf8(&conn[16..20]).unwrap(), "CTPP");
         assert_eq!(str::from_utf8(&conn[28..37]).unwrap(), "SB0000062");
         assert_eq!(conn[37], 0x00);
-    }
-
-    #[test]
-    fn test_connect_hs() {
-        let ctpp = CTPPChannel::new(&[1, 2]);
-        let conn = ctpp.connect_hs(&String::from("SB0000062"), &String::from("SB000006"));
-
-        assert_eq!(&conn[2], &52);
-        assert_eq!(&conn[8..10], &[192, 24]);
-        assert_eq!(str::from_utf8(&conn[20..29]).unwrap(), "SB0000062");
-        assert_eq!(str::from_utf8(&conn[40..49]).unwrap(), "SB0000062");
-        assert_eq!(&conn[49], &0x00);
-        assert_eq!(str::from_utf8(&conn[50..58]).unwrap(), "SB000006");
-        assert_eq!(&conn[58..], &[0x00, 0x00]);
-    }
-
-    #[test]
-    fn test_ack() {
-        let mut ctpp = CTPPChannel::new(&[1, 2]);
-        let mask = ctpp.bitmask[3];
-        let conn = ctpp.ack(0x00, &String::from("SB0000062"), &String::from("SB000006"));
-
-        assert_eq!(conn[13], mask + 1);
-        assert_eq!(&conn[2], &32);
-        assert_eq!(&conn[8..10], &[0, 24]);
-        assert_eq!(str::from_utf8(&conn[20..29]).unwrap(), "SB0000062");
-        assert_eq!(str::from_utf8(&conn[30..38]).unwrap(), "SB000006");
-
-        let conn_2 = ctpp.ack(0x20, &String::from("SB0000062"), &String::from("SB000006"));
-
-        assert_eq!(&conn_2[2], &32);
-        assert_eq!(&conn_2[8..10], &[32, 24]);
-        assert_eq!(str::from_utf8(&conn_2[20..29]).unwrap(), "SB0000062");
-        assert_eq!(str::from_utf8(&conn_2[30..38]).unwrap(), "SB000006");
-        // This is to test that the bitmask doesn't swap between
-        // 0x00 and 0x20 calls
-        assert_eq!(&conn_2[10..14], &conn[10..14]);
-    }
-
-    #[test]
-    fn test_confirm_handshake() {
-        let ctpp = CTPPChannel {
-            control: [1, 2],
-            bitmask: vec![0x42, 0x70, 0x2f, 0x50],
-        };
-
-        assert!(!ctpp.confirm_handshake(&[0x00, 0x18, 0xc2, 0x70, 0x50, 0x30]));
-
-        assert!(ctpp.confirm_handshake(&[0x60, 0x18, 0xc2, 0x70, 0x50, 0x30]));
-
-        assert!(
-            !ctpp.confirm_handshake(&[0x60, 0x18, 0xc1, 0x70, 0x50, 0x30])
-        );
-    }
-
-    #[test]
-    fn test_link_actuators() {
-        let mut ctpp = CTPPChannel::new(&[1, 2]);
-        let conn = ctpp.link_actuators(&String::from("SB0000062"), &String::from("SB000006"));
-
-        assert_eq!(&conn[2], &72);
-        assert_eq!(&conn[8..10], &[192, 24]);
-        assert_eq!(str::from_utf8(&conn[18..27]).unwrap(), "SB0000062");
-        assert_eq!(&conn[27], &0);
-        assert_eq!(str::from_utf8(&conn[28..36]).unwrap(), "SB000006");
-        assert_eq!(str::from_utf8(&conn[44..53]).unwrap(), "SB0000062");
-        assert_eq!(str::from_utf8(&conn[60..69]).unwrap(), "SB0000062");
-        assert_eq!(&conn[69], &0);
-        assert_eq!(str::from_utf8(&conn[70..78]).unwrap(), "SB000006");
     }
 }
