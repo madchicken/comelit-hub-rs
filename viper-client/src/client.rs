@@ -1,10 +1,8 @@
 use std::time::Duration;
 
-use serde::Deserialize;
-use tracing::debug;
-
 use crate::{
     JSONResult, ViperError,
+    audio_video::{Args, read_av_stream},
     channel::Channel,
     command::CommandKind,
     command_response::{
@@ -12,8 +10,11 @@ use crate::{
     },
     ctpp_channel::CTPPChannel,
     helper::Helper,
+    rtsp_channel::RTSPChannel,
     stream_wrapper::StreamWrapper,
 };
+use serde::Deserialize;
+use tracing::debug;
 
 pub const ICONA_BRIDGE_PORT: u16 = 64100;
 
@@ -199,6 +200,35 @@ impl ViperClient {
         Ok(())
     }
 
+    pub async fn start_video(
+        &mut self,
+        ip: &str,
+        port: u16,
+        output_file: &str,
+    ) -> Result<(), ViperError> {
+        let rtsp_channel = self.rtsp_channel();
+        self.stream.execute(&rtsp_channel.open())?;
+        debug!("RTSP Channel opened");
+        self.stream.execute_no_read(&rtsp_channel.open_stream())?;
+        debug!("RTSP Channel initialized");
+        let args = Args::builder()
+            .no_video(false)
+            .no_audio(false)
+            .max_packets(100000)
+            .remote(ip.into())
+            .bind("0.0.0.0".into())
+            .audio_output(format!("{}.pcm", output_file).into())
+            .video_output(format!("{}.h264", output_file).into())
+            .port(port)
+            .build();
+        debug!("Start audio video recording...");
+        read_av_stream(args)
+            .await
+            .map_err(|e| ViperError::Generic(e.to_string()))?;
+        rtsp_channel.close();
+        Ok(())
+    }
+
     fn channel(&mut self, command: &'static str) -> Channel {
         self.tick();
 
@@ -209,6 +239,12 @@ impl ViperClient {
         self.tick();
 
         CTPPChannel::new(&self.control)
+    }
+
+    fn rtsp_channel(&mut self) -> RTSPChannel {
+        self.tick();
+
+        RTSPChannel::new(&self.control)
     }
 
     fn json<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> JSONResult<T> {

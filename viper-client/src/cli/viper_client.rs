@@ -10,6 +10,14 @@ enum Command {
         #[arg(long, default_value = None)]
         door_name: String,
     },
+    OpenActuator {
+        #[arg(long, default_value = None)]
+        actuator_name: String,
+    },
+    StartVideo {
+        #[arg(long, default_value = None)]
+        output_file: String,
+    },
 }
 
 #[derive(Parser, Debug)]
@@ -72,6 +80,23 @@ async fn main() -> Result<(), ViperError> {
                 let vip_reponse = client.configuration("all")?;
                 println!("Opening door {door_name}");
                 client.open_door(&vip_reponse.vip, door_name.as_str())?;
+                client.shutdown();
+            }
+            Command::OpenActuator { actuator_name } => {
+                let mut client = ViperClient::new(ip.as_str(), port);
+                client.authorize(params.token.unwrap().as_str())?;
+                let vip_reponse = client.configuration("all")?;
+                println!("Opening actuator {actuator_name}");
+                client.open_actuator(&vip_reponse.vip, actuator_name.as_str())?;
+                client.shutdown();
+            }
+            Command::StartVideo { output_file } => {
+                let mut client = ViperClient::new(ip.as_str(), port);
+                client.authorize(params.token.unwrap().as_str())?;
+                println!("Starting video recording");
+                client
+                    .start_video(ip.as_str(), port, output_file.as_str())
+                    .await?;
                 client.shutdown();
             }
         }

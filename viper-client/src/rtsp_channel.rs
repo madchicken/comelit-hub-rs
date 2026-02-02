@@ -11,8 +11,8 @@ impl RTSPChannel {
         RTSPChannel { control: *control }
     }
 
-    pub fn open(&self, sub: &String) -> Vec<u8> {
-        Command::channel(&String::from("RTSP"), &self.control, Some(sub.as_bytes()))
+    pub fn open(&self) -> Vec<u8> {
+        Command::channel(&String::from("RTSP"), &self.control, None)
     }
 
     pub fn close(&self) -> Vec<u8> {
@@ -22,11 +22,5 @@ impl RTSPChannel {
     pub fn open_stream(&self) -> Vec<u8> {
         let req = [&OPEN_STREAM_TEMPLATE[..]].concat();
         Command::make(&req, &self.control)
-    }
-
-    fn set_bytes(template: &mut [u8], bytes: &[u8], offset: usize) {
-        for (i, b) in bytes.iter().enumerate() {
-            template[i + offset] = *b;
-        }
     }
 }
