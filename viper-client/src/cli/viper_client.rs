@@ -59,7 +59,7 @@ async fn main() -> Result<(), ViperError> {
         println!("Device is up");
         if params.token.is_none() {
             println!("Token is not provided, creating a new user");
-            let mut client = ViperClient::new(ip.as_str(), port);
+            let mut client = ViperClient::new(ip.as_str(), port).await;
             if let Ok(token) = client.sign_up("test@gmail.com") {
                 params.token = Some(token.user_token.clone());
                 println!("Token is {}", token.user_token);
@@ -72,10 +72,10 @@ async fn main() -> Result<(), ViperError> {
         println!("Connected!");
         match params.command {
             Command::Info => {
-                on_connect(ip.as_str(), port, &params.token.unwrap())?;
+                on_connect(ip.as_str(), port, &params.token.unwrap()).await?;
             }
             Command::OpenDoor { door_name } => {
-                let mut client = ViperClient::new(ip.as_str(), port);
+                let mut client = ViperClient::new(ip.as_str(), port).await;
                 client.authorize(params.token.unwrap().as_str())?;
                 let vip_reponse = client.configuration("all")?;
                 println!("Opening door {door_name}");
@@ -83,7 +83,7 @@ async fn main() -> Result<(), ViperError> {
                 client.shutdown();
             }
             Command::OpenActuator { actuator_name } => {
-                let mut client = ViperClient::new(ip.as_str(), port);
+                let mut client = ViperClient::new(ip.as_str(), port).await;
                 client.authorize(params.token.unwrap().as_str())?;
                 let vip_reponse = client.configuration("all")?;
                 println!("Opening actuator {actuator_name}");
@@ -91,11 +91,12 @@ async fn main() -> Result<(), ViperError> {
                 client.shutdown();
             }
             Command::StartVideo { output_file } => {
-                let mut client = ViperClient::new(ip.as_str(), port);
+                let mut client = ViperClient::new(ip.as_str(), port).await;
                 client.authorize(params.token.unwrap().as_str())?;
+                let vip_reponse = client.configuration("all")?;
                 println!("Starting video recording");
                 client
-                    .start_video(ip.as_str(), port, output_file.as_str())
+                    .start_video(ip.as_str(), port, &vip_reponse.vip, output_file.as_str())
                     .await?;
                 client.shutdown();
             }
@@ -107,8 +108,8 @@ async fn main() -> Result<(), ViperError> {
 }
 
 // This is an example run purely for testing
-fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
-    let mut client = ViperClient::new(ip, port);
+async fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
+    let mut client = ViperClient::new(ip, port).await;
     println!(
         "INFO: {}\n",
         serde_json::to_string_pretty(&client.info()?).unwrap()

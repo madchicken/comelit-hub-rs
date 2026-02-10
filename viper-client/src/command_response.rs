@@ -9,7 +9,7 @@ pub struct BaseResponse {
     pub message: String,
     pub message_type: String,
     pub message_id: u8,
-    pub response_code: u8,
+    pub response_code: u32,
     pub response_string: String,
 }
 
@@ -48,7 +48,7 @@ pub struct ActivateUserResponse {
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
-pub struct ViperServerResponse {
+pub struct ViperServerConfig {
     pub local_address: String,
     pub local_tcp_port: u16,
     pub local_udp_port: u16,
@@ -60,7 +60,7 @@ pub struct ViperServerResponse {
 #[allow(dead_code)]
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
-pub struct ViperClientResponse {
+pub struct ViperClientConfig {
     pub description: String,
 }
 
@@ -166,8 +166,8 @@ pub struct VipConfig {
 #[derive(Deserialize, Serialize, Debug)]
 #[serde(rename_all = "kebab-case")]
 pub struct ConfigurationResponse {
-    pub viper_server: ViperServerResponse,
-    pub viper_client: ViperClientResponse,
+    pub viper_server: ViperServerConfig,
+    pub viper_client: ViperClientConfig,
     pub vip: VipConfig,
 
     #[serde(flatten)]

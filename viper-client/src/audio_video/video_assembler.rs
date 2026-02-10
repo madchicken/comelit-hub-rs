@@ -5,11 +5,22 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::time::Duration;
 use tokio::net::UdpSocket;
 use tokio::signal;
+use tokio::time::{interval, timeout};
 use tracing::{debug, error, info, warn};
 
 use crate::audio_video::audio_assembler::AudioAssembler;
+use crate::udp_stream_wrapper::UdpStreamWrapper;
+
+const RTP_HEADER_BYTES: &[u8] = &[
+    0x00, 0x06, 0x06, 0x00, 0xb1, 0x03, 0x00, 0x00, 0x59, 0x12, 0x00, 0x4e, 0x00, 0x80,
+];
+
+const RTP_START: &[u8] = &[
+    0x00, 0x06, 0x06, 0x00, 0xb1, 0x3, 0x00, 0x00, 0x59, 0x12, 0x01, 0x4f, 0x01, 0x80,
+];
 
 /// RTP Audio/Video capture tool for custom protocol
 #[derive(Builder, Debug)]
@@ -313,33 +324,7 @@ fn process_h264_payload(payload: &Bytes) -> Option<H264Fragment> {
     }
 }
 
-async fn capture_rtp(args: Args) -> Result<()> {
-    let socket = if let Some(ref remote) = args.remote {
-        // Connect to remote address - bind to local address first, then connect
-        let bind_addr = format!("{}:0", args.bind); // Use port 0 to let OS assign a local port
-        let socket = UdpSocket::bind(&bind_addr)
-            .await
-            .context(format!("Failed to bind to {}", bind_addr))?;
-
-        let remote_addr = format!("{}:{}", remote, args.port);
-        socket
-            .connect(&remote_addr)
-            .await
-            .context(format!("Failed to connect to {}", remote_addr))?;
-
-        info!("Connected to remote UDP {}", remote_addr);
-        socket
-    } else {
-        // Bind locally and listen for incoming packets
-        let bind_addr = format!("{}:{}", args.bind, args.port);
-        let socket = UdpSocket::bind(&bind_addr)
-            .await
-            .context(format!("Failed to bind to {}", bind_addr))?;
-
-        info!("Listening on UDP {}", bind_addr);
-        socket
-    };
-
+async fn capture_rtp(socket: &UdpStreamWrapper, args: Args) -> Result<()> {
     if !args.no_video {
         info!("Video output: {:?}", args.video_output);
     }
@@ -375,13 +360,8 @@ async fn capture_rtp(args: Args) -> Result<()> {
         tokio::select! {
             // Handle UDP packets
             result = async {
-                if args.remote.is_some() {
-                    // When connected, use recv() which only receives from the connected address
-                    socket.recv(&mut buf).await.map(|len| (len, "connected remote".to_string()))
-                } else {
-                    // When not connected, use recv_from() to get packets from any source
-                    socket.recv_from(&mut buf).await.map(|(len, addr)| (len, addr.to_string()))
-                }
+                // When connected, use recv() which only receives from the connected address
+                socket.recv(&mut buf).await.map(|len| (len, "connected remote".to_string()))
             } => {
                 match result {
                     Ok((len, addr)) => {
@@ -535,11 +515,11 @@ async fn capture_rtp(args: Args) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn read_av_stream(args: Args) -> Result<()> {
+pub(crate) async fn read_av_stream(socket: &UdpStreamWrapper, args: Args) -> Result<()> {
     info!(
         "RTP Audio/Video Capture Tool v{}",
         env!("CARGO_PKG_VERSION")
     );
 
-    capture_rtp(args).await
+    capture_rtp(socket, args).await
 }
