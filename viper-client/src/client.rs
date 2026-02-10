@@ -4,14 +4,17 @@ use crate::{
     JSONResult, ViperError,
     audio_video::{Args, read_av_stream},
     channel::Channel,
-    command::CommandKind,
+    command::{CommandKind, PushInfo},
     command_response::{
-        ActivateUserResponse, AuthResponse, ConfigurationResponse, InfoResponse, VipConfig,
+        ActivateUserResponse, AuthResponse, ConfigurationResponse, InfoResponse, Opendoor,
+        VipConfig,
     },
     ctpp_channel::CTPPChannel,
     helper::Helper,
-    rtsp_channel::RTSPChannel,
+    rtpc_channel::RTPCChannel,
     stream_wrapper::StreamWrapper,
+    udp_stream_wrapper::UdpStreamWrapper,
+    udpm_channel::UDPMChannel,
 };
 use serde::Deserialize;
 use tracing::debug;
@@ -20,6 +23,7 @@ pub const ICONA_BRIDGE_PORT: u16 = 64100;
 
 pub struct ViperClient {
     stream: StreamWrapper,
+    udp: UdpStreamWrapper,
     control: [u8; 2],
 }
 
@@ -45,11 +49,14 @@ impl ViperClient {
         }
     }
 
-    pub fn new(ip: &str, port: u16) -> ViperClient {
+    pub async fn new(ip: &str, port: u16) -> ViperClient {
         let doorbell = format!("{}:{}", ip, port);
 
         ViperClient {
             stream: StreamWrapper::new(doorbell),
+            udp: UdpStreamWrapper::new(ip, port)
+                .await
+                .expect("Can't opend UDP connection"),
             control: Helper::control(),
         }
     }
@@ -118,6 +125,26 @@ impl ViperClient {
         let frcg_bytes = self.stream.execute(&frcg_channel.com(frcg))?;
         let json_response = Self::json(&frcg_bytes);
         self.stream.execute(&frcg_channel.close())?;
+        json_response
+    }
+
+    pub fn push_info(
+        &mut self,
+        apt_subaddress: u16,
+        open_door: &Opendoor,
+    ) -> JSONResult<serde_json::Value> {
+        let push = CommandKind::PUSH(PushInfo {
+            apt_address: open_door.apt_address.clone(),
+            apt_subaddress: 50, // ??
+            device_token: "87cd599d00bd7f83d01b85c67b28daa50314b142e7e6649accade61424131dd6".into(),
+            profile_id: apt_subaddress.to_string(),
+        });
+        let push_channel = self.push_channel();
+        self.stream.execute(&push_channel.open())?;
+
+        let push_bytes = self.stream.execute(&push_channel.com(push))?;
+        let json_response = Self::json(&push_bytes);
+        self.stream.execute(&push_channel.close())?;
         json_response
     }
 
@@ -204,13 +231,51 @@ impl ViperClient {
         &mut self,
         ip: &str,
         port: u16,
+        vip: &VipConfig,
         output_file: &str,
     ) -> Result<(), ViperError> {
-        let rtsp_channel = self.rtsp_channel();
-        self.stream.execute(&rtsp_channel.open())?;
-        debug!("RTSP Channel opened");
-        self.stream.execute_no_read(&rtsp_channel.open_stream())?;
-        debug!("RTSP Channel initialized");
+        let info = self.push_info(
+            vip.apt_subaddress,
+            vip.user_parameters.opendoor_address_book.first().unwrap(),
+        )?;
+
+        debug!("Push info received {info:?}");
+
+        let udpm_channel = self.udpm_channel();
+        let resp = self.stream.execute(&udpm_channel.open())?;
+        let udpm_id = resp.last_chunk::<2>().unwrap();
+        self.udp.send(&udpm_channel.init_main(udpm_id)).await?;
+        self.stream.execute(&udpm_channel.close())?;
+
+        let udpm_channel = self.udpm_channel();
+        let resp = self.stream.execute(&udpm_channel.open())?;
+        let udpm_id = resp.last_chunk::<2>().unwrap();
+        self.udp.send(&udpm_channel.init_video(udpm_id)).await?;
+        self.stream.execute(&udpm_channel.close())?;
+
+        let udpm_channel = self.udpm_channel();
+        let resp = self.stream.execute(&udpm_channel.open())?;
+        let udpm_id = resp.last_chunk::<2>().unwrap();
+        self.udp.send(&udpm_channel.init_audio_in(udpm_id)).await?;
+        self.stream.execute(&udpm_channel.close())?;
+
+        let udpm_channel = self.udpm_channel();
+        let resp = self.stream.execute(&udpm_channel.open())?;
+        let udpm_id = resp.last_chunk::<2>().unwrap();
+        self.udp.send(&udpm_channel.init_audio_out(udpm_id)).await?;
+        self.stream.execute(&udpm_channel.close())?;
+
+        debug!("RTPC Channel opening: ");
+        let rtsp_channel = self.rtpc_channel();
+        let resp = self.stream.execute(&rtsp_channel.open())?;
+        debug!("RTPC Channel opened: ");
+        Helper::print_buffer(&resp);
+        debug!("RTPC Channel starting stream");
+        let resp = self.stream.execute(&rtsp_channel.start_stream(vip))?;
+        Helper::print_buffer(&resp);
+        self.stream
+            .execute_no_read(&rtsp_channel.start_stream(vip))?;
+
         let args = Args::builder()
             .no_video(false)
             .no_audio(false)
@@ -222,9 +287,11 @@ impl ViperClient {
             .port(port)
             .build();
         debug!("Start audio video recording...");
-        read_av_stream(args)
+        read_av_stream(&self.udp, args)
             .await
             .map_err(|e| ViperError::Generic(e.to_string()))?;
+
+        udpm_channel.close();
         rtsp_channel.close();
         Ok(())
     }
@@ -241,10 +308,22 @@ impl ViperClient {
         CTPPChannel::new(&self.control)
     }
 
-    fn rtsp_channel(&mut self) -> RTSPChannel {
+    fn rtpc_channel(&mut self) -> RTPCChannel {
         self.tick();
 
-        RTSPChannel::new(&self.control)
+        RTPCChannel::new(&self.control)
+    }
+
+    fn udpm_channel(&mut self) -> UDPMChannel {
+        self.tick();
+
+        UDPMChannel::new(&self.control)
+    }
+
+    fn push_channel(&mut self) -> Channel {
+        self.tick();
+
+        Channel::new(&self.control, "PUSH")
     }
 
     fn json<'a, T: Deserialize<'a>>(bytes: &'a [u8]) -> JSONResult<T> {
@@ -270,10 +349,10 @@ mod tests {
     use crate::{command::Command, test_helper::SimpleTcpListener};
     use std::thread;
 
-    #[test]
-    fn test_tick() {
+    #[tokio::test]
+    async fn test_tick() {
         let _listener = SimpleTcpListener::new("127.0.0.1:3340");
-        let mut client = ViperClient::new("127.0.0.1", 3340);
+        let mut client = ViperClient::new("127.0.0.1", 3340).await;
 
         let c = client.control;
         client.tick();
@@ -281,10 +360,10 @@ mod tests {
         assert_eq!(c[0] + 1, client.control[0])
     }
 
-    #[test]
-    fn test_authorize() {
+    #[tokio::test]
+    async fn test_authorize() {
         let listener = SimpleTcpListener::new("127.0.0.1:3341");
-        let mut client = ViperClient::new("127.0.0.1", 3341);
+        let mut client = ViperClient::new("127.0.0.1", 3341).await;
 
         thread::spawn(move || {
             let mocked_open = [
