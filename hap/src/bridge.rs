@@ -109,7 +109,7 @@ impl StatusUpdate for Updater {
                 if let Some(mut accessory) = self.thermostats.get_mut(&device.id()) {
                     let status = format!("{}°C", data.temperature.as_deref().unwrap_or("--"));
                     self.bridge_state.update_device_status(&device.id(), status);
-                    let name = data.description.as_deref().unwrap_or(data.id.as_str());
+                    let name = accessory.name.as_str();
                     let is_on = matches!(
                         data.status,
                         Some(DeviceStatus::On) | Some(DeviceStatus::Running)
