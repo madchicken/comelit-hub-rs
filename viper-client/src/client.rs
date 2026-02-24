@@ -17,6 +17,7 @@ use crate::{
     udpm_channel::UDPMChannel,
 };
 use serde::Deserialize;
+use tokio::time::{Sleep, sleep};
 use tracing::debug;
 
 pub const ICONA_BRIDGE_PORT: u16 = 64100;
@@ -233,7 +234,30 @@ impl ViperClient {
         port: u16,
         vip: &VipConfig,
         output_file: &str,
+        door_name: &str,
     ) -> Result<(), ViperError> {
+        let sub = format!("{}{}", vip.apt_address, vip.apt_subaddress);
+        let door_item = vip
+            .user_parameters
+            .opendoor_address_book
+            .iter()
+            .find(|d| d.name.as_str() == door_name)
+            .ok_or(ViperError::Generic("Door not found".to_string()))?;
+
+        let ctpp_channel = self.ctpp_channel();
+        self.stream.execute(&ctpp_channel.open(&sub))?;
+        debug!("CTPP Channel opened");
+
+        self.stream
+            .execute(&ctpp_channel.get_unknown_open_door_message(vip))?;
+        debug!("Unknown sent");
+        self.stream.read()?;
+        debug!("Read 1");
+        self.stream
+            .execute_no_read(&ctpp_channel.get_init_open_door_message(vip, door_item))?;
+        self.stream.read()?;
+        debug!("Read 2");
+
         let info = self.push_info(
             vip.apt_subaddress,
             vip.user_parameters.opendoor_address_book.first().unwrap(),
@@ -241,29 +265,24 @@ impl ViperClient {
 
         debug!("Push info received {info:?}");
 
-        let udpm_channel = self.udpm_channel();
+        let mut udpm_channel = self.udpm_channel();
         let resp = self.stream.execute(&udpm_channel.open())?;
         let udpm_id = resp.last_chunk::<2>().unwrap();
-        self.udp.send(&udpm_channel.init_main(udpm_id)).await?;
-        self.stream.execute(&udpm_channel.close())?;
-
-        let udpm_channel = self.udpm_channel();
-        let resp = self.stream.execute(&udpm_channel.open())?;
-        let udpm_id = resp.last_chunk::<2>().unwrap();
-        self.udp.send(&udpm_channel.init_video(udpm_id)).await?;
-        self.stream.execute(&udpm_channel.close())?;
-
-        let udpm_channel = self.udpm_channel();
-        let resp = self.stream.execute(&udpm_channel.open())?;
-        let udpm_id = resp.last_chunk::<2>().unwrap();
-        self.udp.send(&udpm_channel.init_audio_in(udpm_id)).await?;
-        self.stream.execute(&udpm_channel.close())?;
-
-        let udpm_channel = self.udpm_channel();
-        let resp = self.stream.execute(&udpm_channel.open())?;
-        let udpm_id = resp.last_chunk::<2>().unwrap();
-        self.udp.send(&udpm_channel.init_audio_out(udpm_id)).await?;
-        self.stream.execute(&udpm_channel.close())?;
+        let mut init = false;
+        for _ in 0..4 {
+            self.udp.write(&udpm_channel.ping(udpm_id)).await?;
+            let mut buf = [0u8; 14];
+            if self.udp.read(&mut buf).await.is_ok() {
+                Helper::print_buffer(&buf);
+                init = true;
+                break;
+            }
+            sleep(Duration::from_millis(100)).await;
+        }
+        if !init {
+            self.stream.execute(&udpm_channel.close())?;
+            panic!("UDPM channel failed to initialize");
+        }
 
         debug!("RTPC Channel opening: ");
         let rtsp_channel = self.rtpc_channel();

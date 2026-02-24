@@ -361,7 +361,7 @@ async fn capture_rtp(socket: &UdpStreamWrapper, args: Args) -> Result<()> {
             // Handle UDP packets
             result = async {
                 // When connected, use recv() which only receives from the connected address
-                socket.recv(&mut buf).await.map(|len| (len, "connected remote".to_string()))
+                socket.read(&mut buf).await.map(|len| (len, "connected remote".to_string()))
             } => {
                 match result {
                     Ok((len, addr)) => {
