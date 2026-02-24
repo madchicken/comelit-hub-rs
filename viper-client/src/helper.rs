@@ -42,22 +42,30 @@ impl Helper {
     }
 
     pub fn print_buffer(buffer: &[u8]) {
-        debug!(
-            "{}",
-            buffer
-                .iter()
-                .enumerate()
-                .map(|(i, x)| {
-                    let byte = format!("{:02X}", x);
-                    let terminator = if i.is_multiple_of(8) {
-                        String::from("\n")
-                    } else {
-                        String::from(" ")
-                    };
-                    format!("{terminator}{byte}")
-                })
-                .collect::<Vec<String>>()
-                .join("")
-        );
+        let mut iter = buffer.iter().peekable();
+
+        let mut rows = vec![];
+        while iter.peek().is_some() {
+            let mut chunk = iter.by_ref().take(8);
+            let mut hex = vec![];
+            let mut chars = vec![];
+
+            chunk.by_ref().for_each(|x| {
+                hex.push(format!("{:02X}", x));
+                chars.push(if x.is_ascii_graphic() {
+                    format!("{}", *x as char)
+                } else {
+                    ".".to_string()
+                });
+            });
+
+            if hex.len() < 8 {
+                hex.extend(vec!["  ".to_string(); 8 - hex.len()]);
+                chars.extend(vec![" ".to_string(); 8 - chars.len()]);
+            }
+
+            rows.push(format!("{} |{}|", hex.join(" "), chars.join(" ")));
+        }
+        debug!("\n{}", rows.join("\n"));
     }
 }
