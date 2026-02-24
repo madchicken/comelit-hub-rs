@@ -14,10 +14,10 @@ use axum::{
     response::{Html, IntoResponse, Response},
     routing::get,
 };
-use std::collections::HashMap;
 use metrics_exporter_prometheus::PrometheusHandle;
 use minijinja::{Environment, context};
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -372,12 +372,7 @@ async fn prom_proxy_handler(
             let status = StatusCode::from_u16(resp.status().as_u16())
                 .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             match resp.bytes().await {
-                Ok(body) => (
-                    status,
-                    [("content-type", "application/json")],
-                    body,
-                )
-                    .into_response(),
+                Ok(body) => (status, [("content-type", "application/json")], body).into_response(),
                 Err(e) => {
                     error!("Failed to read Prometheus response body: {}", e);
                     (StatusCode::BAD_GATEWAY, "Failed to read upstream response").into_response()
