@@ -9,11 +9,12 @@ pub mod state;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
 };
+use std::collections::HashMap;
 use metrics_exporter_prometheus::PrometheusHandle;
 use minijinja::{Environment, context};
 use parking_lot::RwLock;
@@ -38,6 +39,8 @@ pub struct AppState {
     pub prometheus_url: Option<String>,
     /// Optional Bearer token for Prometheus authentication.
     pub prometheus_token: Option<String>,
+    /// HTTP client for proxying Prometheus requests.
+    pub http_client: reqwest::Client,
 }
 
 /// Web server configuration.
@@ -99,6 +102,7 @@ pub async fn start_web_server(
         templates: Arc::new(RwLock::new(env)),
         prometheus_url: config.prometheus_url.clone(),
         prometheus_token: config.prometheus_token.clone(),
+        http_client: reqwest::Client::new(),
     };
 
     // Build router
@@ -109,6 +113,7 @@ pub async fn start_web_server(
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/status", get(api_status_handler))
+        .route("/api/prom/query_range", get(prom_proxy_handler))
         .route("/qrcode.svg", get(qrcode_handler))
         .with_state(app_state);
 
@@ -343,6 +348,47 @@ async fn charts_handler(State(state): State<AppState>) -> Response {
     };
 
     Html(html).into_response()
+}
+
+/// Prometheus proxy endpoint - forwards query_range requests to the configured Prometheus server.
+///
+/// Avoids CORS issues by making the request server-side.
+async fn prom_proxy_handler(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(ref prom_url) = state.prometheus_url else {
+        return (StatusCode::NOT_FOUND, "No Prometheus URL configured").into_response();
+    };
+
+    let url = format!("{}/api/v1/query_range", prom_url);
+    let mut req = state.http_client.get(&url).query(&params);
+    if let Some(ref token) = state.prometheus_token {
+        req = req.bearer_auth(token);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            match resp.bytes().await {
+                Ok(body) => (
+                    status,
+                    [("content-type", "application/json")],
+                    body,
+                )
+                    .into_response(),
+                Err(e) => {
+                    error!("Failed to read Prometheus response body: {}", e);
+                    (StatusCode::BAD_GATEWAY, "Failed to read upstream response").into_response()
+                }
+            }
+        }
+        Err(e) => {
+            error!("Prometheus proxy request failed: {}", e);
+            (StatusCode::BAD_GATEWAY, "Upstream request failed").into_response()
+        }
+    }
 }
 
 /// API status endpoint - returns JSON status.

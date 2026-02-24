@@ -87,8 +87,7 @@
 <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 <script>
 (function () {
-    const PROM_URL = {{ prometheus_url | tojson }};
-    const PROM_TOKEN = {{ prometheus_token | tojson }};
+    const PROM_PROXY = '/api/prom/query_range';
 
     const PALETTE = [
         '#4ecca3', '#e94560', '#ffc107', '#7eb8f7', '#b39ddb',
@@ -168,14 +167,12 @@
         const now = Math.floor(Date.now() / 1000);
         const start = now - rangeSeconds;
         const step = STEPS[rangeSeconds] || 60;
-        const url = new URL(`${PROM_URL}/api/v1/query_range`);
+        const url = new URL(PROM_PROXY, window.location.origin);
         url.searchParams.set('query', query);
         url.searchParams.set('start', start);
         url.searchParams.set('end', now);
         url.searchParams.set('step', step);
-        const headers = {};
-        if (PROM_TOKEN) headers['Authorization'] = `Bearer ${PROM_TOKEN}`;
-        const resp = await fetch(url.toString(), { headers });
+        const resp = await fetch(url.toString());
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const json = await resp.json();
         if (json.status !== 'success') throw new Error(json.error || 'Prometheus error');
