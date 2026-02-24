@@ -1,0 +1,239 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+    .range-selector {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 24px;
+        flex-wrap: wrap;
+    }
+
+    .range-btn {
+        background-color: var(--accent);
+        color: var(--text-color);
+        border: none;
+        padding: 8px 20px;
+        border-radius: var(--border-radius);
+        cursor: pointer;
+        font-size: 0.9rem;
+        transition: background-color 0.2s;
+    }
+
+    .range-btn:hover {
+        background-color: #1a4a80;
+    }
+
+    .range-btn.active {
+        background-color: var(--success);
+        color: #000;
+        font-weight: bold;
+    }
+
+    .chart-container {
+        position: relative;
+        height: 260px;
+        margin-bottom: 8px;
+    }
+
+    .refresh-info {
+        color: var(--text-muted);
+        font-size: 0.82rem;
+        margin-bottom: 20px;
+    }
+
+    .chart-error {
+        color: var(--danger);
+        font-size: 0.85rem;
+        margin-top: 6px;
+        min-height: 1.2em;
+    }
+</style>
+
+<h2 class="card-title" style="margin-bottom: 16px;">Accessory Charts</h2>
+<p class="refresh-info">Data from Prometheus &mdash; auto-refreshes every 60 seconds.</p>
+
+<div class="range-selector">
+    <button class="range-btn active" data-range="1800">30m</button>
+    <button class="range-btn" data-range="3600">1h</button>
+    <button class="range-btn" data-range="43200">12h</button>
+    <button class="range-btn" data-range="86400">1d</button>
+</div>
+
+<div class="grid">
+    <div class="card">
+        <h2 class="card-title">🌡️ Thermostat Temperature (°C)</h2>
+        <div class="chart-container"><canvas id="chart-temperature"></canvas></div>
+        <div class="chart-error" id="err-temperature"></div>
+    </div>
+    <div class="card">
+        <h2 class="card-title">💧 Dehumidifier Humidity (%)</h2>
+        <div class="chart-container"><canvas id="chart-humidity"></canvas></div>
+        <div class="chart-error" id="err-humidity"></div>
+    </div>
+    <div class="card">
+        <h2 class="card-title">🌡️ Thermostat Status (on/off)</h2>
+        <div class="chart-container"><canvas id="chart-thermo-status"></canvas></div>
+        <div class="chart-error" id="err-thermo-status"></div>
+    </div>
+    <div class="card">
+        <h2 class="card-title">💡 Light Status (on/off)</h2>
+        <div class="chart-container"><canvas id="chart-light-status"></canvas></div>
+        <div class="chart-error" id="err-light-status"></div>
+    </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
+<script>
+(function () {
+    const PROM_URL = {{ prometheus_url | tojson }};
+    const PROM_TOKEN = {{ prometheus_token | tojson }};
+
+    const PALETTE = [
+        '#4ecca3', '#e94560', '#ffc107', '#7eb8f7', '#b39ddb',
+        '#80cbc4', '#ffab91', '#ce93d8', '#a5d6a7', '#f48fb1',
+    ];
+
+    const CHART_DEFAULTS = {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: false,
+        plugins: {
+            legend: { labels: { color: '#eaeaea', boxWidth: 12 } },
+        },
+        scales: {
+            x: {
+                type: 'time',
+                ticks: { color: '#a0a0a0', maxTicksLimit: 8 },
+                grid: { color: '#0f3460' },
+            },
+            y: {
+                ticks: { color: '#a0a0a0' },
+                grid: { color: '#0f3460' },
+            },
+        },
+    };
+
+    // Step sizes per range (seconds)
+    const STEPS = { 1800: 30, 3600: 60, 43200: 300, 86400: 600 };
+
+    const CHARTS_CONFIG = [
+        {
+            id:    'chart-temperature',
+            errId: 'err-temperature',
+            query: 'comelit_thermostat_temperature',
+            label: 'thermostat_name',
+            yLabel: '°C',
+        },
+        {
+            id:    'chart-humidity',
+            errId: 'err-humidity',
+            query: 'comelit_dehumidifier_humidity',
+            label: 'dehumidifier_name',
+            yLabel: '%',
+        },
+        {
+            id:    'chart-thermo-status',
+            errId: 'err-thermo-status',
+            query: 'comelit_thermostat_status',
+            label: 'thermostat_name',
+            yLabel: 'on/off',
+            yMinMax: [0, 1],
+        },
+        {
+            id:    'chart-light-status',
+            errId: 'err-light-status',
+            query: 'comelit_light_status',
+            label: 'light_name',
+            yLabel: 'on/off',
+            yMinMax: [0, 1],
+        },
+    ];
+
+    // Initialise Chart.js instances
+    const chartInstances = {};
+    for (const cfg of CHARTS_CONFIG) {
+        const ctx = document.getElementById(cfg.id).getContext('2d');
+        const opts = JSON.parse(JSON.stringify(CHART_DEFAULTS));
+        if (cfg.yMinMax) {
+            opts.scales.y.min = cfg.yMinMax[0];
+            opts.scales.y.max = cfg.yMinMax[1];
+            opts.scales.y.ticks = { ...opts.scales.y.ticks, stepSize: 1 };
+        }
+        chartInstances[cfg.id] = new Chart(ctx, { type: 'line', data: { datasets: [] }, options: opts });
+    }
+
+    async function fetchRange(query, rangeSeconds) {
+        const now = Math.floor(Date.now() / 1000);
+        const start = now - rangeSeconds;
+        const step = STEPS[rangeSeconds] || 60;
+        const url = new URL(`${PROM_URL}/api/v1/query_range`);
+        url.searchParams.set('query', query);
+        url.searchParams.set('start', start);
+        url.searchParams.set('end', now);
+        url.searchParams.set('step', step);
+        const headers = {};
+        if (PROM_TOKEN) headers['Authorization'] = `Bearer ${PROM_TOKEN}`;
+        const resp = await fetch(url.toString(), { headers });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const json = await resp.json();
+        if (json.status !== 'success') throw new Error(json.error || 'Prometheus error');
+        return json.data.result; // array of { metric, values: [[ts, val], ...] }
+    }
+
+    function toDatasets(results, labelKey) {
+        return results.map((series, i) => {
+            const name = series.metric[labelKey] || series.metric.__name__ || `series ${i}`;
+            return {
+                label: name,
+                data: series.values.map(([ts, val]) => ({ x: ts * 1000, y: parseFloat(val) })),
+                borderColor: PALETTE[i % PALETTE.length],
+                backgroundColor: PALETTE[i % PALETTE.length] + '22',
+                borderWidth: 2,
+                pointRadius: 0,
+                tension: 0.3,
+                fill: false,
+            };
+        });
+    }
+
+    async function refreshAll(rangeSeconds) {
+        for (const cfg of CHARTS_CONFIG) {
+            const errEl = document.getElementById(cfg.errId);
+            errEl.textContent = '';
+            try {
+                const results = await fetchRange(cfg.query, rangeSeconds);
+                const chart = chartInstances[cfg.id];
+                chart.data.datasets = toDatasets(results, cfg.label);
+                chart.update();
+                if (results.length === 0) {
+                    errEl.textContent = 'No data for this time range.';
+                }
+            } catch (e) {
+                document.getElementById(cfg.errId).textContent = `Error: ${e.message}`;
+            }
+        }
+    }
+
+    // Time-range button handling
+    let currentRange = 1800;
+    let refreshTimer = null;
+
+    function setRange(rangeSeconds) {
+        currentRange = rangeSeconds;
+        document.querySelectorAll('.range-btn').forEach(btn => {
+            btn.classList.toggle('active', parseInt(btn.dataset.range) === rangeSeconds);
+        });
+        clearInterval(refreshTimer);
+        refreshAll(rangeSeconds);
+        refreshTimer = setInterval(() => refreshAll(currentRange), 60_000);
+    }
+
+    document.querySelectorAll('.range-btn').forEach(btn => {
+        btn.addEventListener('click', () => setRange(parseInt(btn.dataset.range)));
+    });
+
+    // Initial load
+    setRange(1800);
+})();
+</script>
+{% endblock %}

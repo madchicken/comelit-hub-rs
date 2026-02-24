@@ -67,19 +67,7 @@ async fn main() -> Result<()> {
     // Set up logging based on whether a log directory is provided
     let _log_guard = setup_logging(&params)?;
 
-    // Create shared bridge state
-    let bridge_state = BridgeState::new();
-
-    // Start web server if enabled
-    let web_config = WebConfig {
-        port: params.web_port,
-        enabled: params.web_enabled,
-    };
-
-    if web_config.enabled {
-        web::start_web_server(web_config, bridge_state.clone()).await?;
-    }
-
+    // Load settings before starting the web server so prometheus_url is available
     let settings = if let Some(path) = params.settings {
         if let Ok(read_to_string) = std::fs::read_to_string(path) {
             serde_json::from_str(&read_to_string)?
@@ -90,6 +78,21 @@ async fn main() -> Result<()> {
     } else {
         Settings::default()
     };
+
+    // Create shared bridge state
+    let bridge_state = BridgeState::new();
+
+    // Start web server if enabled
+    let web_config = WebConfig {
+        port: params.web_port,
+        enabled: params.web_enabled,
+        prometheus_url: settings.prometheus_url.clone(),
+        prometheus_token: settings.prometheus_token.clone(),
+    };
+
+    if web_config.enabled {
+        web::start_web_server(web_config, bridge_state.clone()).await?;
+    }
 
     start_bridge(
         params.user.as_str(),

@@ -34,6 +34,10 @@ pub struct AppState {
     pub metrics_handle: PrometheusHandle,
     /// Template environment.
     pub templates: Arc<RwLock<Environment<'static>>>,
+    /// Optional Prometheus server URL for the charts page.
+    pub prometheus_url: Option<String>,
+    /// Optional Bearer token for Prometheus authentication.
+    pub prometheus_token: Option<String>,
 }
 
 /// Web server configuration.
@@ -43,6 +47,10 @@ pub struct WebConfig {
     pub port: u16,
     /// Whether to enable the web UI.
     pub enabled: bool,
+    /// Optional Prometheus server URL for the charts page.
+    pub prometheus_url: Option<String>,
+    /// Optional Bearer token for Prometheus authentication.
+    pub prometheus_token: Option<String>,
 }
 
 impl Default for WebConfig {
@@ -50,6 +58,8 @@ impl Default for WebConfig {
         Self {
             port: 8080,
             enabled: true,
+            prometheus_url: None,
+            prometheus_token: None,
         }
     }
 }
@@ -80,17 +90,22 @@ pub async fn start_web_server(
         .expect("Failed to add index template");
     env.add_template("devices.html", include_str!("../../templates/devices.html"))
         .expect("Failed to add devices template");
+    env.add_template("charts.html", include_str!("../../templates/charts.html"))
+        .expect("Failed to add charts template");
 
     let app_state = AppState {
         bridge_state,
         metrics_handle,
         templates: Arc::new(RwLock::new(env)),
+        prometheus_url: config.prometheus_url.clone(),
+        prometheus_token: config.prometheus_token.clone(),
     };
 
     // Build router
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/devices", get(devices_handler))
+        .route("/charts", get(charts_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/status", get(api_status_handler))
@@ -291,6 +306,43 @@ async fn qrcode_handler(State(state): State<AppState>) -> Response {
                 .into_response()
         }
     }
+}
+
+/// Charts page handler - shows Prometheus metric charts.
+///
+/// Only available when a Prometheus URL is configured.
+async fn charts_handler(State(state): State<AppState>) -> Response {
+    let Some(ref prometheus_url) = state.prometheus_url else {
+        return (
+            StatusCode::NOT_FOUND,
+            "Charts unavailable: no Prometheus URL configured in settings",
+        )
+            .into_response();
+    };
+
+    let templates = state.templates.read();
+    let template = match templates.get_template("charts.html") {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to get charts template: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response();
+        }
+    };
+
+    let html = match template.render(context! {
+        title => "Charts - Comelit HUB Bridge",
+        active_page => "charts",
+        prometheus_url => prometheus_url,
+        prometheus_token => state.prometheus_token,
+    }) {
+        Ok(html) => html,
+        Err(e) => {
+            error!("Failed to render charts template: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Render error").into_response();
+        }
+    };
+
+    Html(html).into_response()
 }
 
 /// API status endpoint - returns JSON status.

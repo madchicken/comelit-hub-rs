@@ -12,5 +12,7 @@
   "mount_window_covering": true,
   "mount_thermo": true,
   "mount_doors": true,
-  "mount_doorbells": false
+  "mount_doorbells": false,
+  "prometheus_url": null,
+  "prometheus_token": null
 }

@@ -40,6 +40,8 @@ pub struct Settings {
     pub mount_doorbells: Option<bool>,
     pub window_covering: WindowCoveringSettings,
     pub door: DoorSettings,
+    pub prometheus_url: Option<String>,
+    pub prometheus_token: Option<String>,
 }
 
 impl Default for Settings {
@@ -53,6 +55,8 @@ impl Default for Settings {
             mount_doorbells: Some(false),
             window_covering: WindowCoveringSettings::default(),
             door: DoorSettings::default(),
+            prometheus_url: None,
+            prometheus_token: None,
         }
     }
 }
