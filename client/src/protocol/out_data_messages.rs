@@ -59,7 +59,7 @@ impl From<ObjectType> for i32 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(into = "i32", from = "i32")]
 pub enum ObjectSubtype {
     Unknown = -1,

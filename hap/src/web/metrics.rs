@@ -79,6 +79,26 @@ fn register_metric_descriptions() {
         "comelit_hap_requests_total",
         "Total number of HomeKit requests received"
     );
+
+    // Thermostat metrics
+    describe_gauge!(
+        "comelit_thermostat_temperature",
+        "Current temperature of a thermostat in degrees Celsius"
+    );
+    describe_gauge!(
+        "comelit_thermostat_status",
+        "Whether a thermostat is on (1) or off (0)"
+    );
+
+    // Dehumidifier metrics
+    describe_gauge!(
+        "comelit_dehumidifier_humidity",
+        "Current relative humidity of a dehumidifier as a percentage"
+    );
+    describe_gauge!(
+        "comelit_dehumidifier_status",
+        "Whether a dehumidifier is on (1) or off (0)"
+    );
 }
 
 /// Metrics helper functions for easy recording.
@@ -145,5 +165,41 @@ impl Metrics {
     /// Increment HAP request counter.
     pub fn inc_hap_requests() {
         counter!("comelit_hap_requests_total").increment(1);
+    }
+
+    /// Set the current temperature for a thermostat.
+    pub fn set_thermostat_temperature(thermostat_name: &str, temperature: f64) {
+        gauge!(
+            "comelit_thermostat_temperature",
+            "thermostat_name" => thermostat_name.to_string()
+        )
+        .set(temperature);
+    }
+
+    /// Set the current humidity for a dehumidifier.
+    pub fn set_dehumidifier_humidity(dehumidifier_name: &str, humidity: f64) {
+        gauge!(
+            "comelit_dehumidifier_humidity",
+            "dehumidifier_name" => dehumidifier_name.to_string()
+        )
+        .set(humidity);
+    }
+
+    /// Set the on/off status for a thermostat.
+    pub fn set_thermostat_status(thermostat_name: &str, on: bool) {
+        gauge!(
+            "comelit_thermostat_status",
+            "thermostat_name" => thermostat_name.to_string()
+        )
+        .set(if on { 1.0 } else { 0.0 });
+    }
+
+    /// Set the on/off status for a dehumidifier.
+    pub fn set_dehumidifier_status(dehumidifier_name: &str, on: bool) {
+        gauge!(
+            "comelit_dehumidifier_status",
+            "dehumidifier_name" => dehumidifier_name.to_string()
+        )
+        .set(if on { 1.0 } else { 0.0 });
     }
 }

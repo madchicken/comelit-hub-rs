@@ -7,11 +7,11 @@ use crate::web::metrics::Metrics;
 use crate::web::state::{BridgeState, ConnectionStatus, DeviceInfo, DeviceType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use comelit_client_rs::DeviceStatus;
 use comelit_client_rs::{
     ComelitClient, ComelitClientError, ComelitOptions, DoorbellDeviceData, HomeDeviceData, State,
     StatusUpdate, get_secrets,
 };
+use comelit_client_rs::{DeviceStatus, ObjectSubtype};
 use comelit_client_rs::{DoorDeviceData, ROOT_ID};
 use dashmap::DashMap;
 use hap::BonjourStatusFlag;
@@ -109,6 +109,27 @@ impl StatusUpdate for Updater {
                 if let Some(mut accessory) = self.thermostats.get_mut(&device.id()) {
                     let status = format!("{}°C", data.temperature.as_deref().unwrap_or("--"));
                     self.bridge_state.update_device_status(&device.id(), status);
+                    let name = data.description.as_deref().unwrap_or(data.id.as_str());
+                    let is_on = matches!(
+                        data.status,
+                        Some(DeviceStatus::On) | Some(DeviceStatus::Running)
+                    );
+                    let is_dehumidifier = data.sub_type == ObjectSubtype::ClimaDehumidifier;
+                    if is_dehumidifier {
+                        Metrics::set_dehumidifier_status(name, is_on);
+                    } else {
+                        Metrics::set_thermostat_status(name, is_on);
+                    }
+                    if let Some(temp_str) = &data.temperature
+                        && let Ok(raw) = temp_str.parse::<f64>()
+                    {
+                        Metrics::set_thermostat_temperature(name, raw / 10.0);
+                    }
+                    if let Some(humi_str) = &data.humidity
+                        && let Ok(raw) = humi_str.parse::<f64>()
+                    {
+                        Metrics::set_dehumidifier_humidity(name, raw);
+                    }
                     accessory.update(data).await.unwrap_or_else(|e| {
                         Metrics::inc_device_update_errors("thermostat");
                         error!(
