@@ -9,7 +9,7 @@ pub mod state;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{Query, State},
     http::StatusCode,
     response::{Html, IntoResponse, Response},
     routing::get,
@@ -17,6 +17,7 @@ use axum::{
 use metrics_exporter_prometheus::PrometheusHandle;
 use minijinja::{Environment, context};
 use parking_lot::RwLock;
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
@@ -34,6 +35,12 @@ pub struct AppState {
     pub metrics_handle: PrometheusHandle,
     /// Template environment.
     pub templates: Arc<RwLock<Environment<'static>>>,
+    /// Optional Prometheus server URL for the charts page.
+    pub prometheus_url: Option<String>,
+    /// Optional Bearer token for Prometheus authentication.
+    pub prometheus_token: Option<String>,
+    /// HTTP client for proxying Prometheus requests.
+    pub http_client: reqwest::Client,
 }
 
 /// Web server configuration.
@@ -43,6 +50,10 @@ pub struct WebConfig {
     pub port: u16,
     /// Whether to enable the web UI.
     pub enabled: bool,
+    /// Optional Prometheus server URL for the charts page.
+    pub prometheus_url: Option<String>,
+    /// Optional Bearer token for Prometheus authentication.
+    pub prometheus_token: Option<String>,
 }
 
 impl Default for WebConfig {
@@ -50,6 +61,8 @@ impl Default for WebConfig {
         Self {
             port: 8080,
             enabled: true,
+            prometheus_url: None,
+            prometheus_token: None,
         }
     }
 }
@@ -80,20 +93,27 @@ pub async fn start_web_server(
         .expect("Failed to add index template");
     env.add_template("devices.html", include_str!("../../templates/devices.html"))
         .expect("Failed to add devices template");
+    env.add_template("charts.html", include_str!("../../templates/charts.html"))
+        .expect("Failed to add charts template");
 
     let app_state = AppState {
         bridge_state,
         metrics_handle,
         templates: Arc::new(RwLock::new(env)),
+        prometheus_url: config.prometheus_url.clone(),
+        prometheus_token: config.prometheus_token.clone(),
+        http_client: reqwest::Client::new(),
     };
 
     // Build router
     let app = Router::new()
         .route("/", get(index_handler))
         .route("/devices", get(devices_handler))
+        .route("/charts", get(charts_handler))
         .route("/health", get(health_handler))
         .route("/metrics", get(metrics_handler))
         .route("/api/status", get(api_status_handler))
+        .route("/api/prom/query_range", get(prom_proxy_handler))
         .route("/qrcode.svg", get(qrcode_handler))
         .with_state(app_state);
 
@@ -289,6 +309,79 @@ async fn qrcode_handler(State(state): State<AppState>) -> Response {
                 "Failed to generate QR code",
             )
                 .into_response()
+        }
+    }
+}
+
+/// Charts page handler - shows Prometheus metric charts.
+///
+/// Only available when a Prometheus URL is configured.
+async fn charts_handler(State(state): State<AppState>) -> Response {
+    let Some(ref prometheus_url) = state.prometheus_url else {
+        return (
+            StatusCode::NOT_FOUND,
+            "Charts unavailable: no Prometheus URL configured in settings",
+        )
+            .into_response();
+    };
+
+    let templates = state.templates.read();
+    let template = match templates.get_template("charts.html") {
+        Ok(t) => t,
+        Err(e) => {
+            error!("Failed to get charts template: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Template error").into_response();
+        }
+    };
+
+    let html = match template.render(context! {
+        title => "Charts - Comelit HUB Bridge",
+        active_page => "charts",
+        prometheus_url => prometheus_url,
+        prometheus_token => state.prometheus_token,
+    }) {
+        Ok(html) => html,
+        Err(e) => {
+            error!("Failed to render charts template: {}", e);
+            return (StatusCode::INTERNAL_SERVER_ERROR, "Render error").into_response();
+        }
+    };
+
+    Html(html).into_response()
+}
+
+/// Prometheus proxy endpoint - forwards query_range requests to the configured Prometheus server.
+///
+/// Avoids CORS issues by making the request server-side.
+async fn prom_proxy_handler(
+    State(state): State<AppState>,
+    Query(params): Query<HashMap<String, String>>,
+) -> Response {
+    let Some(ref prom_url) = state.prometheus_url else {
+        return (StatusCode::NOT_FOUND, "No Prometheus URL configured").into_response();
+    };
+
+    let url = format!("{}/api/v1/query_range", prom_url);
+    let mut req = state.http_client.get(&url).query(&params);
+    if let Some(ref token) = state.prometheus_token {
+        req = req.bearer_auth(token);
+    }
+
+    match req.send().await {
+        Ok(resp) => {
+            let status = StatusCode::from_u16(resp.status().as_u16())
+                .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            match resp.bytes().await {
+                Ok(body) => (status, [("content-type", "application/json")], body).into_response(),
+                Err(e) => {
+                    error!("Failed to read Prometheus response body: {}", e);
+                    (StatusCode::BAD_GATEWAY, "Failed to read upstream response").into_response()
+                }
+            }
+        }
+        Err(e) => {
+            error!("Prometheus proxy request failed: {}", e);
+            (StatusCode::BAD_GATEWAY, "Upstream request failed").into_response()
         }
     }
 }

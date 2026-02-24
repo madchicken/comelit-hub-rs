@@ -20,6 +20,7 @@ use comelit_client_rs::{ComelitClient, DeviceStatus, LightDeviceData};
 
 pub(crate) struct ComelitLightbulbAccessory {
     id: String,
+    pub name: String,
     state: Arc<LightState>,
     accessory: AccessoryPointer,
 }
@@ -37,7 +38,7 @@ impl ComelitLightbulbAccessory {
         let mut lightbulb_accessory = LightbulbAccessory::new(
             id,
             AccessoryInformation {
-                name,
+                name: name.clone(),
                 manufacturer: "Comelit".to_string(),
                 serial_number: device_id.clone(),
                 ..Default::default()
@@ -78,6 +79,7 @@ impl ComelitLightbulbAccessory {
         let accessory = server.add_accessory(lightbulb_accessory).await?;
         Ok(Self {
             id: device_id,
+            name,
             state,
             accessory,
         })

@@ -104,6 +104,7 @@ impl ComelitThermostat {
 
 pub(crate) struct ComelitThermostatAccessory {
     id: String,
+    pub name: String,
     state: Arc<Mutex<ThermostatState>>,
     accessory: Accessory,
 }
@@ -439,6 +440,7 @@ impl ComelitThermostatAccessory {
         let accessory = server.add_accessory(accessory).await?;
         Ok(Self {
             id: data.id.clone(),
+            name,
             state: arc_state,
             accessory,
         })
