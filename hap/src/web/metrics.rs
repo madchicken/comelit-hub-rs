@@ -99,6 +99,12 @@ fn register_metric_descriptions() {
         "comelit_dehumidifier_status",
         "Whether a dehumidifier is on (1) or off (0)"
     );
+
+    // Light metrics
+    describe_gauge!(
+        "comelit_light_status",
+        "Whether a light is on (1) or off (0)"
+    );
 }
 
 /// Metrics helper functions for easy recording.
@@ -199,6 +205,15 @@ impl Metrics {
         gauge!(
             "comelit_dehumidifier_status",
             "dehumidifier_name" => dehumidifier_name.to_string()
+        )
+        .set(if on { 1.0 } else { 0.0 });
+    }
+
+    /// Set the on/off status for a light.
+    pub fn set_light_status(light_name: &str, on: bool) {
+        gauge!(
+            "comelit_light_status",
+            "light_name" => light_name.to_string()
         )
         .set(if on { 1.0 } else { 0.0 });
     }

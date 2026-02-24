@@ -61,12 +61,15 @@ impl StatusUpdate for Updater {
             HomeDeviceData::Light(data) => {
                 Metrics::inc_device_updates("light");
                 if let Some(mut accessory) = self.lights.get_mut(&device.id()) {
-                    let status = match data.status {
-                        Some(DeviceStatus::On) | Some(DeviceStatus::Running) => "on",
-                        _ => "off",
-                    };
+                    let is_on = matches!(
+                        data.status,
+                        Some(DeviceStatus::On) | Some(DeviceStatus::Running)
+                    );
+                    let status = if is_on { "on" } else { "off" };
                     self.bridge_state
                         .update_device_status(&device.id(), status.to_string());
+                    let name = accessory.name.as_str();
+                    Metrics::set_light_status(name, is_on);
                     accessory.update(data).await.unwrap_or_else(|e| {
                         Metrics::inc_device_update_errors("light");
                         error!(
