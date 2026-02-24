@@ -105,6 +105,12 @@ fn register_metric_descriptions() {
         "comelit_light_status",
         "Whether a light is on (1) or off (0)"
     );
+
+    // Total consumption metrics
+    describe_gauge!(
+        "comelit_total_consumption",
+        "Total power consumption of all devices in watts"
+    );
 }
 
 /// Metrics helper functions for easy recording.
@@ -216,5 +222,14 @@ impl Metrics {
             "light_name" => light_name.to_string()
         )
         .set(if on { 1.0 } else { 0.0 });
+    }
+
+    /// Set the total power consumption for all devices.
+    pub fn set_total_consumption(total_consumption: f64) {
+        gauge!(
+            "comelit_total_consumption",
+            "total_consumption" => total_consumption.to_string()
+        )
+        .set(total_consumption);
     }
 }

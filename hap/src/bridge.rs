@@ -150,6 +150,11 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::Supplier(supplier_device_data) => {
                 info!("Received update for supplier {supplier_device_data:?}");
+                let total_consumption = supplier_device_data
+                    .instant_power
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+                Metrics::set_total_consumption(total_consumption);
             }
             HomeDeviceData::Doorbell(_bell_device_data) => {
                 Metrics::inc_device_updates("doorbell");
