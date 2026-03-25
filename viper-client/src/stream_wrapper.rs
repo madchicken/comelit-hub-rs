@@ -41,7 +41,8 @@ impl StreamWrapper {
     }
 
     pub fn write(&mut self, b: &[u8]) -> Result<usize, io::Error> {
-        self.stream.write(b)
+        self.stream.write_all(b)?;
+        Ok(b.len())
     }
 
     pub fn read(&mut self) -> ByteResult {
