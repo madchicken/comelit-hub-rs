@@ -21,7 +21,7 @@ use hap::{
     server::{IpServer, Server},
     storage::{FileStorage, Storage},
 };
-use qrcode_gen::QrCode;
+use qrcode::QrCode;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
