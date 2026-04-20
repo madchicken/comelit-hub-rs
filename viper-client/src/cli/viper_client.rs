@@ -1,5 +1,6 @@
 use clap::Parser;
 use dotenvy::dotenv;
+use std::time::Duration;
 use viper_client::device::Device;
 use viper_client::{ICONA_BRIDGE_PORT, ViperClient, ViperError};
 
@@ -13,6 +14,12 @@ struct Params {
 
     #[clap(short, long, env = "ICONA_TOKEN")]
     token: Option<String>,
+
+    #[clap(long, env = "ICONA_RECORD")]
+    record: Option<String>,
+
+    #[clap(long, env = "ICONA_RECORD_SECONDS", default_value = "10")]
+    record_seconds: u64,
 }
 
 #[tokio::main]
@@ -48,7 +55,13 @@ async fn main() -> Result<(), ViperError> {
         }
 
         println!("Connected!");
-        on_connect(ip.as_str(), port, &params.token.unwrap())?;
+        on_connect(
+            ip.as_str(),
+            port,
+            &params.token.unwrap(),
+            params.record.as_deref(),
+            params.record_seconds,
+        )?;
     } else {
         println!("Device is down, please check the device status");
     }
@@ -56,7 +69,13 @@ async fn main() -> Result<(), ViperError> {
 }
 
 // This is an example run purely for testing
-fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
+fn on_connect(
+    ip: &str,
+    port: u16,
+    token: &str,
+    record: Option<&str>,
+    record_seconds: u64,
+) -> Result<(), ViperError> {
     let mut client = ViperClient::new(ip, port);
     println!(
         "INFO: {}\n",
@@ -74,6 +93,15 @@ fn on_connect(ip: &str, port: u16, token: &str) -> Result<(), ViperError> {
         println!("FCRG: {:?}\n", params);
     } else {
         println!("Failed to get face recognition parameters");
+    }
+
+    if let Some(path) = record {
+        let stats = client.record_stream(token, path, Duration::from_secs(record_seconds))?;
+        println!("Recorded stream to {path}");
+        println!(
+            "Stats: video_packets={}, audio_packets={}, control_packets={}, bytes_written={}",
+            stats.video_packets, stats.audio_packets, stats.control_packets, stats.bytes_written
+        );
     }
 
     println!("Shutting down...");
