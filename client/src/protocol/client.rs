@@ -568,6 +568,7 @@ impl ComelitClient {
                                 match client.publish(topic.as_str(), QoS::AtMostOnce, false, serde_json::to_string(&payload).unwrap()).await {
                                     Ok(_) => {
                                         debug!("Ping message sent successfully");
+                                        failed_ping_requests = 0;
                                         let receiver = manager.add_request(id);
                                         let mut res_interval = tokio::time::interval(Duration::from_secs(5));
                                         res_interval.tick().await; // first tick is immediate
@@ -575,10 +576,6 @@ impl ComelitClient {
                                             _ = res_interval.tick() => {
                                                 error!("Ping response timed out");
                                                 failed_ping_requests += 1;
-                                                if failed_ping_requests >= 3 {
-                                                    state.write().await.take(); // invalidate session
-                                                    failed_ping_requests = 0;
-                                                }
                                             }
                                             res = receiver => {
                                                 match res {
@@ -592,12 +589,18 @@ impl ComelitClient {
                                                         }
                                                         info!("Ping response received: {:?}", response);
                                                     },
-                                                    Err(e) => error!("Failed to receive ping response: {:?}", e),
+                                                    Err(e) => {
+                                                        error!("Failed to receive ping response: {:?}", e);
+                                                        failed_ping_requests += 1;
+                                                    }
                                                 }
                                             }
                                         }
                                     },
-                                    Err(e) => error!("Failed to send ping message: {:?}", e),
+                                    Err(e) => {
+                                        error!("Failed to send ping message: {:?}", e);
+                                        failed_ping_requests += 1;
+                                    }
                                 }
                             },
                             _ => {
@@ -608,6 +611,10 @@ impl ComelitClient {
                     }
                 }
                 interval.tick().await;
+                if failed_ping_requests >= 3 {
+                    state.write().await.take(); // invalidate session
+                    break;
+                }
                 if !manager.is_running() {
                     info!("Stopping ping thread, request manager is not running");
                     break;

@@ -23,7 +23,6 @@ metrics-exporter-prometheus = "0.16"
 minijinja = { version = "2", features = ["loader", "json"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 parking_lot = "0.12"
-qrcode_gen = "0.1.1"
 rand = "0.9.2"
 rumqttc = { version = "0.25.0" }
 serde = { version = "1.0.219", features = ["derive"] }
@@ -36,6 +35,7 @@ tracing = "0.1.41"
 tracing-appender = { version = "0.2", features = ["parking_lot"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.16.0", features = ["v4"] }
+qrcode = "0.14.1"
 
 [dev-dependencies]
 tempfile = "3"
