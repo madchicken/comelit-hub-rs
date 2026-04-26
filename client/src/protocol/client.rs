@@ -610,11 +610,11 @@ impl ComelitClient {
                         }
                     }
                 }
-                interval.tick().await;
                 if failed_ping_requests >= 3 {
                     state.write().await.take(); // invalidate session
                     break;
                 }
+                interval.tick().await;
                 if !manager.is_running() {
                     info!("Stopping ping thread, request manager is not running");
                     break;
