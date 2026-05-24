@@ -568,7 +568,6 @@ impl ComelitClient {
                                 match client.publish(topic.as_str(), QoS::AtMostOnce, false, serde_json::to_string(&payload).unwrap()).await {
                                     Ok(_) => {
                                         debug!("Ping message sent successfully");
-                                        failed_ping_requests = 0;
                                         let receiver = manager.add_request(id);
                                         let mut res_interval = tokio::time::interval(Duration::from_secs(5));
                                         res_interval.tick().await; // first tick is immediate
@@ -585,7 +584,9 @@ impl ComelitClient {
                                                                 warn!("Ping response returned error code: {}", code);
                                                                 state.write().await.take(); // invalidate session
                                                             },
-                                                            _ => {}
+                                                            _ => {
+                                                                failed_ping_requests = 0;
+                                                            }
                                                         }
                                                         info!("Ping response received: {:?}", response);
                                                     },
@@ -614,7 +615,6 @@ impl ComelitClient {
                     state.write().await.take(); // invalidate session
                     break;
                 }
-                interval.tick().await;
                 if !manager.is_running() {
                     info!("Stopping ping thread, request manager is not running");
                     break;
