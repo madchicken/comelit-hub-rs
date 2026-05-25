@@ -64,6 +64,7 @@ enum WorkerState {
     WaitingForMoveConfirmation {
         target: u8,
         direction: PositionState,
+        sent_at: Instant,
     },
 
     /// Blind is moving (internally initiated), we're tracking position
@@ -219,6 +220,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
         self.worker_state = WorkerState::WaitingForMoveConfirmation {
             target: new_pos,
             direction,
+            sent_at: Instant::now(),
         };
 
         self.update_accessory().await?;
@@ -266,7 +268,11 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                 // If stopped and we're idle, nothing to do
             }
 
-            WorkerState::WaitingForMoveConfirmation { target, direction } => {
+            WorkerState::WaitingForMoveConfirmation {
+                target,
+                direction,
+                sent_at,
+            } => {
                 if new_position_state == *direction {
                     // Confirmation received - movement started
                     let current_pos = {
@@ -286,13 +292,22 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                         start_pos: current_pos,
                     };
                 } else if new_position_state == PositionState::Stopped {
-                    // Unexpected stop - maybe couldn't move?
-                    warn!(
-                        "Received stop while waiting for move confirmation for {}",
-                        self.id
-                    );
-                    self.worker_state = WorkerState::Idle;
-                    self.finalize_position().await?;
+                    // Ignore "Stopped" that arrives too soon after sending the command.
+                    // Comelit sends the current device state immediately after subscription,
+                    // which can arrive before the device has had time to start moving.
+                    if sent_at.elapsed() < Duration::from_secs(3) {
+                        debug!(
+                            "Ignoring early Stopped status for {} (grace period active)",
+                            self.id
+                        );
+                    } else {
+                        warn!(
+                            "Received stop while waiting for move confirmation for {}",
+                            self.id
+                        );
+                        self.worker_state = WorkerState::Idle;
+                        self.finalize_position().await?;
+                    }
                 }
             }
 
