@@ -155,8 +155,23 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
 
     /// Handle MoveTo command from HomeKit
     async fn handle_move_to(&mut self, old_pos: u8, new_pos: u8) -> Result<()> {
-        // If positions are the same, nothing to do
-        if old_pos == new_pos {
+        // Use the actual tracked current position (not the old HAP target) to determine
+        // whether there is work to do and in which direction to move. The old HAP target
+        // can differ from the physical position when an external movement is detected,
+        // causing update_accessory() to set target = FULLY_CLOSED/FULLY_OPENED while the
+        // blind is actually at a partial position. Using old_pos in those cases leads to
+        // spurious open/close commands.
+        let current_pos = {
+            let state = self.state.lock().await;
+            state.current_position
+        };
+
+        debug!(
+            "handle_move_to for {}: old_target={}, current={}, new_target={}",
+            self.id, old_pos, current_pos, new_pos
+        );
+
+        if current_pos == new_pos {
             info!(
                 "Target position equals current position for {}, no action",
                 self.id
@@ -164,7 +179,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
             return Ok(());
         }
 
-        let direction = if new_pos > old_pos {
+        let direction = if new_pos > current_pos {
             PositionState::MovingUp
         } else {
             PositionState::MovingDown
@@ -208,11 +223,11 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
 
         info!(
             "Initiating move for {} from {} to {} (direction: {:?})",
-            self.id, old_pos, new_pos, direction
+            self.id, current_pos, new_pos, direction
         );
 
         // Send toggle command to Comelit
-        // For blinds: true = moving down (closing), false = moving up (opening)
+        // true = moving up (opening), false = moving down (closing)
         let on = direction == PositionState::MovingUp;
         self.client.toggle_device_status(&self.id, on).await?;
 
@@ -1082,6 +1097,43 @@ pub mod testing {
         // State should be unchanged
         let current_state = state.lock().await;
         assert_eq!(current_state.current_position, 50);
+        assert_eq!(current_state.position_state, PositionState::Stopped);
+    }
+
+    /// Regression test: when Comelit spuriously reports GoingDown for a stopped blind,
+    /// the worker enters MovingExternal and sets HAP target = FULLY_CLOSED (0).
+    /// HomeKit then writes back its desired target (matching the actual current position).
+    /// The old code used old_pos (0) for the no-action check, so 0 != 20 triggered an
+    /// open command. The fix uses current_pos (20 == 20) to correctly skip the command.
+    #[tokio::test]
+    async fn test_no_spurious_move_when_target_equals_current() {
+        let initial_state = WindowCoveringState {
+            current_position: 20,
+            target_position: 20,
+            position_state: PositionState::Stopped,
+        };
+
+        let (sender, state, client) = create_test_worker(initial_state).await;
+
+        // Simulate: worker entered MovingExternal (spurious Comelit GoingDown report)
+        // and update_accessory() set HAP target = FULLY_CLOSED = 0.
+        // HomeKit responds by writing its desired target = 20 (old HAP value was 0).
+        sender
+            .send(WorkerCommand::MoveTo {
+                old_pos: FULLY_CLOSED, // old HAP target (was set to 0 by update_accessory)
+                new_pos: 20,           // HomeKit's desired state (same as current position)
+            })
+            .await
+            .unwrap();
+
+        sleep(Duration::from_millis(100)).await;
+
+        // No toggle should have been called: current_pos (20) == new_pos (20)
+        let calls = client.toggle_calls.read().await;
+        assert_eq!(calls.len(), 0, "Spurious command sent when target equals current position");
+
+        let current_state = state.lock().await;
+        assert_eq!(current_state.current_position, 20);
         assert_eq!(current_state.position_state, PositionState::Stopped);
     }
 
