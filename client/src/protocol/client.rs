@@ -21,9 +21,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, sleep};
+use tokio::time::{Instant, interval, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -135,6 +135,8 @@ struct Inner {
     mac_address: MacAddress,
     user: String,
     password: String,
+    /// Timestamp of the last action sent; used to enforce a minimum interval between commands.
+    last_action: Arc<Mutex<Instant>>,
 }
 
 #[derive(Builder)]
@@ -277,6 +279,9 @@ impl ComelitClient {
                     mac_address: hub.mac_address().clone(),
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
+                    last_action: Arc::new(Mutex::new(
+                        Instant::now() - Duration::from_secs(1),
+                    )),
                 }),
             })
         } else {
@@ -466,6 +471,17 @@ impl ComelitClient {
         action_type: ActionType,
         value: i32,
     ) -> Result<(), ComelitClientError> {
+        const MIN_INTERVAL: Duration = Duration::from_secs(1);
+        {
+            let mut last = self.inner.last_action.lock().await;
+            let elapsed = last.elapsed();
+            if elapsed < MIN_INTERVAL {
+                let wait = MIN_INTERVAL - elapsed;
+                debug!("Rate-limiting action for {device_id}: waiting {}ms", wait.as_millis());
+                sleep(wait).await;
+            }
+            *last = Instant::now();
+        }
         let session = self.get_session().await?;
         let _resp = self
             .send_request(make_action_message(
