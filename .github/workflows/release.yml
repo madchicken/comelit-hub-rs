@@ -1,0 +1,124 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    name: Build Linux .deb
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build binary
+        run: |
+          cargo build --release --manifest-path hap/Cargo.toml
+          strip target/release/comelit-hub-hap
+
+      - name: Build .deb
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p deb/DEBIAN deb/usr/local/bin deb/etc/systemd/system \
+                   deb/usr/local/bin deb/etc/comelit-hub-hap
+
+          cp target/release/comelit-hub-hap          deb/usr/local/bin/
+          cp hap/installer/linux/comelit-hub-hap.service \
+                                                      deb/etc/systemd/system/
+          cp hap/installer/comelit-hub-wrapper.sh    deb/usr/local/bin/comelit-hub-hap-wrapper.sh
+          cp hap/installer/comelit-hub-ctl.sh        deb/usr/local/bin/comelit-hub-ctl
+          cp hap/installer/default-config.json       deb/etc/comelit-hub-hap/comelit-hub-hap-config.json
+          cp hap/installer/comelit-hub-hap.env       deb/etc/comelit-hub-hap/comelit-hub-hap.env
+          chmod 755 deb/usr/local/bin/comelit-hub-hap-wrapper.sh
+          chmod 755 deb/usr/local/bin/comelit-hub-ctl
+
+          cat > deb/DEBIAN/control <<EOF
+          Package: comelit-hub-hap
+          Version: $VERSION
+          Section: net
+          Priority: optional
+          Architecture: amd64
+          Maintainer: Pierpaolo Follia
+          Description: Comelit HUB HomeKit Bridge
+           Bridges a Comelit HUB system to Apple HomeKit via the HAP protocol.
+          EOF
+
+          dpkg-deb --build deb comelit-hub-hap-${VERSION}-amd64.deb
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: "*.deb"
+
+  build-macos:
+    name: Build macOS .pkg
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build binary
+        run: |
+          cargo build --release --manifest-path hap/Cargo.toml
+          strip target/release/comelit-hub-hap
+
+      - name: Build .pkg
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          mkdir -p pkgroot/usr/local/bin \
+                   pkgroot/Library/LaunchDaemons \
+                   pkgroot/etc/comelit-hub-hap
+
+          cp target/release/comelit-hub-hap                pkgroot/usr/local/bin/
+          cp hap/installer/macos/com.comelit.hub.hap.plist  pkgroot/Library/LaunchDaemons/
+          cp hap/installer/comelit-hub-wrapper.sh           pkgroot/usr/local/bin/comelit-hub-hap-wrapper.sh
+          cp hap/installer/comelit-hub-ctl.sh               pkgroot/usr/local/bin/comelit-hub-ctl
+          cp hap/installer/default-config.json              pkgroot/etc/comelit-hub-hap/comelit-hub-hap-config.json
+          cp hap/installer/comelit-hub-hap.env              pkgroot/etc/comelit-hub-hap/comelit-hub-hap.env
+          chmod 755 pkgroot/usr/local/bin/comelit-hub-hap-wrapper.sh
+          chmod 755 pkgroot/usr/local/bin/comelit-hub-ctl
+
+          pkgbuild \
+            --root pkgroot \
+            --identifier com.comelit.hub.hap \
+            --version "$VERSION" \
+            comelit-hub-hap-${VERSION}-macos.pkg
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-pkg
+          path: "*.pkg"
+
+  release:
+    name: Create GitHub Release
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download Linux artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: linux-deb
+          path: dist/
+
+      - name: Download macOS artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-pkg
+          path: dist/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
