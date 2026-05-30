@@ -3,7 +3,7 @@
   <h1>comelit-hub-rs</h1>
   <p>Bridge HomeKit per impianti domotici Comelit HUB, scritto in Rust.</p>
 
-  [![Build](https://github.com/madchicken/comelit-hub-rs/actions/workflows/build.yml/badge.svg)](https://github.com/madchicken/comelit-hub-rs/actions)
+  [![Build](https://github.com/madchicken/comelit-hub-rs/actions/workflows/rust.yml/badge.svg)](https://github.com/madchicken/comelit-hub-rs/actions/workflows/rust.yml)
   [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 </div>
 
