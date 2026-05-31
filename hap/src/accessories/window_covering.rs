@@ -88,8 +88,6 @@ enum WorkerState {
     WaitingForStopConfirmation { current_pos: u8 },
 }
 
-const MIN_COMMAND_INTERVAL: Duration = Duration::from_secs(1);
-
 struct WindowCoveringWorker<C: ComelitClientTrait> {
     id: String,
     state: Arc<TokioMutex<WindowCoveringState>>,
@@ -97,7 +95,6 @@ struct WindowCoveringWorker<C: ComelitClientTrait> {
     config: WindowCoveringConfig,
     worker_state: WorkerState,
     accessory: Option<Accessory>,
-    last_command_at: Option<Instant>,
 }
 
 impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
@@ -114,21 +111,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
             config,
             worker_state: WorkerState::Idle,
             accessory: None,
-            last_command_at: None,
         }
-    }
-
-    /// Send a toggle command to Comelit, rate-limited to one per MIN_COMMAND_INTERVAL.
-    async fn send_toggle(&mut self, on: bool) -> Result<()> {
-        if let Some(last) = self.last_command_at {
-            let elapsed = last.elapsed();
-            if elapsed < MIN_COMMAND_INTERVAL {
-                tokio::time::sleep(MIN_COMMAND_INTERVAL - elapsed).await;
-            }
-        }
-        self.last_command_at = Some(Instant::now());
-        self.client.toggle_device_status(&self.id, on).await?;
-        Ok(())
     }
 
     /// Main worker loop - handles commands and position updates
@@ -209,7 +192,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                 info!("Stopping current movement before new move for {}", self.id);
                 // Send stop command
                 let on = *dir == PositionState::MovingDown;
-                self.send_toggle(on).await?;
+                self.client.toggle_device_status(&self.id, on).await?;
 
                 // Wait for the blind to actually stop
                 self.worker_state = WorkerState::WaitingForStopConfirmation {
@@ -246,7 +229,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
         // Send toggle command to Comelit
         // true = moving up (opening), false = moving down (closing)
         let on = direction == PositionState::MovingUp;
-        self.send_toggle(on).await?;
+        self.client.toggle_device_status(&self.id, on).await?;
 
         // Enter waiting state
         self.worker_state = WorkerState::WaitingForMoveConfirmation {
@@ -444,7 +427,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
             );
             // Send stop command
             let opening = direction == PositionState::MovingDown;
-            self.send_toggle(opening).await?;
+            self.client.toggle_device_status(&self.id, opening).await?;
 
             // Transition to waiting for stop confirmation
             self.worker_state = WorkerState::WaitingForStopConfirmation {
