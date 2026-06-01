@@ -118,8 +118,9 @@ impl ComelitDoorbellAccessory {
         doorbell_accessory.doorbell.volume = None;
 
         // Restrict ProgrammableSwitchEvent to Single Press only (value 0).
-        // Without this iOS sees min=0/max=2/step=1 and treats the accessory as a
-        // generic 3-button Stateless Programmable Switch instead of a Doorbell.
+        // hap-rs sets event_only=true on this characteristic so GET returns null,
+        // which is what iOS uses to recognize the accessory as a proper Doorbell
+        // rather than a generic Stateless Programmable Switch.
         let pse = &mut doorbell_accessory.doorbell.programmable_switch_event;
         pse.set_valid_values(Some(vec![Value::from(0u8)]))?;
         pse.set_min_value(None)?;
