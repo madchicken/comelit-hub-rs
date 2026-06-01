@@ -156,8 +156,17 @@ impl StatusUpdate for Updater {
                     .unwrap_or(0.0);
                 Metrics::set_total_consumption(total_consumption);
             }
-            HomeDeviceData::Doorbell(_bell_device_data) => {
+            HomeDeviceData::Doorbell(bell_device_data) => {
                 Metrics::inc_device_updates("doorbell");
+                if let Some(mut accessory) = self.doorbells.get_mut(&device.id()) {
+                    accessory
+                        .update(bell_device_data)
+                        .await
+                        .unwrap_or_else(|e| {
+                            Metrics::inc_device_update_errors("doorbell");
+                            error!("Failed to update doorbell {}: {}", device.id(), e);
+                        });
+                }
             }
             HomeDeviceData::Door(door_device_data) => {
                 Metrics::inc_device_updates("door");
