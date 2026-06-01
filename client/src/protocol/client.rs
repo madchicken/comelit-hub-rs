@@ -279,9 +279,7 @@ impl ComelitClient {
                     mac_address: hub.mac_address().clone(),
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
-                    last_action: Arc::new(Mutex::new(
-                        Instant::now() - Duration::from_secs(1),
-                    )),
+                    last_action: Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1))),
                 }),
             })
         } else {
@@ -471,7 +469,7 @@ impl ComelitClient {
         action_type: ActionType,
         value: i32,
     ) -> Result<(), ComelitClientError> {
-        const MIN_INTERVAL: Duration = Duration::from_secs(1);
+        const MIN_INTERVAL: Duration = Duration::from_millis(500);
         // Compute the delay and reserve the next send slot atomically, then sleep
         // *outside* the lock so the mutex is never held across an await point.
         // Using max(now, prev_slot + MIN_INTERVAL) queues concurrent callers correctly.
@@ -484,7 +482,10 @@ impl ComelitClient {
             delay
         }; // mutex released here — no sleep while holding the lock
         if !delay.is_zero() {
-            debug!("Rate-limiting action for {device_id}: waiting {}ms", delay.as_millis());
+            warn!(
+                "Rate-limiting action for {device_id}: waiting {}ms",
+                delay.as_millis()
+            );
             sleep(delay).await;
         }
         let session = self.get_session().await?;
