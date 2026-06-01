@@ -22,6 +22,8 @@ use hap::{
     storage::{FileStorage, Storage},
 };
 use qrcode::QrCode;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -190,6 +192,16 @@ impl StatusUpdate for Updater {
             }
         }
     }
+}
+
+/// Derives a stable, locally-administered MAC address from a device ID string.
+/// Used to give each doorbell's standalone HAP server a persistent identity.
+fn doorbell_mac(device_id: &str) -> [u8; 6] {
+    let mut hasher = DefaultHasher::new();
+    device_id.hash(&mut hasher);
+    let h = hasher.finish().to_le_bytes();
+    // Set locally-administered bit (bit 1), clear multicast bit (bit 0)
+    [(h[0] | 0x02) & 0xFE, h[1], h[2], h[3], h[4], h[5]]
 }
 
 pub async fn start_bridge(
@@ -501,14 +513,56 @@ pub async fn start_bridge(
             }
         }
 
-        for bell in bells {
+        for (bell_index, bell) in bells.iter().enumerate() {
             if settings.mount_doorbells.unwrap_or_default() {
                 i += 1;
                 info!("Adding doorbell device: {} with id {i}", bell.id);
                 let data = client.info::<DoorbellDeviceData>(&bell.id, 1).await?;
-                match ComelitDoorbellAccessory::new(i, data.first().unwrap(), &server).await {
+                let bell_data = data.first().unwrap();
+
+                // Each doorbell needs its own standalone HAP server with VideoDoorbell category.
+                // iOS does not support bridged VIDEO_DOORBELL accessories — this mirrors
+                // Homebridge's publishExternalAccessories() behaviour.
+                let bell_dir = format!("doorbell_{}", bell.id);
+                let mut bell_storage = FileStorage::new(&bell_dir).await?;
+                let bell_config = match bell_storage.load_config().await {
+                    Ok(mut c) => {
+                        c.redetermine_local_ip();
+                        bell_storage.save_config(&c).await?;
+                        c
+                    }
+                    Err(_) => {
+                        let pin = Pin::new(settings.pairing_code).expect("invalid pairing code");
+                        let name = bell_data
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| format!("Doorbell {}", bell.id));
+                        let c = Config {
+                            pin,
+                            name,
+                            device_id: MacAddress::from(doorbell_mac(&bell.id)),
+                            category: AccessoryCategory::VideoDoorbell,
+                            port: 32001 + bell_index as u16,
+                            ..Default::default()
+                        };
+                        bell_storage.save_config(&c).await?;
+                        c
+                    }
+                };
+
+                let bell_pin = bell_config.pin.to_string();
+                let bell_server = IpServer::new(bell_config, bell_storage).await?;
+
+                match ComelitDoorbellAccessory::new(i, bell_data, &bell_server).await {
                     Ok(accessory) => {
-                        info!("Doorbell {} added to the hub", accessory.get_comelit_id());
+                        info!(
+                            "Doorbell {} added as standalone HAP accessory",
+                            accessory.get_comelit_id()
+                        );
+                        info!(
+                            "Pair doorbell {} using pin code {bell_pin}",
+                            accessory.get_comelit_id()
+                        );
                         client.subscribe(&bell.id).await?;
 
                         // Register device in bridge state
@@ -523,6 +577,14 @@ pub async fn start_bridge(
                         updater
                             .doorbells
                             .insert(accessory.get_comelit_id().to_string(), accessory);
+
+                        // Spawn the doorbell's standalone server as a background task
+                        let bell_id = bell.id.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = bell_server.run_handle().await {
+                                error!("Doorbell {} server error: {}", bell_id, e);
+                            }
+                        });
                     }
                     Err(err) => error!("Failed to add doorbell device: {}", err),
                 };
