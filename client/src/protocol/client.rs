@@ -472,15 +472,20 @@ impl ComelitClient {
         value: i32,
     ) -> Result<(), ComelitClientError> {
         const MIN_INTERVAL: Duration = Duration::from_secs(1);
-        {
+        // Compute the delay and reserve the next send slot atomically, then sleep
+        // *outside* the lock so the mutex is never held across an await point.
+        // Using max(now, prev_slot + MIN_INTERVAL) queues concurrent callers correctly.
+        let delay = {
             let mut last = self.inner.last_action.lock().await;
-            let elapsed = last.elapsed();
-            if elapsed < MIN_INTERVAL {
-                let wait = MIN_INTERVAL - elapsed;
-                debug!("Rate-limiting action for {device_id}: waiting {}ms", wait.as_millis());
-                sleep(wait).await;
-            }
-            *last = Instant::now();
+            let now = Instant::now();
+            let next_slot = std::cmp::max(now, *last + MIN_INTERVAL);
+            let delay = next_slot.duration_since(now);
+            *last = next_slot;
+            delay
+        }; // mutex released here — no sleep while holding the lock
+        if !delay.is_zero() {
+            debug!("Rate-limiting action for {device_id}: waiting {}ms", delay.as_millis());
+            sleep(delay).await;
         }
         let session = self.get_session().await?;
         let _resp = self
