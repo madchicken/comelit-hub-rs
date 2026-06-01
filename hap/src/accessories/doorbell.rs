@@ -5,6 +5,7 @@ use comelit_client_rs::{DeviceStatus, DoorbellDeviceData};
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
+    characteristic::HapCharacteristic,
     pointer::Accessory,
     server::{IpServer, Server},
     service::{HapService, accessory_information::AccessoryInformationService, doorbell::DoorbellService},
@@ -115,6 +116,15 @@ impl ComelitDoorbellAccessory {
         doorbell_accessory.doorbell.mute = None;
         doorbell_accessory.doorbell.operating_state_response = None;
         doorbell_accessory.doorbell.volume = None;
+
+        // Restrict ProgrammableSwitchEvent to Single Press only (value 0).
+        // Without this iOS sees min=0/max=2/step=1 and treats the accessory as a
+        // generic 3-button Stateless Programmable Switch instead of a Doorbell.
+        let pse = &mut doorbell_accessory.doorbell.programmable_switch_event;
+        pse.set_valid_values(Some(vec![Value::from(0u8)]))?;
+        pse.set_min_value(None)?;
+        pse.set_max_value(None)?;
+        pse.set_step_value(None)?;
 
         let state = Arc::new(Mutex::new(State { accessory: None }));
 
