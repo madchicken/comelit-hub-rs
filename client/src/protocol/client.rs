@@ -137,6 +137,8 @@ struct Inner {
     password: String,
     /// Timestamp of the last action sent; used to enforce a minimum interval between commands.
     last_action: Arc<Mutex<Instant>>,
+    /// Minimum interval between consecutive action commands.
+    action_rate_limit: Duration,
 }
 
 #[derive(Builder)]
@@ -147,6 +149,9 @@ pub struct ComelitOptions {
     pub mqtt_password: String,
     pub user: Option<String>,
     pub password: Option<String>,
+    /// Minimum interval between consecutive action commands (default: 1000ms).
+    #[builder(default = "Duration::from_millis(1000)")]
+    pub action_rate_limit: Duration,
 }
 
 impl ComelitOptions {
@@ -186,6 +191,7 @@ impl Default for ComelitOptions {
             mqtt_password,
             user: Some("admin".to_string()),
             password: Some("admin".to_string()),
+            action_rate_limit: Duration::from_millis(1000),
         }
     }
 }
@@ -280,6 +286,7 @@ impl ComelitClient {
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
                     last_action: Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1))),
+                    action_rate_limit: options.action_rate_limit,
                 }),
             })
         } else {
@@ -469,14 +476,13 @@ impl ComelitClient {
         action_type: ActionType,
         value: i32,
     ) -> Result<(), ComelitClientError> {
-        const MIN_INTERVAL: Duration = Duration::from_millis(500);
         // Compute the delay and reserve the next send slot atomically, then sleep
         // *outside* the lock so the mutex is never held across an await point.
-        // Using max(now, prev_slot + MIN_INTERVAL) queues concurrent callers correctly.
+        // Using max(now, prev_slot + rate_limit) queues concurrent callers correctly.
         let delay = {
             let mut last = self.inner.last_action.lock().await;
             let now = Instant::now();
-            let next_slot = std::cmp::max(now, *last + MIN_INTERVAL);
+            let next_slot = std::cmp::max(now, *last + self.inner.action_rate_limit);
             let delay = next_slot.duration_since(now);
             *last = next_slot;
             delay
