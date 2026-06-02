@@ -92,6 +92,7 @@ async fn main() -> anyhow::Result<()> {
 
     let options = ComelitOptionsBuilder::default()
         .host(Some(args.host.clone()))
+        .port(None)
         .mqtt_user(args.mqtt_user.clone())
         .mqtt_password(args.mqtt_password.clone())
         .user(args.user.clone())
