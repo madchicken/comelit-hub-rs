@@ -23,7 +23,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, interval, sleep};
+use tokio::time::{Instant, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -698,13 +698,15 @@ impl ComelitClient {
                                                         response.out_data.first().unwrap().clone(),
                                                         2,
                                                     );
-                                                    let device = vec.first().unwrap();
+                                                    let device = vec.first().unwrap().clone();
                                                     info!(
                                                         "Received new data from server: {:?}",
                                                         device
                                                     );
-                                                    if let Some(observer) = &observer {
-                                                        observer.status_update(device).await;
+                                                    if let Some(observer) = observer.clone() {
+                                                        tokio::spawn(async move {
+                                                            observer.status_update(&device).await;
+                                                        });
                                                     }
                                                 }
                                             }
