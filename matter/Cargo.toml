@@ -23,9 +23,10 @@ env_logger = "0.11"
 rand = { version = "0.8", features = ["std", "std_rng"] }
 rs-matter = { path = "../../rs-matter/rs-matter", features = [
     "os",
+    "astro-dnssd",
     "max-groups-per-fabric-12",
     "max-group-keys-per-fabric-2",
     "max-group-endpoints-per-fabric-3",
 ] }
-socket2 = "0.5"
+socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", features = ["full"] }

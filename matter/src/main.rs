@@ -35,7 +35,7 @@ use rs_matter::utils::storage::pooled::PooledBuffers;
 use rs_matter::{Matter, MATTER_PORT, clusters, devices, root_endpoint};
 
 use comelit_client_rs::{
-    ComelitClient, ComelitOptionsBuilder, DeviceStatus, HomeDeviceData, State,
+    ComelitClient, ComelitOptionsBuilder, DeviceStatus, HomeDeviceData, State, get_secrets,
 };
 use tokio::sync::mpsc;
 
@@ -48,21 +48,13 @@ struct Args {
     #[arg(long, env = "COMELIT_HOST")]
     host: String,
 
-    /// Comelit MQTT user
-    #[arg(long, env = "COMELIT_MQTT_USER", default_value = "admin")]
-    mqtt_user: String,
-
-    /// Comelit MQTT password
-    #[arg(long, env = "COMELIT_MQTT_PASSWORD", default_value = "admin")]
-    mqtt_password: String,
-
     /// Comelit login user
-    #[arg(long, env = "COMELIT_USER")]
-    user: Option<String>,
+    #[arg(long, env = "COMELIT_USER", default_value = "admin")]
+    user: String,
 
     /// Comelit login password
-    #[arg(long, env = "COMELIT_PASSWORD")]
-    password: Option<String>,
+    #[arg(long, env = "COMELIT_PASSWORD", default_value = "admin")]
+    password: String,
 
     /// Comelit device ID of the light to expose (e.g. "DOM#LT#1.1")
     #[arg(long, env = "COMELIT_LIGHT_ID")]
@@ -90,13 +82,14 @@ async fn main() -> anyhow::Result<()> {
 
     // ── 2. Create and connect the Comelit client ──────────────────────────────
 
+    let (mqtt_user, mqtt_password) = get_secrets();
     let options = ComelitOptionsBuilder::default()
         .host(Some(args.host.clone()))
         .port(None)
-        .mqtt_user(args.mqtt_user.clone())
-        .mqtt_password(args.mqtt_password.clone())
-        .user(args.user.clone())
-        .password(args.password.clone())
+        .mqtt_user(mqtt_user)
+        .mqtt_password(mqtt_password)
+        .user(Some(args.user.clone()))
+        .password(Some(args.password.clone()))
         .action_rate_limit(Duration::from_millis(args.rate_limit_ms))
         .build()?;
 
@@ -131,6 +124,10 @@ async fn main() -> anyhow::Result<()> {
 
     // Now that we know the real initial state, update the shared atom.
     light_state.on.store(initial_on, std::sync::atomic::Ordering::Relaxed);
+    // Prime the signal so the Matter run() loop fires an immediate Update
+    // notification when it first starts, pushing the correct initial state
+    // to any already-subscribed HomeKit controllers.
+    light_state.signal.signal(());
 
     // Subscribe to push updates for this device.
     client.subscribe(&args.light_id).await?;
@@ -216,7 +213,7 @@ fn run_matter(state: Arc<LightState>) -> anyhow::Result<()> {
             .map_err(|e| anyhow::anyhow!("comm window: {e:?}"))?;
     }
 
-    let mut mdns_fut = pin!(mdns::run_mdns(&matter, &crypto));
+    let mut mdns_fut = pin!(mdns::run_mdns(&matter));
     let mut transport = pin!(matter.run(&crypto, &socket, &socket, &socket));
     let mut respond = pin!(responder.run::<4, 4>());
     let mut dm_job = pin!(dm.run());
