@@ -219,6 +219,7 @@ pub async fn start_bridge(
     bridge_state.set_connection_status(ConnectionStatus::Connecting);
 
     let (mqtt_user, mqtt_password) = get_secrets();
+    let rate_limit_ms = settings.action_rate_limit_ms.unwrap_or(1000);
     let options = ComelitOptions::builder()
         .user(Some(user.into()))
         .password(Some(password.into()))
@@ -226,6 +227,7 @@ pub async fn start_bridge(
         .mqtt_password(mqtt_password)
         .host(host.clone())
         .port(port)
+        .action_rate_limit(Duration::from_millis(rate_limit_ms))
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
 

@@ -23,7 +23,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, interval, sleep};
+use tokio::time::{Instant, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -137,6 +137,8 @@ struct Inner {
     password: String,
     /// Timestamp of the last action sent; used to enforce a minimum interval between commands.
     last_action: Arc<Mutex<Instant>>,
+    /// Minimum interval between consecutive action commands.
+    action_rate_limit: Duration,
 }
 
 #[derive(Builder)]
@@ -147,6 +149,9 @@ pub struct ComelitOptions {
     pub mqtt_password: String,
     pub user: Option<String>,
     pub password: Option<String>,
+    /// Minimum interval between consecutive action commands (default: 1000ms).
+    #[builder(default = "Duration::from_millis(1000)")]
+    pub action_rate_limit: Duration,
 }
 
 impl ComelitOptions {
@@ -186,6 +191,7 @@ impl Default for ComelitOptions {
             mqtt_password,
             user: Some("admin".to_string()),
             password: Some("admin".to_string()),
+            action_rate_limit: Duration::from_millis(1000),
         }
     }
 }
@@ -280,6 +286,7 @@ impl ComelitClient {
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
                     last_action: Arc::new(Mutex::new(Instant::now() - Duration::from_secs(1))),
+                    action_rate_limit: options.action_rate_limit,
                 }),
             })
         } else {
@@ -469,14 +476,13 @@ impl ComelitClient {
         action_type: ActionType,
         value: i32,
     ) -> Result<(), ComelitClientError> {
-        const MIN_INTERVAL: Duration = Duration::from_millis(500);
         // Compute the delay and reserve the next send slot atomically, then sleep
         // *outside* the lock so the mutex is never held across an await point.
-        // Using max(now, prev_slot + MIN_INTERVAL) queues concurrent callers correctly.
+        // Using max(now, prev_slot + rate_limit) queues concurrent callers correctly.
         let delay = {
             let mut last = self.inner.last_action.lock().await;
             let now = Instant::now();
-            let next_slot = std::cmp::max(now, *last + MIN_INTERVAL);
+            let next_slot = std::cmp::max(now, *last + self.inner.action_rate_limit);
             let delay = next_slot.duration_since(now);
             *last = next_slot;
             delay
@@ -583,18 +589,18 @@ impl ComelitClient {
                         let session = state.read().await.clone();
                         match session {
                             Some(session) => {
-                                // Send ping message. We don't use the manager, so the responses will be just ignored
+                                // Send ping message.
                                 info!("Sending ping message");
                                 let id = req_id.fetch_add(1, Ordering::Acquire);
                                 let payload = make_ping_message(id, session.agent_id, session.session_token.as_str());
+                                // Register BEFORE publishing to avoid the race where the hub
+                                // responds before the receiver is registered in the pending map.
+                                let receiver = manager.add_request(id);
                                 match client.publish(topic.as_str(), QoS::AtMostOnce, false, serde_json::to_string(&payload).unwrap()).await {
                                     Ok(_) => {
                                         debug!("Ping message sent successfully");
-                                        let receiver = manager.add_request(id);
-                                        let mut res_interval = tokio::time::interval(Duration::from_secs(5));
-                                        res_interval.tick().await; // first tick is immediate
                                         tokio::select! {
-                                            _ = res_interval.tick() => {
+                                            _ = sleep(Duration::from_secs(5)) => {
                                                 error!("Ping response timed out");
                                                 failed_ping_requests += 1;
                                             }
@@ -622,6 +628,7 @@ impl ComelitClient {
                                     },
                                     Err(e) => {
                                         error!("Failed to send ping message: {:?}", e);
+                                        manager.cancel_request(id);
                                         failed_ping_requests += 1;
                                     }
                                 }
@@ -691,13 +698,15 @@ impl ComelitClient {
                                                         response.out_data.first().unwrap().clone(),
                                                         2,
                                                     );
-                                                    let device = vec.first().unwrap();
+                                                    let device = vec.first().unwrap().clone();
                                                     info!(
                                                         "Received new data from server: {:?}",
                                                         device
                                                     );
-                                                    if let Some(observer) = &observer {
-                                                        observer.status_update(device).await;
+                                                    if let Some(observer) = observer.clone() {
+                                                        tokio::spawn(async move {
+                                                            observer.status_update(&device).await;
+                                                        });
                                                     }
                                                 }
                                             }
@@ -756,46 +765,46 @@ impl ComelitClient {
         &self,
         payload: MqttMessage,
     ) -> Result<MqttResponseMessage, ComelitClientError> {
-        info!("Request sent successfully");
-        let request_manager = self.inner.request_manager.clone();
-        let mqtt_client = self.inner.client.clone();
-        let write_topic = self.inner.write_topic.clone();
-        let receiver_task = tokio::spawn(async move {
-            match Self::send_mqtt_message(mqtt_client, &write_topic, payload.clone()).await {
-                Ok(_) => debug!("Request {} published successfully", payload.seq_id),
-                Err(e) => return Err(e),
-            }
-            // Register the request to receive the response
-            let response_receiver = request_manager.add_request(payload.seq_id);
+        let seq_id = payload.seq_id;
 
-            // Wait for the response
-            debug!("Waiting for response for request {}", payload.seq_id);
-            match response_receiver.await {
-                Ok(response) => {
-                    if response.req_result.unwrap() != 0 {
-                        Err(ComelitClientError::Publish(format!(
-                            "Failed to publish request after receiving an error: {response:?}"
-                        )))
-                    } else {
-                        debug!("Received response for request {}", payload.seq_id);
-                        Ok(response)
-                    }
-                }
-                Err(e) => Err(ComelitClientError::ReadError(format!(
-                    "Failed to receive response: {e}"
-                ))),
-            }
-        });
+        // Register BEFORE publishing: if the hub responds before add_request the
+        // response would arrive in the event loop, find no pending entry, and be
+        // silently discarded — leaving the caller waiting forever.
+        let response_receiver = self.inner.request_manager.add_request(seq_id);
 
-        let mut interval = interval(Duration::from_secs(5));
-        interval.tick().await; // first tick is immediate
+        if let Err(e) = Self::send_mqtt_message(
+            self.inner.client.clone(),
+            &self.inner.write_topic,
+            payload,
+        )
+        .await
+        {
+            self.inner.request_manager.cancel_request(seq_id);
+            return Err(e);
+        }
+        info!("Request {} sent successfully", seq_id);
+
         tokio::select! {
-            _ = interval.tick() => {
+            _ = sleep(Duration::from_secs(5)) => {
                 error!("Request timed out");
                 Err(ComelitClientError::ReadError("Request timed out".to_string()))
             }
-            res = receiver_task => {
-                res.unwrap_or_else(|e| Err(ComelitClientError::ReadError(format!("Failed to receive response: {e}"))))
+            res = response_receiver => {
+                match res {
+                    Ok(response) => {
+                        if response.req_result.unwrap_or(0) != 0 {
+                            Err(ComelitClientError::Publish(format!(
+                                "Failed to publish request after receiving an error: {response:?}"
+                            )))
+                        } else {
+                            info!("Request {} completed successfully", seq_id);
+                            Ok(response)
+                        }
+                    }
+                    Err(e) => Err(ComelitClientError::ReadError(format!(
+                        "Failed to receive response: {e}"
+                    ))),
+                }
             }
         }
     }
@@ -808,7 +817,7 @@ impl ComelitClient {
         mqtt_client
             .publish(
                 write_topic,
-                QoS::ExactlyOnce,
+                QoS::AtLeastOnce,
                 false,
                 serde_json::to_string(&payload)
                     .map(|json| {
