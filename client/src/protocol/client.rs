@@ -815,7 +815,7 @@ impl ComelitClient {
         mqtt_client
             .publish(
                 write_topic,
-                QoS::ExactlyOnce,
+                QoS::AtLeastOnce,
                 false,
                 serde_json::to_string(&payload)
                     .map(|json| {
