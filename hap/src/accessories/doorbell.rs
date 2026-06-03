@@ -99,7 +99,8 @@ impl ComelitDoorbellAccessory {
         server: &IpServer,
     ) -> Result<Self> {
         let device_id = door_data.id.clone();
-        let name = door_data.description.clone().unwrap_or(device_id.clone());
+        let sanitized_id: String = device_id.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+        let name = door_data.description.clone().unwrap_or_else(|| format!("Doorbell {}", sanitized_id));
         let mut doorbell_accessory = DoorbellAccessory::new(
             id,
             AccessoryInformation {
