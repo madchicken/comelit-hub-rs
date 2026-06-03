@@ -1,3 +1,4 @@
+mod bridge;
 mod light;
 mod mdns;
 
@@ -7,23 +8,24 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use async_io::Async;
+use async_trait::async_trait;
 use clap::Parser;
 use embassy_futures::select::select4;
 use log::{error, info};
+use tokio::sync::RwLock;
 
-use rs_matter::crypto::{Crypto, default_crypto};
-use rs_matter::dm::clusters::app::on_off::{self, NoLevelControl, OnOffHooks};
-use rs_matter::dm::clusters::desc::{self, ClusterHandler as _};
-use rs_matter::dm::clusters::groups::{self, ClusterHandler as _};
+use rs_matter::crypto::{default_crypto, Crypto};
+use rs_matter::dm::clusters::app::on_off::{self};
+use rs_matter::dm::clusters::desc;
+use rs_matter::dm::clusters::groups;
 use rs_matter::dm::clusters::net_comm::SharedNetworks;
 use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET};
-use rs_matter::dm::devices::DEV_TYPE_ON_OFF_LIGHT;
 use rs_matter::dm::endpoints;
 use rs_matter::dm::events::NoEvents;
 use rs_matter::dm::networks::eth::EthNetwork;
 use rs_matter::dm::networks::SysNetifs;
 use rs_matter::dm::subscriptions::Subscriptions;
-use rs_matter::dm::{Async as DmAsync, DataModel, DataModelHandler, Dataver, Endpoint, EpClMatcher, Node};
+use rs_matter::dm::{DataModel, DataModelHandler, Dataver};
 use rs_matter::pairing::DiscoveryCapabilities;
 use rs_matter::pairing::qr::QrTextType;
 use rs_matter::persist::{DirKvBlobStore, SharedKvBlobStore};
@@ -32,17 +34,40 @@ use rs_matter::sc::pase::MAX_COMM_WINDOW_TIMEOUT_SECS;
 use rs_matter::transport::MATTER_SOCKET_BIND_ADDR;
 use rs_matter::utils::select::Coalesce;
 use rs_matter::utils::storage::pooled::PooledBuffers;
-use rs_matter::{Matter, MATTER_PORT, clusters, devices, root_endpoint};
+use rs_matter::{Matter, MATTER_PORT};
 
 use comelit_client_rs::{
-    ComelitClient, ComelitOptionsBuilder, DeviceStatus, HomeDeviceData, State, get_secrets,
+    ComelitClient, ComelitObserver, ComelitOptionsBuilder, DeviceStatus, HomeDeviceData, State,
+    StatusUpdate, get_secrets,
 };
 use tokio::sync::mpsc;
 
-use light::{ComelitOnOffHooks, LightState, MatterObserver, MqttCommand};
+use bridge::{BridgeMetadata, BridgedInfo, ComelitBridgeHandler, LightEntry, NonRootMatcher};
+use light::{ComelitOnOffHooks, LightState, MultiLightObserver, MqttCommand};
+
+// ── DeferredObserver ──────────────────────────────────────────────────────────
+//
+// Created before discovery so it can be passed to ComelitClient::new, then
+// wired to the real MultiLightObserver after the light list is known.
+
+struct DeferredObserver {
+    inner: Arc<RwLock<Option<ComelitObserver>>>,
+}
+
+#[async_trait]
+impl StatusUpdate for DeferredObserver {
+    async fn status_update(&self, device: &HomeDeviceData) {
+        let guard = self.inner.read().await;
+        if let Some(obs) = guard.as_ref() {
+            obs.status_update(device).await;
+        }
+    }
+}
+
+// ── CLI args ──────────────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
-#[command(name = "comelit-matter", about = "Comelit → Matter bridge PoC (lights only)")]
+#[command(name = "comelit-matter", about = "Comelit → Matter bridge (all lights)")]
 struct Args {
     /// Comelit hub hostname or IP
     #[arg(long, env = "COMELIT_HOST")]
@@ -56,14 +81,12 @@ struct Args {
     #[arg(long, env = "COMELIT_PASSWORD", default_value = "admin")]
     password: String,
 
-    /// Comelit device ID of the light to expose (e.g. "DOM#LT#1.1")
-    #[arg(long, env = "COMELIT_LIGHT_ID")]
-    light_id: String,
-
     /// Action rate limit in milliseconds
     #[arg(long, default_value = "1000")]
     rate_limit_ms: u64,
 }
+
+// ── main ──────────────────────────────────────────────────────────────────────
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -71,16 +94,14 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
-    // ── 1. Shared state (created before the client, so the observer can borrow it) ──
+    // ── 1. MQTT command channel ───────────────────────────────────────────────
 
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<MqttCommand>();
-    let light_state = Arc::new(LightState::new(args.light_id.clone(), false, cmd_tx));
 
-    let observer = Arc::new(MatterObserver {
-        state: light_state.clone(),
-    });
+    // ── 2. Create client with deferred observer ───────────────────────────────
 
-    // ── 2. Create and connect the Comelit client ──────────────────────────────
+    let deferred_slot: Arc<RwLock<Option<ComelitObserver>>> = Arc::new(RwLock::new(None));
+    let deferred = Arc::new(DeferredObserver { inner: deferred_slot.clone() });
 
     let (mqtt_user, mqtt_password) = get_secrets();
     let options = ComelitOptionsBuilder::default()
@@ -93,46 +114,59 @@ async fn main() -> anyhow::Result<()> {
         .action_rate_limit(Duration::from_millis(args.rate_limit_ms))
         .build()?;
 
-    let client = ComelitClient::new(options, Some(observer as _)).await?;
+    let client = ComelitClient::new(options, Some(deferred as _)).await?;
     client.login(State::Disconnected).await?;
 
-    // Fetch index to get the initial on/off state.
+    // ── 3. Discover all lights ────────────────────────────────────────────────
+
     let index = client.fetch_index(2).await?;
-    let light_data = index
-        .get(&args.light_id)
-        .and_then(|d| {
-            if let HomeDeviceData::Light(l) = d.value() {
-                Some(l.clone())
+    let mut lights_data: Vec<(String, String, bool)> = index
+        .iter()
+        .filter_map(|entry| {
+            if let HomeDeviceData::Light(l) = entry.value() {
+                let initial_on =
+                    l.status.as_ref().map(|s| s == &DeviceStatus::On).unwrap_or(false);
+                let label = l.description.clone().unwrap_or_else(|| entry.key().clone());
+                Some((entry.key().clone(), label, initial_on))
             } else {
                 None
             }
         })
-        .ok_or_else(|| anyhow::anyhow!("Light '{}' not found in Comelit index", args.light_id))?;
+        .collect();
 
-    let initial_on = light_data
-        .status
-        .as_ref()
-        .map(|s| s == &DeviceStatus::On)
-        .unwrap_or(false);
+    // Stable order: sort by device ID
+    lights_data.sort_by(|a, b| a.0.cmp(&b.0));
 
-    info!(
-        "Found light '{}' (id={}), initially {}",
-        light_data.description.as_deref().unwrap_or("?"),
-        light_data.id,
-        if initial_on { "ON" } else { "OFF" }
-    );
+    if lights_data.is_empty() {
+        return Err(anyhow::anyhow!("No lights found in Comelit index"));
+    }
 
-    // Now that we know the real initial state, update the shared atom.
-    light_state.on.store(initial_on, std::sync::atomic::Ordering::Relaxed);
-    // Prime the signal so the Matter run() loop fires an immediate Update
-    // notification when it first starts, pushing the correct initial state
-    // to any already-subscribed HomeKit controllers.
-    light_state.signal.signal(());
+    info!("Discovered {} lights:", lights_data.len());
+    for (i, (id, label, on)) in lights_data.iter().enumerate() {
+        info!("  ep{}: {} ({}) — {}", i + 2, label, id, if *on { "ON" } else { "OFF" });
+    }
 
-    // Subscribe to push updates for this device.
-    client.subscribe(&args.light_id).await?;
+    // ── 4. Create shared state and wire up observer ───────────────────────────
 
-    // ── 3. MQTT command executor ──────────────────────────────────────────────
+    let mut light_states: Vec<Arc<LightState>> = Vec::new();
+    for (i, (id, _, initial_on)) in lights_data.iter().enumerate() {
+        let ep_id = (i + 2) as u16;
+        let state = Arc::new(LightState::new(ep_id, id.clone(), *initial_on, cmd_tx.clone()));
+        // Prime the signal so Matter fires an Update notification immediately on start
+        state.signal.signal(());
+        light_states.push(state);
+    }
+
+    let observer = Arc::new(MultiLightObserver { states: light_states.clone() });
+    *deferred_slot.write().await = Some(observer as _);
+
+    // ── 5. Subscribe to MQTT push for every light ─────────────────────────────
+
+    for (id, _, _) in &lights_data {
+        client.subscribe(id).await?;
+    }
+
+    // ── 6. MQTT command executor ──────────────────────────────────────────────
 
     let exec_client = client.clone();
     tokio::spawn(async move {
@@ -143,17 +177,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // ── 4. Matter server (separate thread, futures_lite executor) ─────────────
-    //
-    // The built-in mDNS responder and its UDP socket use async-io, which must
-    // run on the async-io reactor (a background OS thread).  Keeping the whole
-    // Matter stack on futures_lite::block_on ensures it stays on that reactor.
+    // ── 7. Matter server (separate thread, futures_lite executor) ─────────────
 
-    let matter_state = light_state.clone();
     let matter_thread = std::thread::Builder::new()
         .name("matter".into())
         .stack_size(600 * 1024)
-        .spawn(move || run_matter(matter_state))?;
+        .spawn(move || run_matter(light_states, lights_data))?;
 
     matter_thread
         .join()
@@ -162,11 +191,12 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// ── Matter server (runs under futures_lite::block_on) ─────────────────────────
+// ── Matter server ─────────────────────────────────────────────────────────────
 
-fn run_matter(state: Arc<LightState>) -> anyhow::Result<()> {
-    let hooks = ComelitOnOffHooks::new(state);
-
+fn run_matter(
+    light_states: Vec<Arc<LightState>>,
+    lights_data: Vec<(String, String, bool)>,
+) -> anyhow::Result<()> {
     let mut matter = Matter::new(&TEST_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, MATTER_PORT);
 
     let mut kv_buf = [0u8; 4096];
@@ -179,11 +209,33 @@ fn run_matter(state: Arc<LightState>) -> anyhow::Result<()> {
     let crypto = default_crypto(rand::thread_rng(), DAC_PRIVKEY);
     let mut rand = crypto.rand().map_err(|e| anyhow::anyhow!("rand: {e:?}"))?;
 
-    let on_off_handler = on_off::OnOffHandler::<_, NoLevelControl>::new_standalone(
-        Dataver::new_rand(&mut rand),
-        1,
-        hooks,
-    );
+    // Build one LightEntry per light
+    let mut entries: Vec<LightEntry> = Vec::new();
+    for (i, (state, (device_id, label, _))) in
+        light_states.into_iter().zip(lights_data.iter()).enumerate()
+    {
+        let ep_id = (i + 2) as u16;
+        let hooks = ComelitOnOffHooks::new(state);
+        entries.push(LightEntry {
+            ep_id,
+            on_off: on_off::OnOffHandler::new_standalone(
+                Dataver::new_rand(&mut rand),
+                ep_id,
+                hooks,
+            ),
+            desc: desc::DescHandler::new(Dataver::new_rand(&mut rand)),
+            groups: groups::GroupsHandler::new(Dataver::new_rand(&mut rand)),
+            bridged: BridgedInfo::new(
+                Dataver::new_rand(&mut rand),
+                label.clone(),
+                device_id.clone(),
+            ),
+        });
+    }
+
+    let agg_desc = desc::DescHandler::new_aggregator(Dataver::new_rand(&mut rand));
+    let metadata = BridgeMetadata::new(&entries);
+    let bridge = ComelitBridgeHandler::new(agg_desc, entries);
 
     let events = NoEvents::new();
     let dm = DataModel::new(
@@ -192,7 +244,7 @@ fn run_matter(state: Arc<LightState>) -> anyhow::Result<()> {
         &buffers,
         &subscriptions,
         &events,
-        dm_handler(rand, &on_off_handler),
+        dm_handler(rand, &metadata, &bridge),
         SharedKvBlobStore::new(kv, kv_buf.as_mut_slice()),
         SharedNetworks::new(EthNetwork::new_default()),
     );
@@ -224,44 +276,16 @@ fn run_matter(state: Arc<LightState>) -> anyhow::Result<()> {
     .map_err(|e| anyhow::anyhow!("matter runtime error: {e:?}"))
 }
 
-// ── Static node topology ───────────────────────────────────────────────────────
-
-const NODE: Node<'static> = Node {
-    endpoints: &[
-        root_endpoint!(eth),
-        Endpoint::new(
-            1,
-            devices!(DEV_TYPE_ON_OFF_LIGHT),
-            clusters!(
-                desc::DescHandler::CLUSTER,
-                groups::GroupsHandler::CLUSTER,
-                // Access via the OnOffHooks trait (imported above)
-                ComelitOnOffHooks::CLUSTER
-            ),
-        ),
-    ],
-};
-
 fn dm_handler<'a>(
-    mut rand: impl rand::RngCore + Copy,
-    on_off: &'a on_off::OnOffHandler<'a, ComelitOnOffHooks, NoLevelControl>,
+    rand: impl rand::RngCore + Copy,
+    metadata: &'a BridgeMetadata,
+    bridge: &'a ComelitBridgeHandler,
 ) -> impl DataModelHandler + 'a {
     (
-        NODE,
+        metadata,
         endpoints::EthSysHandlerBuilder::new()
             .netif_diag(&SysNetifs)
             .build(rand)
-            .chain(
-                EpClMatcher::new(Some(1), Some(desc::DescHandler::CLUSTER.id)),
-                DmAsync(desc::DescHandler::new(Dataver::new_rand(&mut rand)).adapt()),
-            )
-            .chain(
-                EpClMatcher::new(Some(1), Some(groups::GroupsHandler::CLUSTER.id)),
-                DmAsync(groups::GroupsHandler::new(Dataver::new_rand(&mut rand)).adapt()),
-            )
-            .chain(
-                EpClMatcher::new(Some(1), Some(ComelitOnOffHooks::CLUSTER.id)),
-                on_off::HandlerAsyncAdaptor(on_off),
-            ),
+            .chain(NonRootMatcher, bridge),
     )
 }

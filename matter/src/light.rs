@@ -25,6 +25,7 @@ pub struct MqttCommand {
 
 /// State shared between the Matter server and the Comelit MQTT client.
 pub struct LightState {
+    pub ep_id: u16,
     pub device_id: String,
     pub on: AtomicBool,
     /// Signal fired when the MQTT client receives a state update for this light.
@@ -34,14 +35,19 @@ pub struct LightState {
 }
 
 impl LightState {
-    pub fn new(device_id: String, initial_on: bool, cmd_tx: UnboundedSender<MqttCommand>) -> Self {
-        let state = Self {
+    pub fn new(
+        ep_id: u16,
+        device_id: String,
+        initial_on: bool,
+        cmd_tx: UnboundedSender<MqttCommand>,
+    ) -> Self {
+        Self {
+            ep_id,
             device_id,
             on: AtomicBool::new(initial_on),
             signal: Signal::new(),
             cmd_tx,
-        };
-        state
+        }
     }
 }
 
@@ -122,25 +128,26 @@ impl OnOffHooks for ComelitOnOffHooks {
     }
 }
 
-/// Receives MQTT push-updates and propagates them to the Matter `LightState`.
-pub struct MatterObserver {
-    pub state: Arc<LightState>,
+/// Receives MQTT push-updates for all bridged lights and propagates them to their `LightState`.
+pub struct MultiLightObserver {
+    pub states: Vec<Arc<LightState>>,
 }
 
 #[async_trait]
-impl StatusUpdate for MatterObserver {
+impl StatusUpdate for MultiLightObserver {
     async fn status_update(&self, device: &HomeDeviceData) {
         if let HomeDeviceData::Light(data) = device {
-            if data.id == self.state.device_id {
+            if let Some(state) = self.states.iter().find(|s| s.device_id == data.id) {
                 let is_on = data.status.as_ref().map(|s| s == &DeviceStatus::On).unwrap_or(false);
-                let was_on = self.state.on.swap(is_on, Ordering::AcqRel);
+                let was_on = state.on.swap(is_on, Ordering::AcqRel);
                 if was_on != is_on {
                     info!(
-                        "MQTT → Matter: {} {}",
+                        "MQTT → Matter ep{}: {} {}",
+                        state.ep_id,
                         data.id,
                         if is_on { "ON" } else { "OFF" }
                     );
-                    self.state.signal.signal(());
+                    state.signal.signal(());
                 }
             }
         }
