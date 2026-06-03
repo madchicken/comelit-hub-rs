@@ -7,11 +7,9 @@ edition = "2024"
 members = [
     "client",
     "hap",
+    "matter",
     "tui",
     "viper-client",
-]
-exclude = [
-    "matter",
 ]
 
 [lib]

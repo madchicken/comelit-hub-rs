@@ -21,7 +21,7 @@ if-addrs = "0.13"
 log = "0.4"
 env_logger = "0.11"
 rand = { version = "0.8", features = ["std", "std_rng"] }
-rs-matter = { path = "../../rs-matter/rs-matter", features = [
+rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "e8b0b0cbb20bf312a9c52fc1ee56541037a3b9c9", features = [
     "os",
     "astro-dnssd",
     "max-groups-per-fabric-12",
