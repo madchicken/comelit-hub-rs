@@ -525,7 +525,11 @@ pub async fn start_bridge(
                 // Each doorbell needs its own standalone HAP server with VideoDoorbell category.
                 // iOS does not support bridged VIDEO_DOORBELL accessories — this mirrors
                 // Homebridge's publishExternalAccessories() behaviour.
-                let bell_dir = format!("doorbell_{}", bell.id);
+                let bell_id_sanitized: String = bell.id
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                let bell_dir = format!("doorbell_{}", bell_id_sanitized);
                 let mut bell_storage = FileStorage::new(&bell_dir).await?;
                 let bell_config = match bell_storage.load_config().await {
                     Ok(mut c) => {
@@ -538,11 +542,11 @@ pub async fn start_bridge(
                         let name = bell_data
                             .description
                             .clone()
-                            .unwrap_or_else(|| format!("Doorbell {}", bell.id));
+                            .unwrap_or_else(|| format!("Doorbell {}", bell_id_sanitized));
                         let c = Config {
                             pin,
                             name,
-                            device_id: MacAddress::from(doorbell_mac(&bell.id)),
+                            device_id: MacAddress::from(doorbell_mac(&bell_id_sanitized)),
                             category: AccessoryCategory::VideoDoorbell,
                             port: 32001 + bell_index as u16,
                             ..Default::default()
