@@ -155,16 +155,14 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
     }
 
     async fn update(&mut self, thermostat_data: &ThermostatDeviceData) -> Result<()> {
-        let mut state = self.state.lock().await;
+        // Compute new state and update the shared Arc — release the lock before touching the
+        // accessory to avoid a deadlock: the HAP framework holds `accessory` while calling
+        // on_read callbacks, which in turn try to acquire `state`.
         let new_state = ThermostatState::from(thermostat_data);
-        state.heating_cooling_state = new_state.heating_cooling_state;
-        state.temperature = new_state.temperature;
-        state.target_temperature = new_state.target_temperature;
-        state.humidity = new_state.humidity;
-        state.target_humidity = new_state.target_humidity;
-        state.target_heating_cooling_state = new_state.target_heating_cooling_state;
-        state.dehumidifier_active = new_state.dehumidifier_active;
-        state.dehumidifier_current_state = new_state.dehumidifier_current_state;
+        {
+            let mut state = self.state.lock().await;
+            *state = new_state.clone();
+        }
 
         let mut accessory = self.accessory.lock().await;
 
@@ -176,7 +174,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
             thermostat_service.get_mut_characteristic(HapType::CurrentTemperature)
         {
             characteristic
-                .update_value(Value::from(state.temperature))
+                .update_value(Value::from(new_state.temperature))
                 .await?;
         }
 
@@ -184,7 +182,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
             thermostat_service.get_mut_characteristic(HapType::TargetTemperature)
         {
             characteristic
-                .update_value(Value::from(state.target_temperature))
+                .update_value(Value::from(new_state.target_temperature))
                 .await?;
         }
 
@@ -192,7 +190,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
             thermostat_service.get_mut_characteristic(HapType::CurrentHeatingCoolingState)
         {
             characteristic
-                .update_value(Value::from(state.heating_cooling_state as u8))
+                .update_value(Value::from(new_state.heating_cooling_state as u8))
                 .await?;
         }
 
@@ -200,7 +198,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
             thermostat_service.get_mut_characteristic(HapType::TargetHeatingCoolingState)
         {
             characteristic
-                .update_value(Value::from(state.target_heating_cooling_state as u8))
+                .update_value(Value::from(new_state.target_heating_cooling_state as u8))
                 .await?;
         }
 
@@ -209,7 +207,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
             thermostat_service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
         {
             characteristic
-                .update_value(Value::from(state.humidity))
+                .update_value(Value::from(new_state.humidity))
                 .await?;
         }
 
@@ -217,7 +215,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
             thermostat_service.get_mut_characteristic(HapType::TargetRelativeHumidity)
         {
             characteristic
-                .update_value(Value::from(state.target_humidity))
+                .update_value(Value::from(new_state.target_humidity))
                 .await?;
         }
 
@@ -227,7 +225,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
         {
             if let Some(characteristic) = hd_service.get_mut_characteristic(HapType::Active) {
                 characteristic
-                    .update_value(Value::from(state.dehumidifier_active as u8))
+                    .update_value(Value::from(new_state.dehumidifier_active as u8))
                     .await?;
             }
 
@@ -235,7 +233,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
                 .get_mut_characteristic(HapType::CurrentHumidifierDehumidifierState)
             {
                 characteristic
-                    .update_value(Value::from(state.dehumidifier_current_state))
+                    .update_value(Value::from(new_state.dehumidifier_current_state))
                     .await?;
             }
 
@@ -243,7 +241,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
                 hd_service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
             {
                 characteristic
-                    .update_value(Value::from(state.humidity))
+                    .update_value(Value::from(new_state.humidity))
                     .await?;
             }
 
@@ -251,7 +249,7 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
                 .get_mut_characteristic(HapType::RelativeHumidityDehumidifierThreshold)
             {
                 characteristic
-                    .update_value(Value::from(state.target_humidity))
+                    .update_value(Value::from(new_state.target_humidity))
                     .await?;
             }
         }
@@ -437,64 +435,54 @@ impl ComelitThermostatAccessory {
                 let state = state_.clone();
                 async move {
                     let prev = state.lock().await.target_heating_cooling_state as u8;
-                    if prev != new {
-                        debug!(
-                            "Target heating cooling state updated from {} to {}",
-                            prev, new
-                        );
+                    debug!(
+                        "Target heating cooling state updated from {} to {}",
+                        prev, new
+                    );
 
+                    client
+                        .toggle_thermostat_status(
+                            comelit_id.as_str(),
+                            if TargetHeatingCoolingState::Off as u8 == new {
+                                ClimaOnOff::OffThermo
+                            } else {
+                                ClimaOnOff::OnThermo
+                            },
+                        )
+                        .await?;
+
+                    if prev == TargetHeatingCoolingState::Auto as u8
+                        && new != TargetHeatingCoolingState::Off as u8
+                    {
+                        // if in AUTO mode, switch to MANUAL here
                         client
-                            .toggle_thermostat_status(
-                                comelit_id.as_str(),
-                                if TargetHeatingCoolingState::Off as u8 == new {
-                                    ClimaOnOff::OffThermo
-                                } else {
-                                    ClimaOnOff::OnThermo
-                                },
-                            )
+                            .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual)
                             .await?;
+                    }
 
-                        if prev == TargetHeatingCoolingState::Auto as u8
-                            && new != TargetHeatingCoolingState::Off as u8
-                        {
-                            // if in AUTO mode, switch to MANUAL here
+                    match TargetHeatingCoolingState::from(new) {
+                        TargetHeatingCoolingState::Auto => {
                             client
-                                .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual)
+                                .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto)
                                 .await?;
                         }
-
-                        let state = TargetHeatingCoolingState::from(new);
-                        match state {
-                            TargetHeatingCoolingState::Auto => {
-                                client
-                                    .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto)
-                                    .await?;
-                            }
-                            TargetHeatingCoolingState::Cool => {
-                                client
-                                    .set_thermostat_season(
-                                        comelit_id.as_str(),
-                                        ThermoSeason::Summer,
-                                    )
-                                    .await?;
-                            }
-                            TargetHeatingCoolingState::Heat => {
-                                client
-                                    .set_thermostat_season(
-                                        comelit_id.as_str(),
-                                        ThermoSeason::Winter,
-                                    )
-                                    .await?;
-                            }
-                            TargetHeatingCoolingState::Off => {
-                                client
-                                    .toggle_thermostat_status(
-                                        comelit_id.as_str(),
-                                        ClimaOnOff::OffThermo,
-                                    )
-                                    .await?;
-                            }
+                        TargetHeatingCoolingState::Cool => {
+                            client
+                                .set_thermostat_season(
+                                    comelit_id.as_str(),
+                                    ThermoSeason::Summer,
+                                )
+                                .await?;
                         }
+                        TargetHeatingCoolingState::Heat => {
+                            client
+                                .set_thermostat_season(
+                                    comelit_id.as_str(),
+                                    ThermoSeason::Winter,
+                                )
+                                .await?;
+                        }
+                        TargetHeatingCoolingState::Off => {}
                     }
                     Ok(())
                 }
