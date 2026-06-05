@@ -219,7 +219,6 @@ pub async fn start_bridge(
     bridge_state.set_connection_status(ConnectionStatus::Connecting);
 
     let (mqtt_user, mqtt_password) = get_secrets();
-    let rate_limit_ms = settings.action_rate_limit_ms.unwrap_or(1000);
     let options = ComelitOptions::builder()
         .user(Some(user.into()))
         .password(Some(password.into()))
@@ -227,7 +226,6 @@ pub async fn start_bridge(
         .mqtt_password(mqtt_password)
         .host(host.clone())
         .port(port)
-        .action_rate_limit(Duration::from_millis(rate_limit_ms))
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
 
@@ -664,39 +662,32 @@ pub async fn start_bridge(
 
         tokio::select! {
             _ = monitored_ping_task => {
-                info!("Ping task exited, gracefully shutting down");
+                warn!("Ping task exited: lost connection to Comelit hub");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Err(anyhow::anyhow!("Lost connection to Comelit hub (ping failure)"))
             }
             _ = handle => {
+                warn!("HAP server exited unexpectedly");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Err(anyhow::anyhow!("HAP server exited unexpectedly"))
             }
             _ = ctrl_c => {
                 info!("signal received, starting graceful shutdown");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Ok(())
             },
             _ = terminate => {
                 info!("signal received, starting graceful shutdown");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Ok(())
             },
         }
     } else {

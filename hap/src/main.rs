@@ -94,18 +94,28 @@ async fn main() -> Result<()> {
         web::start_web_server(web_config, bridge_state.clone()).await?;
     }
 
-    start_bridge(
-        params.user.as_str(),
-        params.password.as_str(),
-        params.host,
-        params.port,
-        settings,
-        bridge_state,
-    )
-    .await?;
+    loop {
+        match start_bridge(
+            params.user.as_str(),
+            params.password.as_str(),
+            params.host.clone(),
+            params.port,
+            settings.clone(),
+            bridge_state.clone(),
+        )
+        .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                warn!("Bridge exited with error: {e:#}, reconnecting in 10s...");
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        }
+    }
 
     info!("Bridge ended");
-    exit(0); // force exit
+    drop(_log_guard);
+    exit(0);
 }
 
 fn setup_logging(params: &Params) -> Result<LogGuard> {

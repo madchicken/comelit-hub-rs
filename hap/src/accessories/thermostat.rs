@@ -23,7 +23,7 @@ use serde::{
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::accessories::{
     ComelitAccessory,
@@ -380,23 +380,19 @@ impl ComelitThermostatAccessory {
 
         let client_ = client.clone();
         let comelit_id_ = comelit_id.clone();
-        let state_ = Arc::clone(&arc_state);
         accessory
             .thermostat
             .target_temperature
-            .on_update_async(Some(move |_, new| {
+            .on_update_async(Some(move |_, new: f32| {
                 let client = client_.clone();
                 let comelit_id = comelit_id_.clone();
-                let state = state_.clone();
                 async move {
-                    let prev = state.lock().await.target_temperature;
-                    if prev != new {
-                        debug!("Target temperature updated from {} to {}", prev, new);
-                        let temperature = (new * 10.0) as i32;
-                        client
-                            .set_thermostat_temperature(&comelit_id, temperature)
-                            .await?;
-                    }
+                    let temperature = (new * 10.0) as i32;
+                    tokio::spawn(async move {
+                        if let Err(e) = client.set_thermostat_temperature(&comelit_id, temperature).await {
+                            warn!("set_thermostat_temperature failed: {e}");
+                        }
+                    });
                     Ok(())
                 }
                 .boxed()
@@ -405,18 +401,16 @@ impl ComelitThermostatAccessory {
         if let Some(ref mut char) = accessory.thermostat.target_relative_humidity {
             let client_ = client.clone();
             let comelit_id_ = comelit_id.clone();
-            let state_ = Arc::clone(&arc_state);
-            char.on_update_async(Some(move |_prev, new| {
+            char.on_update_async(Some(move |_prev, new: f32| {
                 let client = client_.clone();
                 let comelit_id = comelit_id_.clone();
-                let state = state_.clone();
                 async move {
-                    let prev = state.lock().await.target_humidity;
-                    if prev != new {
-                        debug!("Target humidity updated from {} to {}", prev, new);
-                        let humidity = (new * 10.0) as i32;
-                        client.set_humidity(&comelit_id, humidity).await?;
-                    }
+                    let humidity = (new * 10.0) as i32;
+                    tokio::spawn(async move {
+                        if let Err(e) = client.set_humidity(&comelit_id, humidity).await {
+                            warn!("set_humidity failed: {e}");
+                        }
+                    });
                     Ok(())
                 }
                 .boxed()
@@ -434,56 +428,48 @@ impl ComelitThermostatAccessory {
                 let comelit_id = comelit_id_.clone();
                 let state = state_.clone();
                 async move {
-                    let prev = state.lock().await.target_heating_cooling_state as u8;
-                    debug!(
-                        "Target heating cooling state updated from {} to {}",
-                        prev, new
-                    );
+                    tokio::spawn(async move {
+                        let prev = state.lock().await.target_heating_cooling_state as u8;
+                        debug!("Target heating cooling state updated from {} to {}", prev, new);
 
-                    client
-                        .toggle_thermostat_status(
+                        if let Err(e) = client.toggle_thermostat_status(
                             comelit_id.as_str(),
                             if TargetHeatingCoolingState::Off as u8 == new {
                                 ClimaOnOff::OffThermo
                             } else {
                                 ClimaOnOff::OnThermo
                             },
-                        )
-                        .await?;
+                        ).await {
+                            warn!("toggle_thermostat_status failed: {e}");
+                        }
 
-                    if prev == TargetHeatingCoolingState::Auto as u8
-                        && new != TargetHeatingCoolingState::Off as u8
-                    {
-                        // if in AUTO mode, switch to MANUAL here
-                        client
-                            .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual)
-                            .await?;
-                    }
+                        if prev == TargetHeatingCoolingState::Auto as u8
+                            && new != TargetHeatingCoolingState::Off as u8
+                        {
+                            if let Err(e) = client.set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual).await {
+                                warn!("set_thermostat_mode(Manual) failed: {e}");
+                            }
+                        }
 
-                    match TargetHeatingCoolingState::from(new) {
-                        TargetHeatingCoolingState::Auto => {
-                            client
-                                .set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto)
-                                .await?;
+                        match TargetHeatingCoolingState::from(new) {
+                            TargetHeatingCoolingState::Auto => {
+                                if let Err(e) = client.set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto).await {
+                                    warn!("set_thermostat_mode(Auto) failed: {e}");
+                                }
+                            }
+                            TargetHeatingCoolingState::Cool => {
+                                if let Err(e) = client.set_thermostat_season(comelit_id.as_str(), ThermoSeason::Summer).await {
+                                    warn!("set_thermostat_season(Summer) failed: {e}");
+                                }
+                            }
+                            TargetHeatingCoolingState::Heat => {
+                                if let Err(e) = client.set_thermostat_season(comelit_id.as_str(), ThermoSeason::Winter).await {
+                                    warn!("set_thermostat_season(Winter) failed: {e}");
+                                }
+                            }
+                            TargetHeatingCoolingState::Off => {}
                         }
-                        TargetHeatingCoolingState::Cool => {
-                            client
-                                .set_thermostat_season(
-                                    comelit_id.as_str(),
-                                    ThermoSeason::Summer,
-                                )
-                                .await?;
-                        }
-                        TargetHeatingCoolingState::Heat => {
-                            client
-                                .set_thermostat_season(
-                                    comelit_id.as_str(),
-                                    ThermoSeason::Winter,
-                                )
-                                .await?;
-                        }
-                        TargetHeatingCoolingState::Off => {}
-                    }
+                    });
                     Ok(())
                 }
                 .boxed()
@@ -556,18 +542,16 @@ impl ComelitThermostatAccessory {
 
                 let client_ = client.clone();
                 let comelit_id_ = comelit_id.clone();
-                let state_ = Arc::clone(&arc_state);
-                threshold.on_update_async(Some(move |_prev, new| {
+                threshold.on_update_async(Some(move |_prev, new: f32| {
                     let client = client_.clone();
                     let comelit_id = comelit_id_.clone();
-                    let state = state_.clone();
                     async move {
-                        let prev = state.lock().await.target_humidity;
-                        if prev != new {
-                            debug!("Dehumidifier threshold updated from {} to {}", prev, new);
-                            let humidity = (new * 10.0) as i32;
-                            client.set_humidity(&comelit_id, humidity).await?;
-                        }
+                        let humidity = (new * 10.0) as i32;
+                        tokio::spawn(async move {
+                            if let Err(e) = client.set_humidity(&comelit_id, humidity).await {
+                                warn!("set_humidity (threshold) failed: {e}");
+                            }
+                        });
                         Ok(())
                     }
                     .boxed()
@@ -576,26 +560,19 @@ impl ComelitThermostatAccessory {
 
             let client_ = client.clone();
             let comelit_id_ = comelit_id.clone();
-            let state_ = Arc::clone(&arc_state);
             hd.active.on_update_async(Some(move |_prev: u8, new: u8| {
                 let client = client_.clone();
                 let comelit_id = comelit_id_.clone();
-                let state = state_.clone();
                 async move {
-                    let prev = state.lock().await.dehumidifier_active as u8;
-                    if prev != new {
-                        debug!("Dehumidifier active updated from {} to {}", prev, new);
-                        client
-                            .toggle_thermostat_status(
-                                comelit_id.as_str(),
-                                if new == 1 {
-                                    ClimaOnOff::OnHumi
-                                } else {
-                                    ClimaOnOff::OffHumi
-                                },
-                            )
-                            .await?;
-                    }
+                    tokio::spawn(async move {
+                        debug!("Dehumidifier active updated to {}", new);
+                        if let Err(e) = client.toggle_thermostat_status(
+                            comelit_id.as_str(),
+                            if new == 1 { ClimaOnOff::OnHumi } else { ClimaOnOff::OffHumi },
+                        ).await {
+                            warn!("toggle_thermostat_status (humi) failed: {e}");
+                        }
+                    });
                     Ok(())
                 }
                 .boxed()

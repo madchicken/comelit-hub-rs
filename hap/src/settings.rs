@@ -42,8 +42,6 @@ pub struct Settings {
     pub door: DoorSettings,
     pub prometheus_url: Option<String>,
     pub prometheus_token: Option<String>,
-    /// Minimum delay in milliseconds between consecutive MQTT action commands (default: 1000).
-    pub action_rate_limit_ms: Option<u64>,
 }
 
 impl Default for Settings {
@@ -59,7 +57,6 @@ impl Default for Settings {
             door: DoorSettings::default(),
             prometheus_url: None,
             prometheus_token: None,
-            action_rate_limit_ms: Some(1000),
         }
     }
 }
