@@ -1,7 +1,8 @@
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use comelit_client_rs::{DeviceStatus, DoorbellDeviceData};
+use comelit_client_rs::DoorbellDeviceData;
 use hap::{
     HapType,
     accessory::{AccessoryInformation, HapAccessory},
@@ -83,6 +84,7 @@ impl Serialize for DoorbellAccessory {
 
 struct State {
     accessory: Option<Accessory>,
+    last_ring: Option<Instant>,
 }
 
 pub(crate) struct ComelitDoorbellAccessory {
@@ -128,7 +130,7 @@ impl ComelitDoorbellAccessory {
         pse.set_max_value(None)?;
         pse.set_step_value(None)?;
 
-        let state = Arc::new(Mutex::new(State { accessory: None }));
+        let state = Arc::new(Mutex::new(State { accessory: None, last_ring: None }));
 
         let accessory = server.add_accessory(doorbell_accessory).await?;
         state.lock().await.accessory = Some(accessory.clone());
@@ -160,12 +162,19 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
         &self.id
     }
 
-    async fn update(&mut self, data: &DoorbellDeviceData) -> Result<()> {
-        // Only ring when Comelit reports the bell as pressed (status On)
-        if data.status == Some(DeviceStatus::On) {
-            if let Some(accessory) = self.state.lock().await.accessory.clone() {
-                ring(&self.id, accessory).await?;
-            }
+    async fn update(&mut self, _data: &DoorbellDeviceData) -> Result<()> {
+        // The Comelit hub pushes VIP events with status=Off on every ring — the status
+        // value is not meaningful here. Treat any incoming update as a ring event.
+        // Deduplicate within 2 seconds to handle the hub sending the same event twice.
+        let mut state = self.state.lock().await;
+        let now = Instant::now();
+        if state.last_ring.map(|t| t.elapsed() < Duration::from_secs(2)).unwrap_or(false) {
+            return Ok(());
+        }
+        state.last_ring = Some(now);
+        if let Some(accessory) = state.accessory.clone() {
+            drop(state);
+            ring(&self.id, accessory).await?;
         }
         Ok(())
     }
