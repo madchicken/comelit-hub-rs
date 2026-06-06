@@ -654,6 +654,7 @@ pub struct ThermostatDeviceData {
     pub humidity: Option<String>,
     #[serde(rename = "soglia_attiva_umi")]
     pub humi_active_threshold: Option<String>,
+    pub auto_man_umi: Option<ClimaMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

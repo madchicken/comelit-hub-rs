@@ -81,9 +81,6 @@ struct Args {
     #[arg(long, env = "COMELIT_PASSWORD", default_value = "admin")]
     password: String,
 
-    /// Action rate limit in milliseconds
-    #[arg(long, default_value = "1000")]
-    rate_limit_ms: u64,
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -111,7 +108,6 @@ async fn main() -> anyhow::Result<()> {
         .mqtt_password(mqtt_password)
         .user(Some(args.user.clone()))
         .password(Some(args.password.clone()))
-        .action_rate_limit(Duration::from_millis(args.rate_limit_ms))
         .build()?;
 
     let client = ComelitClient::new(options, Some(deferred as _)).await?;

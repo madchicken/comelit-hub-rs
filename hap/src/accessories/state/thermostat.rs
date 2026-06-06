@@ -1,4 +1,4 @@
-use comelit_client_rs::{ClimaMode, ThermoSeason, ThermostatDeviceData};
+use comelit_client_rs::{ClimaMode, DeviceStatus, ThermoSeason, ThermostatDeviceData};
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ThermostatState {
@@ -8,6 +8,9 @@ pub(crate) struct ThermostatState {
     pub(crate) target_humidity: f32,
     pub(crate) heating_cooling_state: TargetHeatingCoolingState,
     pub(crate) target_heating_cooling_state: TargetHeatingCoolingState,
+    // Dehumidifier state (only relevant when sub_type == ClimaThermostatDehumidifier)
+    pub(crate) dehumidifier_active: bool,
+    pub(crate) dehumidifier_current_state: u8, // 0=INACTIVE, 1=IDLE, 3=DEHUMIDIFYING
 }
 
 impl From<&ThermostatDeviceData> for ThermostatState {
@@ -17,7 +20,7 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             .clone()
             .unwrap_or_default()
             .parse::<f32>()
-            .unwrap()
+            .unwrap_or_default()
             / 10.0;
 
         let humidity = data
@@ -25,14 +28,14 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             .clone()
             .unwrap_or_default()
             .parse::<f32>()
-            .unwrap();
+            .unwrap_or_default();
 
         let target_temperature = data
             .active_threshold
             .clone()
             .unwrap_or_default()
             .parse::<f32>()
-            .unwrap()
+            .unwrap_or_default()
             / 10.0;
 
         let target_humidity = data
@@ -40,7 +43,7 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             .clone()
             .unwrap_or_default()
             .parse::<f32>()
-            .unwrap();
+            .unwrap_or_default();
 
         let auto_man = data.auto_man.clone().unwrap_or_default();
         let is_off = auto_man == ClimaMode::OffAuto || auto_man == ClimaMode::OffManual;
@@ -59,6 +62,20 @@ impl From<&ThermostatDeviceData> for ThermostatState {
 
         let target_heating_cooling_state = heating_cooling_state;
 
+        // Dehumidifier: active when auto_man_umi is not None/OffAuto/OffManual
+        let auto_man_umi = data.auto_man_umi.clone().unwrap_or_default();
+        let dehumidifier_active = !matches!(
+            auto_man_umi,
+            ClimaMode::None | ClimaMode::OffAuto | ClimaMode::OffManual
+        );
+        let dehumidifier_current_state = if !dehumidifier_active {
+            0 // INACTIVE
+        } else if matches!(data.status, Some(DeviceStatus::On) | Some(DeviceStatus::Running)) {
+            3 // DEHUMIDIFYING
+        } else {
+            1 // IDLE
+        };
+
         Self {
             temperature,
             humidity,
@@ -66,6 +83,8 @@ impl From<&ThermostatDeviceData> for ThermostatState {
             target_humidity,
             heating_cooling_state,
             target_heating_cooling_state,
+            dehumidifier_active,
+            dehumidifier_current_state,
         }
     }
 }
