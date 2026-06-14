@@ -8,7 +8,7 @@ use hap::pointer::Accessory;
 use hap::server::Server;
 use hap::{
     HapType,
-    accessory::{AccessoryInformation, HapAccessory},
+    accessory::HapAccessory,
     characteristic::AsyncCharacteristicCallbacks,
     server::IpServer,
     service::{
@@ -23,6 +23,7 @@ use serde::{
 };
 use serde_json::Value;
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::{self, Sender};
 use tracing::{debug, info, warn};
 
 use crate::accessories::{
@@ -54,33 +55,32 @@ impl HapAccessory for ComelitThermostat {
     }
 
     fn get_service(&self, hap_type: HapType) -> Option<&dyn HapService> {
-        self.get_services()
-            .into_iter()
-            .find(|&service| service.get_type() == hap_type)
+        self.get_services().into_iter().find(|&s| s.get_type() == hap_type).map(|v| v as _)
     }
 
     fn get_mut_service(&mut self, hap_type: HapType) -> Option<&mut dyn HapService> {
         self.get_mut_services()
             .into_iter()
-            .find(|service| service.get_type() == hap_type)
+            .find(|s| s.get_type() == hap_type)
+            .map(|v| v as _)
     }
 
     fn get_services(&self) -> Vec<&dyn HapService> {
-        let mut services: Vec<&dyn HapService> =
+        let mut v: Vec<&dyn HapService> =
             vec![&self.accessory_information, &self.thermostat];
         if let Some(ref hd) = self.humidifier_dehumidifier {
-            services.push(hd);
+            v.push(hd);
         }
-        services
+        v
     }
 
     fn get_mut_services(&mut self) -> Vec<&mut dyn HapService> {
-        let mut services: Vec<&mut dyn HapService> =
+        let mut v: Vec<&mut dyn HapService> =
             vec![&mut self.accessory_information, &mut self.thermostat];
         if let Some(ref mut hd) = self.humidifier_dehumidifier {
-            services.push(hd);
+            v.push(hd);
         }
-        services
+        v
     }
 }
 
@@ -100,52 +100,254 @@ impl ComelitThermostat {
         device_id: &str,
         has_dehumidifier: bool,
     ) -> Result<Self> {
-        let accessory_information = AccessoryInformation {
+        let information = hap::accessory::AccessoryInformation {
+            name: name.to_string(),
             manufacturer: "Comelit".to_string(),
             serial_number: device_id.to_string(),
-            name: name.to_string(),
             ..Default::default()
-        }
-        .to_service(1, id)?;
+        };
+        let accessory_information = information.to_service(1, id)?;
+        let info_len = accessory_information.get_characteristics().len() as u64;
 
-        let thermo_id = accessory_information.get_characteristics().len() as u64;
-        debug!("Thermostat ID: {}", thermo_id);
-        let mut thermostat_sensor = ThermostatService::new(1 + thermo_id + 1, id);
-        thermostat_sensor.cooling_threshold_temperature = None;
-        thermostat_sensor.set_primary(true);
+        let mut thermostat = ThermostatService::new(1 + info_len + 1, id);
+        thermostat.set_primary(true);
 
         let humidifier_dehumidifier = if has_dehumidifier {
-            // Humidity characteristics move to the dehumidifier service
-            thermostat_sensor.current_relative_humidity = None;
-            thermostat_sensor.target_relative_humidity = None;
-
-            // ThermostatService occupies 10 characteristic slots (5 required + 5 optional)
-            let hd_start_id = 1 + thermo_id + 1 + 10 + 1;
-            let mut hd = HumidifierDehumidifierService::new(hd_start_id, id);
-            hd.lock_physical_controls = None;
-            hd.name = None;
-            hd.relative_humidity_humidifier_threshold = None;
-            hd.rotation_speed = None;
-            hd.swing_mode = None;
-            hd.current_water_level = None;
-            Some(hd)
+            let offset = 1 + info_len + 1 + thermostat.get_characteristics().len() as u64 + 1;
+            Some(HumidifierDehumidifierService::new(offset, id))
         } else {
             None
         };
 
-        Ok(Self {
-            id,
-            accessory_information,
-            thermostat: thermostat_sensor,
-            humidifier_dehumidifier,
-        })
+        Ok(Self { id, accessory_information, thermostat, humidifier_dehumidifier })
     }
 }
+
+// ── Commands ────────────────────────────────────────────────────────────────────
+
+#[derive(Debug)]
+enum ThermostatCommand {
+    /// HomeKit changed target temperature
+    SetTargetTemperature(f32),
+    /// HomeKit changed target humidity (thermostat service)
+    SetTargetHumidity(f32),
+    /// HomeKit changed HVAC mode
+    SetHvacMode(u8),
+    /// HomeKit toggled dehumidifier on/off
+    SetDehumidifierActive(u8),
+    /// HomeKit changed dehumidifier threshold
+    SetDehumidifierThreshold(f32),
+    /// MQTT hub pushed a status update → update HAP characteristics
+    MqttPush(ThermostatState),
+    /// Provide the HAP accessory pointer to the worker after server registration
+    SetAccessory(Accessory),
+}
+
+// ── Worker ──────────────────────────────────────────────────────────────────────
+
+struct ThermostatWorker {
+    id: String,
+    state: Arc<Mutex<ThermostatState>>,
+    client: ComelitClient,
+    accessory: Option<Accessory>,
+}
+
+impl ThermostatWorker {
+    fn new(id: String, state: Arc<Mutex<ThermostatState>>, client: ComelitClient) -> Self {
+        Self { id, state, client, accessory: None }
+    }
+
+    async fn run(mut self, mut rx: mpsc::Receiver<ThermostatCommand>) {
+        while let Some(cmd) = rx.recv().await {
+            if let Err(e) = self.handle(cmd).await {
+                warn!("ThermostatWorker {}: {e}", self.id);
+            }
+        }
+    }
+
+    async fn handle(&mut self, cmd: ThermostatCommand) -> Result<()> {
+        match cmd {
+            ThermostatCommand::SetAccessory(acc) => {
+                self.accessory = Some(acc);
+            }
+
+            ThermostatCommand::SetTargetTemperature(new) => {
+                let temperature = (new * 10.0) as i32;
+                if let Err(e) =
+                    self.client.set_thermostat_temperature(&self.id, temperature).await
+                {
+                    warn!("set_thermostat_temperature failed: {e}");
+                }
+            }
+
+            ThermostatCommand::SetTargetHumidity(new) => {
+                let humidity = (new * 10.0) as i32;
+                if let Err(e) = self.client.set_humidity(&self.id, humidity).await {
+                    warn!("set_humidity failed: {e}");
+                }
+            }
+
+            ThermostatCommand::SetHvacMode(new) => {
+                let prev = self.state.lock().await.target_heating_cooling_state as u8;
+                debug!("Target heating cooling state updated from {} to {}", prev, new);
+
+                if let Err(e) = self
+                    .client
+                    .toggle_thermostat_status(
+                        &self.id,
+                        if TargetHeatingCoolingState::Off as u8 == new {
+                            ClimaOnOff::OffThermo
+                        } else {
+                            ClimaOnOff::OnThermo
+                        },
+                    )
+                    .await
+                {
+                    warn!("toggle_thermostat_status failed: {e}");
+                }
+
+                if prev == TargetHeatingCoolingState::Auto as u8
+                    && new != TargetHeatingCoolingState::Off as u8
+                {
+                    if let Err(e) = self
+                        .client
+                        .set_thermostat_mode(&self.id, ClimaMode::Manual)
+                        .await
+                    {
+                        warn!("set_thermostat_mode(Manual) failed: {e}");
+                    }
+                }
+
+                match TargetHeatingCoolingState::from(new) {
+                    TargetHeatingCoolingState::Auto => {
+                        if let Err(e) =
+                            self.client.set_thermostat_mode(&self.id, ClimaMode::Auto).await
+                        {
+                            warn!("set_thermostat_mode(Auto) failed: {e}");
+                        }
+                    }
+                    TargetHeatingCoolingState::Cool => {
+                        if let Err(e) = self
+                            .client
+                            .set_thermostat_season(&self.id, ThermoSeason::Summer)
+                            .await
+                        {
+                            warn!("set_thermostat_season(Summer) failed: {e}");
+                        }
+                    }
+                    TargetHeatingCoolingState::Heat => {
+                        if let Err(e) = self
+                            .client
+                            .set_thermostat_season(&self.id, ThermoSeason::Winter)
+                            .await
+                        {
+                            warn!("set_thermostat_season(Winter) failed: {e}");
+                        }
+                    }
+                    TargetHeatingCoolingState::Off => {}
+                }
+            }
+
+            ThermostatCommand::SetDehumidifierActive(new) => {
+                debug!("Dehumidifier active updated to {}", new);
+                if let Err(e) = self
+                    .client
+                    .toggle_thermostat_status(
+                        &self.id,
+                        if new == 1 { ClimaOnOff::OnHumi } else { ClimaOnOff::OffHumi },
+                    )
+                    .await
+                {
+                    warn!("toggle_thermostat_status (humi) failed: {e}");
+                }
+            }
+
+            ThermostatCommand::SetDehumidifierThreshold(new) => {
+                let humidity = (new * 10.0) as i32;
+                if let Err(e) = self.client.set_humidity(&self.id, humidity).await {
+                    warn!("set_humidity (threshold) failed: {e}");
+                }
+            }
+
+            ThermostatCommand::MqttPush(new_state) => {
+                *self.state.lock().await = new_state.clone();
+                self.update_accessory(&new_state).await?;
+                info!("Updated thermostat {} from MQTT push", self.id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Push all characteristic values into the HAP accessory.
+    /// Called only from the worker task — never from inside an on_update_async callback.
+    async fn update_accessory(&self, state: &ThermostatState) -> Result<()> {
+        let Some(ref accessory) = self.accessory else { return Ok(()) };
+
+        let mut acc = accessory.lock().await;
+
+        let thermostat_service = acc
+            .get_mut_service(HapType::Thermostat)
+            .context("Thermostat service not found")?;
+
+        if let Some(ch) = thermostat_service.get_mut_characteristic(HapType::CurrentTemperature) {
+            ch.update_value(Value::from(state.temperature)).await?;
+        }
+        if let Some(ch) = thermostat_service.get_mut_characteristic(HapType::TargetTemperature) {
+            ch.update_value(Value::from(state.target_temperature)).await?;
+        }
+        if let Some(ch) =
+            thermostat_service.get_mut_characteristic(HapType::CurrentHeatingCoolingState)
+        {
+            ch.update_value(Value::from(state.heating_cooling_state as u8)).await?;
+        }
+        if let Some(ch) =
+            thermostat_service.get_mut_characteristic(HapType::TargetHeatingCoolingState)
+        {
+            ch.update_value(Value::from(state.target_heating_cooling_state as u8)).await?;
+        }
+        if let Some(ch) =
+            thermostat_service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
+        {
+            ch.update_value(Value::from(state.humidity)).await?;
+        }
+        if let Some(ch) =
+            thermostat_service.get_mut_characteristic(HapType::TargetRelativeHumidity)
+        {
+            ch.update_value(Value::from(state.target_humidity)).await?;
+        }
+
+        if let Some(hd_service) = acc.get_mut_service(HapType::HumidifierDehumidifier) {
+            if let Some(ch) = hd_service.get_mut_characteristic(HapType::Active) {
+                ch.update_value(Value::from(state.dehumidifier_active as u8)).await?;
+            }
+            if let Some(ch) =
+                hd_service.get_mut_characteristic(HapType::CurrentHumidifierDehumidifierState)
+            {
+                ch.update_value(Value::from(state.dehumidifier_current_state)).await?;
+            }
+            if let Some(ch) =
+                hd_service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
+            {
+                ch.update_value(Value::from(state.humidity)).await?;
+            }
+            if let Some(ch) =
+                hd_service.get_mut_characteristic(HapType::RelativeHumidityDehumidifierThreshold)
+            {
+                ch.update_value(Value::from(state.target_humidity)).await?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+// ── Public accessory ────────────────────────────────────────────────────────────
 
 pub(crate) struct ComelitThermostatAccessory {
     id: String,
     pub name: String,
-    state: Arc<Mutex<ThermostatState>>,
+    command_sender: Sender<ThermostatCommand>,
+    #[allow(dead_code)]
     accessory: Accessory,
 }
 
@@ -155,105 +357,13 @@ impl ComelitAccessory<ThermostatDeviceData> for ComelitThermostatAccessory {
     }
 
     async fn update(&mut self, thermostat_data: &ThermostatDeviceData) -> Result<()> {
-        // Compute new state and update the shared Arc — release the lock before touching the
-        // accessory to avoid a deadlock: the HAP framework holds `accessory` while calling
-        // on_read callbacks, which in turn try to acquire `state`.
         let new_state = ThermostatState::from(thermostat_data);
-        {
-            let mut state = self.state.lock().await;
-            *state = new_state.clone();
-        }
-
-        let mut accessory = self.accessory.lock().await;
-
-        let thermostat_service = accessory
-            .get_mut_service(HapType::Thermostat)
-            .context("Thermostat service not found")?;
-
-        if let Some(characteristic) =
-            thermostat_service.get_mut_characteristic(HapType::CurrentTemperature)
-        {
-            characteristic
-                .update_value(Value::from(new_state.temperature))
-                .await?;
-        }
-
-        if let Some(characteristic) =
-            thermostat_service.get_mut_characteristic(HapType::TargetTemperature)
-        {
-            characteristic
-                .update_value(Value::from(new_state.target_temperature))
-                .await?;
-        }
-
-        if let Some(characteristic) =
-            thermostat_service.get_mut_characteristic(HapType::CurrentHeatingCoolingState)
-        {
-            characteristic
-                .update_value(Value::from(new_state.heating_cooling_state as u8))
-                .await?;
-        }
-
-        if let Some(characteristic) =
-            thermostat_service.get_mut_characteristic(HapType::TargetHeatingCoolingState)
-        {
-            characteristic
-                .update_value(Value::from(new_state.target_heating_cooling_state as u8))
-                .await?;
-        }
-
-        // Humidity on the thermostat service (only when no dehumidifier service)
-        if let Some(characteristic) =
-            thermostat_service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
-        {
-            characteristic
-                .update_value(Value::from(new_state.humidity))
-                .await?;
-        }
-
-        if let Some(characteristic) =
-            thermostat_service.get_mut_characteristic(HapType::TargetRelativeHumidity)
-        {
-            characteristic
-                .update_value(Value::from(new_state.target_humidity))
-                .await?;
-        }
-
-        // Update dehumidifier service if present
-        if let Some(hd_service) =
-            accessory.get_mut_service(HapType::HumidifierDehumidifier)
-        {
-            if let Some(characteristic) = hd_service.get_mut_characteristic(HapType::Active) {
-                characteristic
-                    .update_value(Value::from(new_state.dehumidifier_active as u8))
-                    .await?;
-            }
-
-            if let Some(characteristic) = hd_service
-                .get_mut_characteristic(HapType::CurrentHumidifierDehumidifierState)
-            {
-                characteristic
-                    .update_value(Value::from(new_state.dehumidifier_current_state))
-                    .await?;
-            }
-
-            if let Some(characteristic) =
-                hd_service.get_mut_characteristic(HapType::CurrentRelativeHumidity)
-            {
-                characteristic
-                    .update_value(Value::from(new_state.humidity))
-                    .await?;
-            }
-
-            if let Some(characteristic) = hd_service
-                .get_mut_characteristic(HapType::RelativeHumidityDehumidifierThreshold)
-            {
-                characteristic
-                    .update_value(Value::from(new_state.target_humidity))
-                    .await?;
-            }
-        }
-
+        // Hand the update to the worker: it will acquire Accessory.lock() only after
+        // HAP has released it, eliminating the lock-contention freeze.
+        self.command_sender
+            .send(ThermostatCommand::MqttPush(new_state))
+            .await
+            .ok();
         Ok(())
     }
 }
@@ -276,24 +386,13 @@ impl ComelitThermostatAccessory {
 
         info!("Creating thermostat accessory with state: {:?}", state);
 
+        // ── Initial values ──────────────────────────────────────────────────────
+
         accessory
             .thermostat
             .current_temperature
             .set_value(Value::from(state.temperature))
             .await?;
-
-        let arc_state_clone = Arc::clone(&arc_state);
-        accessory
-            .thermostat
-            .current_temperature
-            .on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.temperature))
-                }
-                .boxed()
-            }));
 
         accessory
             .thermostat
@@ -301,37 +400,11 @@ impl ComelitThermostatAccessory {
             .set_value(Value::from(state.target_temperature))
             .await?;
 
-        let arc_state_clone = Arc::clone(&arc_state);
-        accessory
-            .thermostat
-            .target_temperature
-            .on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.target_temperature))
-                }
-                .boxed()
-            }));
-
         accessory
             .thermostat
             .current_heating_cooling_state
             .set_value(Value::from(state.heating_cooling_state as u8))
             .await?;
-
-        let arc_state_clone = Arc::clone(&arc_state);
-        accessory
-            .thermostat
-            .current_heating_cooling_state
-            .on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.heating_cooling_state as u8))
-                }
-                .boxed()
-            }));
 
         accessory
             .thermostat
@@ -339,251 +412,195 @@ impl ComelitThermostatAccessory {
             .set_value(Value::from(state.target_heating_cooling_state as u8))
             .await?;
 
-        let arc_state_clone = Arc::clone(&arc_state);
-        accessory
-            .thermostat
-            .target_heating_cooling_state
-            .on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.target_heating_cooling_state as u8))
-                }
-                .boxed()
-            }));
-
         if let Some(ref mut char) = accessory.thermostat.current_relative_humidity {
             char.set_value(Value::from(state.humidity)).await?;
-            let arc_state_clone = Arc::clone(&arc_state);
-            char.on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.humidity))
-                }
-                .boxed()
-            }));
         }
 
         if let Some(ref mut char) = accessory.thermostat.target_relative_humidity {
             char.set_value(Value::from(state.target_humidity)).await?;
-            let arc_state_clone = Arc::clone(&arc_state);
+        }
+
+        // ── Read callbacks (read from shared state — no accessory lock needed) ──
+
+        {
+            let s = Arc::clone(&arc_state);
+            accessory.thermostat.current_temperature.on_read_async(Some(move || {
+                let s = s.clone();
+                async move { Ok(Some(s.lock().await.temperature)) }.boxed()
+            }));
+        }
+        {
+            let s = Arc::clone(&arc_state);
+            accessory.thermostat.target_temperature.on_read_async(Some(move || {
+                let s = s.clone();
+                async move { Ok(Some(s.lock().await.target_temperature)) }.boxed()
+            }));
+        }
+        {
+            let s = Arc::clone(&arc_state);
+            accessory.thermostat.current_heating_cooling_state.on_read_async(Some(move || {
+                let s = s.clone();
+                async move { Ok(Some(s.lock().await.heating_cooling_state as u8)) }.boxed()
+            }));
+        }
+        {
+            let s = Arc::clone(&arc_state);
+            accessory.thermostat.target_heating_cooling_state.on_read_async(Some(move || {
+                let s = s.clone();
+                async move { Ok(Some(s.lock().await.target_heating_cooling_state as u8)) }.boxed()
+            }));
+        }
+        if let Some(ref mut char) = accessory.thermostat.current_relative_humidity {
+            let s = Arc::clone(&arc_state);
             char.on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.target_humidity))
-                }
-                .boxed()
+                let s = s.clone();
+                async move { Ok(Some(s.lock().await.humidity)) }.boxed()
+            }));
+        }
+        if let Some(ref mut char) = accessory.thermostat.target_relative_humidity {
+            let s = Arc::clone(&arc_state);
+            char.on_read_async(Some(move || {
+                let s = s.clone();
+                async move { Ok(Some(s.lock().await.target_humidity)) }.boxed()
             }));
         }
 
-        let client_ = client.clone();
-        let comelit_id_ = comelit_id.clone();
-        accessory
-            .thermostat
-            .target_temperature
-            .on_update_async(Some(move |_, new: f32| {
-                let client = client_.clone();
-                let comelit_id = comelit_id_.clone();
-                async move {
-                    let temperature = (new * 10.0) as i32;
-                    tokio::spawn(async move {
-                        if let Err(e) = client.set_thermostat_temperature(&comelit_id, temperature).await {
-                            warn!("set_thermostat_temperature failed: {e}");
-                        }
-                    });
-                    Ok(())
-                }
-                .boxed()
-            }));
+        // ── Write callbacks: only send to channel, return immediately ───────────
+
+        let (command_sender, command_receiver) = mpsc::channel::<ThermostatCommand>(32);
+
+        {
+            let tx = command_sender.clone();
+            accessory.thermostat.target_temperature.on_update_async(Some(
+                move |_, new: f32| {
+                    let tx = tx.clone();
+                    async move {
+                        tx.send(ThermostatCommand::SetTargetTemperature(new)).await.ok();
+                        Ok(())
+                    }
+                    .boxed()
+                },
+            ));
+        }
 
         if let Some(ref mut char) = accessory.thermostat.target_relative_humidity {
-            let client_ = client.clone();
-            let comelit_id_ = comelit_id.clone();
+            let tx = command_sender.clone();
             char.on_update_async(Some(move |_prev, new: f32| {
-                let client = client_.clone();
-                let comelit_id = comelit_id_.clone();
+                let tx = tx.clone();
                 async move {
-                    let humidity = (new * 10.0) as i32;
-                    tokio::spawn(async move {
-                        if let Err(e) = client.set_humidity(&comelit_id, humidity).await {
-                            warn!("set_humidity failed: {e}");
-                        }
-                    });
+                    tx.send(ThermostatCommand::SetTargetHumidity(new)).await.ok();
                     Ok(())
                 }
                 .boxed()
             }));
         }
 
-        let client_ = client.clone();
-        let comelit_id_ = comelit_id.clone();
-        let state_ = Arc::clone(&arc_state);
-        accessory
-            .thermostat
-            .target_heating_cooling_state
-            .on_update_async(Some(move |_prev: u8, new: u8| {
-                let client = client_.clone();
-                let comelit_id = comelit_id_.clone();
-                let state = state_.clone();
-                async move {
-                    tokio::spawn(async move {
-                        let prev = state.lock().await.target_heating_cooling_state as u8;
-                        debug!("Target heating cooling state updated from {} to {}", prev, new);
+        {
+            let tx = command_sender.clone();
+            accessory.thermostat.target_heating_cooling_state.on_update_async(Some(
+                move |_prev: u8, new: u8| {
+                    let tx = tx.clone();
+                    async move {
+                        tx.send(ThermostatCommand::SetHvacMode(new)).await.ok();
+                        Ok(())
+                    }
+                    .boxed()
+                },
+            ));
+        }
 
-                        if let Err(e) = client.toggle_thermostat_status(
-                            comelit_id.as_str(),
-                            if TargetHeatingCoolingState::Off as u8 == new {
-                                ClimaOnOff::OffThermo
-                            } else {
-                                ClimaOnOff::OnThermo
-                            },
-                        ).await {
-                            warn!("toggle_thermostat_status failed: {e}");
-                        }
+        // ── Dehumidifier service ────────────────────────────────────────────────
 
-                        if prev == TargetHeatingCoolingState::Auto as u8
-                            && new != TargetHeatingCoolingState::Off as u8
-                        {
-                            if let Err(e) = client.set_thermostat_mode(comelit_id.as_str(), ClimaMode::Manual).await {
-                                warn!("set_thermostat_mode(Manual) failed: {e}");
-                            }
-                        }
-
-                        match TargetHeatingCoolingState::from(new) {
-                            TargetHeatingCoolingState::Auto => {
-                                if let Err(e) = client.set_thermostat_mode(comelit_id.as_str(), ClimaMode::Auto).await {
-                                    warn!("set_thermostat_mode(Auto) failed: {e}");
-                                }
-                            }
-                            TargetHeatingCoolingState::Cool => {
-                                if let Err(e) = client.set_thermostat_season(comelit_id.as_str(), ThermoSeason::Summer).await {
-                                    warn!("set_thermostat_season(Summer) failed: {e}");
-                                }
-                            }
-                            TargetHeatingCoolingState::Heat => {
-                                if let Err(e) = client.set_thermostat_season(comelit_id.as_str(), ThermoSeason::Winter).await {
-                                    warn!("set_thermostat_season(Winter) failed: {e}");
-                                }
-                            }
-                            TargetHeatingCoolingState::Off => {}
-                        }
-                    });
-                    Ok(())
-                }
-                .boxed()
-            }));
-
-        // Wire up dehumidifier service callbacks if present
         if let Some(ref mut hd) = accessory.humidifier_dehumidifier {
-            // Fixed to Dehumidifier mode (2)
             hd.target_humidifier_dehumidifier_state
                 .set_value(Value::from(2u8))
                 .await?;
 
-            hd.active
-                .set_value(Value::from(state.dehumidifier_active as u8))
-                .await?;
+            hd.active.set_value(Value::from(state.dehumidifier_active as u8)).await?;
 
-            let arc_state_clone = Arc::clone(&arc_state);
-            hd.active.on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.dehumidifier_active as u8))
-                }
-                .boxed()
-            }));
+            {
+                let s = Arc::clone(&arc_state);
+                hd.active.on_read_async(Some(move || {
+                    let s = s.clone();
+                    async move { Ok(Some(s.lock().await.dehumidifier_active as u8)) }.boxed()
+                }));
+            }
 
             hd.current_humidifier_dehumidifier_state
                 .set_value(Value::from(state.dehumidifier_current_state))
                 .await?;
 
-            let arc_state_clone = Arc::clone(&arc_state);
-            hd.current_humidifier_dehumidifier_state
-                .on_read_async(Some(move || {
-                    let arc_state_clone = arc_state_clone.clone();
+            {
+                let s = Arc::clone(&arc_state);
+                hd.current_humidifier_dehumidifier_state.on_read_async(Some(move || {
+                    let s = s.clone();
                     async move {
-                        let state = arc_state_clone.lock().await;
-                        Ok(Some(state.dehumidifier_current_state))
+                        Ok(Some(s.lock().await.dehumidifier_current_state))
                     }
                     .boxed()
                 }));
+            }
 
-            hd.current_relative_humidity
-                .set_value(Value::from(state.humidity))
-                .await?;
+            hd.current_relative_humidity.set_value(Value::from(state.humidity)).await?;
 
-            let arc_state_clone = Arc::clone(&arc_state);
-            hd.current_relative_humidity.on_read_async(Some(move || {
-                let arc_state_clone = arc_state_clone.clone();
-                async move {
-                    let state = arc_state_clone.lock().await;
-                    Ok(Some(state.humidity))
-                }
-                .boxed()
-            }));
+            {
+                let s = Arc::clone(&arc_state);
+                hd.current_relative_humidity.on_read_async(Some(move || {
+                    let s = s.clone();
+                    async move { Ok(Some(s.lock().await.humidity)) }.boxed()
+                }));
+            }
 
             if let Some(ref mut threshold) = hd.relative_humidity_dehumidifier_threshold {
-                threshold
-                    .set_value(Value::from(state.target_humidity))
-                    .await?;
+                threshold.set_value(Value::from(state.target_humidity)).await?;
 
-                let arc_state_clone = Arc::clone(&arc_state);
-                threshold.on_read_async(Some(move || {
-                    let arc_state_clone = arc_state_clone.clone();
-                    async move {
-                        let state = arc_state_clone.lock().await;
-                        Ok(Some(state.target_humidity))
-                    }
-                    .boxed()
-                }));
+                {
+                    let s = Arc::clone(&arc_state);
+                    threshold.on_read_async(Some(move || {
+                        let s = s.clone();
+                        async move { Ok(Some(s.lock().await.target_humidity)) }.boxed()
+                    }));
+                }
 
-                let client_ = client.clone();
-                let comelit_id_ = comelit_id.clone();
+                let tx = command_sender.clone();
                 threshold.on_update_async(Some(move |_prev, new: f32| {
-                    let client = client_.clone();
-                    let comelit_id = comelit_id_.clone();
+                    let tx = tx.clone();
                     async move {
-                        let humidity = (new * 10.0) as i32;
-                        tokio::spawn(async move {
-                            if let Err(e) = client.set_humidity(&comelit_id, humidity).await {
-                                warn!("set_humidity (threshold) failed: {e}");
-                            }
-                        });
+                        tx.send(ThermostatCommand::SetDehumidifierThreshold(new)).await.ok();
                         Ok(())
                     }
                     .boxed()
                 }));
             }
 
-            let client_ = client.clone();
-            let comelit_id_ = comelit_id.clone();
-            hd.active.on_update_async(Some(move |_prev: u8, new: u8| {
-                let client = client_.clone();
-                let comelit_id = comelit_id_.clone();
-                async move {
-                    tokio::spawn(async move {
-                        debug!("Dehumidifier active updated to {}", new);
-                        if let Err(e) = client.toggle_thermostat_status(
-                            comelit_id.as_str(),
-                            if new == 1 { ClimaOnOff::OnHumi } else { ClimaOnOff::OffHumi },
-                        ).await {
-                            warn!("toggle_thermostat_status (humi) failed: {e}");
-                        }
-                    });
-                    Ok(())
-                }
-                .boxed()
-            }));
+            {
+                let tx = command_sender.clone();
+                hd.active.on_update_async(Some(move |_prev: u8, new: u8| {
+                    let tx = tx.clone();
+                    async move {
+                        tx.send(ThermostatCommand::SetDehumidifierActive(new)).await.ok();
+                        Ok(())
+                    }
+                    .boxed()
+                }));
+            }
         }
 
+        // ── Spawn worker ────────────────────────────────────────────────────────
+
+        let worker = ThermostatWorker::new(comelit_id.clone(), arc_state.clone(), client);
+        tokio::spawn(worker.run(command_receiver));
+
         let accessory = server.add_accessory(accessory).await?;
+        command_sender
+            .send(ThermostatCommand::SetAccessory(accessory.clone()))
+            .await
+            .ok();
+
         Ok(Self {
             id: data.id.clone(),
             name,
-            state: arc_state,
+            command_sender,
             accessory,
         })
     }
