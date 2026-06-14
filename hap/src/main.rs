@@ -17,6 +17,7 @@ use web::WebConfig;
 use web::state::BridgeState;
 
 #[derive(Parser, Debug)]
+#[command(version)]
 pub struct Params {
     /// User name for the Comelit Bridge (default: "admin")
     #[clap(long, default_value = "admin")]
