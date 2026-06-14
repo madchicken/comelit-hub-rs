@@ -12,7 +12,7 @@ use hap::{
     server::{IpServer, Server},
 };
 use serde_json::Value;
-use tracing::info;
+use tracing::{info, warn};
 
 use crate::accessories::{
     ComelitAccessory,
@@ -173,16 +173,17 @@ impl ComelitDoorAccessory {
                         );
                         return Ok(());
                     }
-                    info!("Door {id} started opening");
-                    client.toggle_device_status(&id, true).await?;
-                    {
-                        let mut state = state.lock().unwrap();
-                        state.target_position = FULLY_OPENED;
-                        state.position_state = DoorPositionState::Opening as u8;
-                    };
-
                     tokio::spawn(async move {
-                        // sleep for the required time
+                        info!("Door {id} started opening");
+                        if let Err(e) = client.toggle_device_status(&id, true).await {
+                            warn!("toggle_device_status for door {id} failed: {e}");
+                            return;
+                        }
+                        {
+                            let mut state = state.lock().unwrap();
+                            state.target_position = FULLY_OPENED;
+                            state.position_state = DoorPositionState::Opening as u8;
+                        }
                         tokio::time::sleep(opening_closing_time).await;
                         {
                             let mut state = state.lock().unwrap();

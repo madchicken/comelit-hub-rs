@@ -12,7 +12,7 @@ use hap::{
     server::{IpServer, Server},
 };
 use serde_json::Value;
-use tracing::{debug, error, info};
+use tracing::{debug, info, warn};
 
 use crate::accessories::comelit_accessory::ComelitAccessory;
 use crate::accessories::state::light::LightState;
@@ -117,14 +117,16 @@ impl ComelitLightbulbAccessory {
                 let current_value = state.on.load(Ordering::Acquire);
                 async move {
                     if new_val != current_value {
-                        if c.toggle_device_status(id.as_str(), new_val).await.is_ok() {
-                            info!(
-                                "Lightbulb {}: power_state characteristic updated from {} to {}",
-                                id, current_val, new_val
-                            );
-                        } else {
-                            error!("Failed to update power state for lightbulb {}", id);
-                        }
+                        tokio::spawn(async move {
+                            if let Err(e) = c.toggle_device_status(id.as_str(), new_val).await {
+                                warn!("toggle_device_status for lightbulb {} failed: {e}", id);
+                            } else {
+                                info!(
+                                    "Lightbulb {}: power_state characteristic updated from {} to {}",
+                                    id, current_val, new_val
+                                );
+                            }
+                        });
                     }
                     Ok(())
                 }
