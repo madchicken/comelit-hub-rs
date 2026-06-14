@@ -705,8 +705,8 @@ impl ComelitClient {
                                         }
                                         _ => {
                                             if request_manager.complete_request(&response) {
-                                                info!(
-                                                    "Request {} completed successfully",
+                                                debug!(
+                                                    "Request {} dispatched to waiter",
                                                     response.seq_id.unwrap()
                                                 );
                                             } else {
