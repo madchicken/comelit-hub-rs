@@ -828,6 +828,10 @@ impl ComelitClient {
         if let Some(session) = self.inner.session.read().await.as_ref() {
             Ok((session.agent_id, session.session_token.clone()))
         } else {
+            // Session is gone — signal the ping task to stop so the bridge
+            // detects a connection loss and restarts automatically.
+            warn!("Session is None in get_session(), stopping request manager to trigger restart");
+            self.inner.request_manager.stop();
             Err(ComelitClientError::InvalidState)
         }
     }
