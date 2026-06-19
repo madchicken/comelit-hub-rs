@@ -5,9 +5,11 @@ pub mod command_response;
 mod ctpp_channel;
 pub mod device;
 mod helper;
+mod stream;
 mod stream_wrapper;
 
 pub use client::{ICONA_BRIDGE_PORT, ViperClient};
+pub use stream::StreamStats;
 
 #[cfg(test)]
 mod test_helper;
