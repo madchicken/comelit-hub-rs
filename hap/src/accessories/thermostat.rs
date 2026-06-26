@@ -189,7 +189,7 @@ impl ThermostatWorker {
             }
 
             ThermostatCommand::SetTargetHumidity(humidity) => {
-                if let Err(e) = self.client.set_humidity(&self.id, humidity).await {
+                if let Err(e) = self.client.set_humidity(&self.id, humidity as i32).await {
                     warn!("set_humidity failed: {e}");
                 }
             }
@@ -279,7 +279,7 @@ impl ThermostatWorker {
             }
 
             ThermostatCommand::SetDehumidifierThreshold(humidity) => {
-                if let Err(e) = self.client.set_humidity(&self.id, humidity).await {
+                if let Err(e) = self.client.set_humidity(&self.id, humidity as i32).await {
                     warn!("set_humidity (threshold) failed: {e}");
                 }
             }
