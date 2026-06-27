@@ -99,6 +99,8 @@ pub const ROOT_ID: &str = "GEN#17#13#1";
 pub enum ComelitClientError {
     #[error("Client is not logged in")]
     InvalidState,
+    #[error("Token expired or rejected by hub")]
+    InvalidToken,
     #[error("Client failed to announce: {0}")]
     Login(String),
     #[error("Client request failed: {0}")]
@@ -124,7 +126,6 @@ pub struct ComelitClient {
     inner: Arc<Inner>,
 }
 
-#[derive(Clone)]
 struct Inner {
     client: Arc<AsyncClient>,
     request_manager: Arc<RequestManager>,
@@ -137,6 +138,7 @@ struct Inner {
     password: String,
     last_action: Arc<DashMap<String, Arc<Mutex<Instant>>>>,
     action_rate_limit: Duration,
+    relogin_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Builder)]
@@ -281,6 +283,7 @@ impl ComelitClient {
                     password: options.password.unwrap_or_default(),
                     last_action: Arc::new(DashMap::new()),
                     action_rate_limit: Duration::from_millis(500),
+                    relogin_lock: tokio::sync::Mutex::new(()),
                 }),
             })
         } else {
@@ -487,17 +490,94 @@ impl ComelitClient {
             sleep(delay).await;
         }
         let session = self.get_session().await?;
-        let _resp = self
+        let old_token = session.1.clone();
+        let result = self
             .send_request(make_action_message(
                 make_id(&self.inner.req_id).await,
                 session.0,
                 session.1.as_str(),
                 device_id,
-                action_type,
+                action_type.clone(),
                 value,
+            ))
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(ComelitClientError::InvalidToken) => {
+                warn!("Invalid token for device {device_id}, re-logging in...");
+                self.re_login(Some(&old_token)).await?;
+                let session = self.get_session().await?;
+                self.send_request(make_action_message(
+                    make_id(&self.inner.req_id).await,
+                    session.0,
+                    session.1.as_str(),
+                    device_id,
+                    action_type,
+                    value,
+                ))
+                .await
+                .map(|_| ())
+                .map_err(|e| ComelitClientError::Generic(e.to_string()))
+            }
+            Err(e) => Err(ComelitClientError::Generic(e.to_string())),
+        }
+    }
+
+    async fn re_login(&self, old_token: Option<&str>) -> Result<(), ComelitClientError> {
+        let _guard = self.inner.relogin_lock.lock().await;
+
+        // Skip if a concurrent call already refreshed the token
+        {
+            let session = self.inner.session.read().await;
+            if let Some(ref s) = *session {
+                if Some(s.session_token.as_str()) != old_token {
+                    info!("Session already refreshed by concurrent re-login, skipping");
+                    return Ok(());
+                }
+            }
+        }
+
+        info!("Re-logging in after invalid/expired token...");
+
+        let announce_resp = self
+            .send_request(make_announce_message(make_id(&self.inner.req_id).await, 0))
+            .await
+            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+
+        let agent_data = serde_json::from_value::<AgentDeviceData>(
+            announce_resp
+                .out_data
+                .into_iter()
+                .next()
+                .ok_or_else(|| ComelitClientError::Login("No agent data in announce response".into()))?,
+        )
+        .map_err(|e| ComelitClientError::Login(format!("Failed to parse agent data: {e}")))?;
+
+        let agent_id = agent_data.agent_id;
+        let login_resp = self
+            .send_request(make_login_message(
+                make_id(&self.inner.req_id).await,
+                self.inner.user.as_str(),
+                self.inner.password.as_str(),
+                agent_id,
             ))
             .await
             .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+
+        let new_token = login_resp
+            .session_token
+            .ok_or_else(|| ComelitClientError::Login("No session token in login response".into()))?;
+
+        self.inner.session.write().await.replace(Session {
+            session_token: new_token.clone(),
+            agent_id,
+        });
+
+        info!("Re-login successful, new session token obtained");
+
+        // Re-subscribe to root device so the hub sends push updates with the new session
+        self.subscribe(ROOT_ID).await?;
+
         Ok(())
     }
 
@@ -785,6 +865,13 @@ impl ComelitClient {
                 match res {
                     Ok(response) => {
                         if response.req_result.unwrap_or(0) != 0 {
+                            if response.message.as_deref()
+                                .map(|m| m.eq_ignore_ascii_case("invalid token"))
+                                .unwrap_or(false)
+                            {
+                                warn!("Hub rejected request {seq_id} with invalid token");
+                                return Err(ComelitClientError::InvalidToken);
+                            }
                             Err(ComelitClientError::Publish(format!(
                                 "Failed to publish request after receiving an error: {response:?}"
                             )))
@@ -828,6 +915,10 @@ impl ComelitClient {
         if let Some(session) = self.inner.session.read().await.as_ref() {
             Ok((session.agent_id, session.session_token.clone()))
         } else {
+            // Session is gone — signal the ping task to stop so the bridge
+            // detects a connection loss and restarts automatically.
+            warn!("Session is None in get_session(), stopping request manager to trigger restart");
+            self.inner.request_manager.stop();
             Err(ComelitClientError::InvalidState)
         }
     }
