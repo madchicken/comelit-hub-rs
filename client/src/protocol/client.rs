@@ -136,7 +136,11 @@ struct Inner {
     mac_address: MacAddress,
     user: String,
     password: String,
-    last_action: Arc<DashMap<String, Arc<Mutex<Instant>>>>,
+    // Global (not per-device) reservation clock: every action sent to the hub,
+    // regardless of target device, is serialized through this single slot so
+    // the physical Comelit bus never sees concurrent commands from different
+    // device workers.
+    last_action: Arc<Mutex<Instant>>,
     action_rate_limit: Duration,
     relogin_lock: tokio::sync::Mutex<()>,
 }
@@ -270,6 +274,7 @@ impl ComelitClient {
             let _event_loop_task =
                 Self::start_event_loop(event_loop, manager_clone, read_topic_clone, observer);
 
+            let action_rate_limit = Duration::from_millis(500);
             Ok(ComelitClient {
                 inner: Arc::new(Inner {
                     client,
@@ -281,8 +286,8 @@ impl ComelitClient {
                     mac_address: hub.mac_address().clone(),
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
-                    last_action: Arc::new(DashMap::new()),
-                    action_rate_limit: Duration::from_millis(500),
+                    last_action: Arc::new(Mutex::new(Instant::now() - action_rate_limit)),
+                    action_rate_limit,
                     relogin_lock: tokio::sync::Mutex::new(()),
                 }),
             })
@@ -473,14 +478,8 @@ impl ComelitClient {
         action_type: ActionType,
         value: i32,
     ) -> Result<(), ComelitClientError> {
-        let device_mutex = {
-            let entry = self.inner.last_action
-                .entry(device_id.to_string())
-                .or_insert_with(|| Arc::new(Mutex::new(Instant::now() - self.inner.action_rate_limit)));
-            entry.clone()
-        };
         let delay = {
-            let mut last = device_mutex.lock().await;
+            let mut last = self.inner.last_action.lock().await;
             let now = Instant::now();
             let next_slot = std::cmp::max(now, *last + self.inner.action_rate_limit);
             *last = next_slot;

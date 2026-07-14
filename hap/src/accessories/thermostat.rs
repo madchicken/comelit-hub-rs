@@ -179,18 +179,40 @@ impl ThermostatWorker {
 
             ThermostatCommand::SetTargetTemperature(new) => {
                 let temperature = (new * 10.0) as i32;
-                if let Err(e) = self
+                match self
                     .client
                     .set_thermostat_temperature(&self.id, temperature)
                     .await
                 {
-                    warn!("set_thermostat_temperature failed: {e}");
+                    Ok(()) => {
+                        // Echo the value we just sent immediately: HomeKit reads
+                        // characteristics back right after writing them, and the
+                        // real confirmation push from the hub can take minutes
+                        // (or never arrive for this specific field). Without this,
+                        // the stale read makes HomeKit think the write failed and
+                        // it retries the whole scene, multiplying bus traffic.
+                        let state = {
+                            let mut guard = self.state.lock().await;
+                            guard.target_temperature = new;
+                            guard.clone()
+                        };
+                        self.update_accessory(&state).await?;
+                    }
+                    Err(e) => warn!("set_thermostat_temperature failed: {e}"),
                 }
             }
 
             ThermostatCommand::SetTargetHumidity(humidity) => {
-                if let Err(e) = self.client.set_humidity(&self.id, humidity as i32).await {
-                    warn!("set_humidity failed: {e}");
+                match self.client.set_humidity(&self.id, humidity as i32).await {
+                    Ok(()) => {
+                        let state = {
+                            let mut guard = self.state.lock().await;
+                            guard.target_humidity = humidity;
+                            guard.clone()
+                        };
+                        self.update_accessory(&state).await?;
+                    }
+                    Err(e) => warn!("set_humidity failed: {e}"),
                 }
             }
 
@@ -201,7 +223,7 @@ impl ThermostatWorker {
                     prev, new
                 );
 
-                if let Err(e) = self
+                let toggle_ok = match self
                     .client
                     .toggle_thermostat_status(
                         &self.id,
@@ -213,8 +235,12 @@ impl ThermostatWorker {
                     )
                     .await
                 {
-                    warn!("toggle_thermostat_status failed: {e}");
-                }
+                    Ok(()) => true,
+                    Err(e) => {
+                        warn!("toggle_thermostat_status failed: {e}");
+                        false
+                    }
+                };
 
                 if prev == TargetHeatingCoolingState::Auto as u8
                     && new != TargetHeatingCoolingState::Off as u8
@@ -258,11 +284,22 @@ impl ThermostatWorker {
                     }
                     TargetHeatingCoolingState::Off => {}
                 }
+
+                if toggle_ok {
+                    let new_state = TargetHeatingCoolingState::from(new);
+                    let state = {
+                        let mut guard = self.state.lock().await;
+                        guard.target_heating_cooling_state = new_state;
+                        guard.heating_cooling_state = new_state;
+                        guard.clone()
+                    };
+                    self.update_accessory(&state).await?;
+                }
             }
 
             ThermostatCommand::SetDehumidifierActive(new) => {
                 debug!("Dehumidifier active updated to {}", new);
-                if let Err(e) = self
+                match self
                     .client
                     .toggle_thermostat_status(
                         &self.id,
@@ -274,13 +311,31 @@ impl ThermostatWorker {
                     )
                     .await
                 {
-                    warn!("toggle_thermostat_status (humi) failed: {e}");
+                    Ok(()) => {
+                        let active = new == 1;
+                        let state = {
+                            let mut guard = self.state.lock().await;
+                            guard.dehumidifier_active = active;
+                            guard.dehumidifier_current_state = if active { 1 } else { 0 };
+                            guard.clone()
+                        };
+                        self.update_accessory(&state).await?;
+                    }
+                    Err(e) => warn!("toggle_thermostat_status (humi) failed: {e}"),
                 }
             }
 
             ThermostatCommand::SetDehumidifierThreshold(humidity) => {
-                if let Err(e) = self.client.set_humidity(&self.id, humidity as i32).await {
-                    warn!("set_humidity (threshold) failed: {e}");
+                match self.client.set_humidity(&self.id, humidity as i32).await {
+                    Ok(()) => {
+                        let state = {
+                            let mut guard = self.state.lock().await;
+                            guard.target_humidity = humidity;
+                            guard.clone()
+                        };
+                        self.update_accessory(&state).await?;
+                    }
+                    Err(e) => warn!("set_humidity (threshold) failed: {e}"),
                 }
             }
 
