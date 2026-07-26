@@ -7,11 +7,11 @@ use crate::web::metrics::Metrics;
 use crate::web::state::{BridgeState, ConnectionStatus, DeviceInfo, DeviceType};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use comelit_client_rs::DeviceStatus;
 use comelit_client_rs::{
     ComelitClient, ComelitClientError, ComelitOptions, DoorbellDeviceData, HomeDeviceData, State,
     StatusUpdate, get_secrets,
 };
+use comelit_client_rs::{DeviceStatus, ObjectSubtype};
 use comelit_client_rs::{DoorDeviceData, ROOT_ID};
 use dashmap::DashMap;
 use hap::BonjourStatusFlag;
@@ -21,7 +21,9 @@ use hap::{
     server::{IpServer, Server},
     storage::{FileStorage, Storage},
 };
-use qrcode_gen::QrCode;
+use qrcode::QrCode;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
@@ -61,12 +63,15 @@ impl StatusUpdate for Updater {
             HomeDeviceData::Light(data) => {
                 Metrics::inc_device_updates("light");
                 if let Some(mut accessory) = self.lights.get_mut(&device.id()) {
-                    let status = match data.status {
-                        Some(DeviceStatus::On) | Some(DeviceStatus::Running) => "on",
-                        _ => "off",
-                    };
+                    let is_on = matches!(
+                        data.status,
+                        Some(DeviceStatus::On) | Some(DeviceStatus::Running)
+                    );
+                    let status = if is_on { "on" } else { "off" };
                     self.bridge_state
                         .update_device_status(&device.id(), status.to_string());
+                    let name = accessory.name.as_str();
+                    Metrics::set_light_status(name, is_on);
                     accessory.update(data).await.unwrap_or_else(|e| {
                         Metrics::inc_device_update_errors("light");
                         error!(
@@ -109,6 +114,27 @@ impl StatusUpdate for Updater {
                 if let Some(mut accessory) = self.thermostats.get_mut(&device.id()) {
                     let status = format!("{}°C", data.temperature.as_deref().unwrap_or("--"));
                     self.bridge_state.update_device_status(&device.id(), status);
+                    let name = accessory.name.as_str();
+                    let is_on = matches!(
+                        data.status,
+                        Some(DeviceStatus::On) | Some(DeviceStatus::Running)
+                    );
+                    let is_dehumidifier = data.sub_type == ObjectSubtype::ClimaDehumidifier;
+                    if is_dehumidifier {
+                        Metrics::set_dehumidifier_status(name, is_on);
+                    } else {
+                        Metrics::set_thermostat_status(name, is_on);
+                    }
+                    if let Some(temp_str) = &data.temperature
+                        && let Ok(raw) = temp_str.parse::<f64>()
+                    {
+                        Metrics::set_thermostat_temperature(name, raw / 10.0);
+                    }
+                    if let Some(humi_str) = &data.humidity
+                        && let Ok(raw) = humi_str.parse::<f64>()
+                    {
+                        Metrics::set_dehumidifier_humidity(name, raw);
+                    }
                     accessory.update(data).await.unwrap_or_else(|e| {
                         Metrics::inc_device_update_errors("thermostat");
                         error!(
@@ -126,9 +152,23 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::Supplier(supplier_device_data) => {
                 info!("Received update for supplier {supplier_device_data:?}");
+                let total_consumption = supplier_device_data
+                    .instant_power
+                    .parse::<f64>()
+                    .unwrap_or(0.0);
+                Metrics::set_total_consumption(total_consumption);
             }
-            HomeDeviceData::Doorbell(_bell_device_data) => {
+            HomeDeviceData::Doorbell(bell_device_data) => {
                 Metrics::inc_device_updates("doorbell");
+                if let Some(mut accessory) = self.doorbells.get_mut(&device.id()) {
+                    accessory
+                        .update(bell_device_data)
+                        .await
+                        .unwrap_or_else(|e| {
+                            Metrics::inc_device_update_errors("doorbell");
+                            error!("Failed to update doorbell {}: {}", device.id(), e);
+                        });
+                }
             }
             HomeDeviceData::Door(door_device_data) => {
                 Metrics::inc_device_updates("door");
@@ -152,6 +192,16 @@ impl StatusUpdate for Updater {
             }
         }
     }
+}
+
+/// Derives a stable, locally-administered MAC address from a device ID string.
+/// Used to give each doorbell's standalone HAP server a persistent identity.
+fn doorbell_mac(device_id: &str) -> [u8; 6] {
+    let mut hasher = DefaultHasher::new();
+    device_id.hash(&mut hasher);
+    let h = hasher.finish().to_le_bytes();
+    // Set locally-administered bit (bit 1), clear multicast bit (bit 0)
+    [(h[0] | 0x02) & 0xFE, h[1], h[2], h[3], h[4], h[5]]
 }
 
 pub async fn start_bridge(
@@ -457,14 +507,60 @@ pub async fn start_bridge(
             }
         }
 
-        for bell in bells {
+        for (bell_index, bell) in bells.iter().enumerate() {
             if settings.mount_doorbells.unwrap_or_default() {
                 i += 1;
                 info!("Adding doorbell device: {} with id {i}", bell.id);
                 let data = client.info::<DoorbellDeviceData>(&bell.id, 1).await?;
-                match ComelitDoorbellAccessory::new(i, data.first().unwrap(), &server).await {
+                let bell_data = data.first().unwrap();
+
+                // Each doorbell needs its own standalone HAP server with VideoDoorbell category.
+                // iOS does not support bridged VIDEO_DOORBELL accessories — this mirrors
+                // Homebridge's publishExternalAccessories() behaviour.
+                let bell_id_sanitized: String = bell.id
+                    .chars()
+                    .map(|c| if c.is_alphanumeric() { c } else { '_' })
+                    .collect();
+                let bell_dir = format!("doorbell_{}", bell_id_sanitized);
+                let mut bell_storage = FileStorage::new(&bell_dir).await?;
+                let bell_config = match bell_storage.load_config().await {
+                    Ok(mut c) => {
+                        c.redetermine_local_ip();
+                        bell_storage.save_config(&c).await?;
+                        c
+                    }
+                    Err(_) => {
+                        let pin = Pin::new(settings.pairing_code).expect("invalid pairing code");
+                        let name = bell_data
+                            .description
+                            .clone()
+                            .unwrap_or_else(|| format!("Doorbell {}", bell_id_sanitized));
+                        let c = Config {
+                            pin,
+                            name,
+                            device_id: MacAddress::from(doorbell_mac(&bell_id_sanitized)),
+                            category: AccessoryCategory::VideoDoorbell,
+                            port: 32001 + bell_index as u16,
+                            ..Default::default()
+                        };
+                        bell_storage.save_config(&c).await?;
+                        c
+                    }
+                };
+
+                let bell_pin = bell_config.pin.to_string();
+                let bell_server = IpServer::new(bell_config, bell_storage).await?;
+
+                match ComelitDoorbellAccessory::new(i, bell_data, &bell_server).await {
                     Ok(accessory) => {
-                        info!("Doorbell {} added to the hub", accessory.get_comelit_id());
+                        info!(
+                            "Doorbell {} added as standalone HAP accessory",
+                            accessory.get_comelit_id()
+                        );
+                        info!(
+                            "Pair doorbell {} using pin code {bell_pin}",
+                            accessory.get_comelit_id()
+                        );
                         client.subscribe(&bell.id).await?;
 
                         // Register device in bridge state
@@ -479,6 +575,14 @@ pub async fn start_bridge(
                         updater
                             .doorbells
                             .insert(accessory.get_comelit_id().to_string(), accessory);
+
+                        // Spawn the doorbell's standalone server as a background task
+                        let bell_id = bell.id.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = bell_server.run_handle().await {
+                                error!("Doorbell {} server error: {}", bell_id, e);
+                            }
+                        });
                     }
                     Err(err) => error!("Failed to add doorbell device: {}", err),
                 };
@@ -552,39 +656,32 @@ pub async fn start_bridge(
 
         tokio::select! {
             _ = monitored_ping_task => {
-                info!("Ping task exited, gracefully shutting down");
+                warn!("Ping task exited: lost connection to Comelit hub");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Err(anyhow::anyhow!("Lost connection to Comelit hub (ping failure)"))
             }
             _ = handle => {
+                warn!("HAP server exited unexpectedly");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Err(anyhow::anyhow!("HAP server exited unexpectedly"))
             }
             _ = ctrl_c => {
                 info!("signal received, starting graceful shutdown");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Ok(())
             },
             _ = terminate => {
                 info!("signal received, starting graceful shutdown");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
                 Metrics::set_connected(false);
-                client
-                    .disconnect()
-                    .await
-                    .context("Failed to disconnect client")
+                let _ = client.disconnect().await;
+                Ok(())
             },
         }
     } else {

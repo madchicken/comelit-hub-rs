@@ -59,7 +59,7 @@ impl From<ObjectType> for i32 {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(into = "i32", from = "i32")]
 pub enum ObjectSubtype {
     Unknown = -1,
@@ -654,12 +654,17 @@ pub struct ThermostatDeviceData {
     pub humidity: Option<String>,
     #[serde(rename = "soglia_attiva_umi")]
     pub humi_active_threshold: Option<String>,
+    pub auto_man_umi: Option<ClimaMode>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SupplierDeviceData {
-    #[serde(flatten)]
-    data: DeviceData,
+    pub id: String,
+    pub r#type: ObjectType,
+    pub sub_type: ObjectSubtype,
+    pub status: Option<DeviceStatus>,
+    #[serde(rename = "descrizione")]
+    pub description: Option<String>,
     label_value: Option<String>,
     label_price: Option<String>,
     prod: Option<String>,
@@ -670,7 +675,7 @@ pub struct SupplierDeviceData {
     compare: Option<String>,
     #[serde(rename = "groupOrder")]
     group_order: Option<String>,
-    instant_power: String,
+    pub instant_power: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -727,7 +732,7 @@ impl HomeDeviceData {
             HomeDeviceData::Outlet(o) => o.data.id.clone(),
             HomeDeviceData::Irrigation(o) => o.data.id.clone(),
             HomeDeviceData::Thermostat(o) => o.id.clone(),
-            HomeDeviceData::Supplier(o) => o.data.id.clone(),
+            HomeDeviceData::Supplier(o) => o.id.clone(),
             HomeDeviceData::Doorbell(o) => o.id.clone(),
             HomeDeviceData::Door(o) => o.id.clone(),
         }
@@ -745,7 +750,7 @@ impl HomeDeviceData {
                 o.data.description.clone().unwrap_or(o.data.id.clone())
             }
             HomeDeviceData::Thermostat(o) => o.description.clone().unwrap_or(o.id.clone()),
-            HomeDeviceData::Supplier(o) => o.data.description.clone().unwrap_or(o.data.id.clone()),
+            HomeDeviceData::Supplier(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Doorbell(o) => o.description.clone().unwrap_or(o.id.clone()),
             HomeDeviceData::Door(o) => o.description.clone().unwrap_or(o.id.clone()),
         }

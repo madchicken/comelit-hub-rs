@@ -17,6 +17,7 @@ use web::WebConfig;
 use web::state::BridgeState;
 
 #[derive(Parser, Debug)]
+#[command(version)]
 pub struct Params {
     /// User name for the Comelit Bridge (default: "admin")
     #[clap(long, default_value = "admin")]
@@ -67,19 +68,7 @@ async fn main() -> Result<()> {
     // Set up logging based on whether a log directory is provided
     let _log_guard = setup_logging(&params)?;
 
-    // Create shared bridge state
-    let bridge_state = BridgeState::new();
-
-    // Start web server if enabled
-    let web_config = WebConfig {
-        port: params.web_port,
-        enabled: params.web_enabled,
-    };
-
-    if web_config.enabled {
-        web::start_web_server(web_config, bridge_state.clone()).await?;
-    }
-
+    // Load settings before starting the web server so prometheus_url is available
     let settings = if let Some(path) = params.settings {
         if let Ok(read_to_string) = std::fs::read_to_string(path) {
             serde_json::from_str(&read_to_string)?
@@ -91,18 +80,43 @@ async fn main() -> Result<()> {
         Settings::default()
     };
 
-    start_bridge(
-        params.user.as_str(),
-        params.password.as_str(),
-        params.host,
-        params.port,
-        settings,
-        bridge_state,
-    )
-    .await?;
+    // Create shared bridge state
+    let bridge_state = BridgeState::new();
+
+    // Start web server if enabled
+    let web_config = WebConfig {
+        port: params.web_port,
+        enabled: params.web_enabled,
+        prometheus_url: settings.prometheus_url.clone(),
+        prometheus_token: settings.prometheus_token.clone(),
+    };
+
+    if web_config.enabled {
+        web::start_web_server(web_config, bridge_state.clone()).await?;
+    }
+
+    loop {
+        match start_bridge(
+            params.user.as_str(),
+            params.password.as_str(),
+            params.host.clone(),
+            params.port,
+            settings.clone(),
+            bridge_state.clone(),
+        )
+        .await
+        {
+            Ok(_) => break,
+            Err(e) => {
+                warn!("Bridge exited with error: {e:#}, reconnecting in 10s...");
+                tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+            }
+        }
+    }
 
     info!("Bridge ended");
-    exit(0); // force exit
+    drop(_log_guard);
+    exit(0);
 }
 
 fn setup_logging(params: &Params) -> Result<LogGuard> {

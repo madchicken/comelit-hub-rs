@@ -21,9 +21,9 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::{interval, sleep};
+use tokio::time::{Instant, sleep};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -99,6 +99,8 @@ pub const ROOT_ID: &str = "GEN#17#13#1";
 pub enum ComelitClientError {
     #[error("Client is not logged in")]
     InvalidState,
+    #[error("Token expired or rejected by hub")]
+    InvalidToken,
     #[error("Client failed to announce: {0}")]
     Login(String),
     #[error("Client request failed: {0}")]
@@ -124,7 +126,6 @@ pub struct ComelitClient {
     inner: Arc<Inner>,
 }
 
-#[derive(Clone)]
 struct Inner {
     client: Arc<AsyncClient>,
     request_manager: Arc<RequestManager>,
@@ -135,6 +136,13 @@ struct Inner {
     mac_address: MacAddress,
     user: String,
     password: String,
+    // Global (not per-device) reservation clock: every action sent to the hub,
+    // regardless of target device, is serialized through this single slot so
+    // the physical Comelit bus never sees concurrent commands from different
+    // device workers.
+    last_action: Arc<Mutex<Instant>>,
+    action_rate_limit: Duration,
+    relogin_lock: tokio::sync::Mutex<()>,
 }
 
 #[derive(Builder)]
@@ -266,6 +274,7 @@ impl ComelitClient {
             let _event_loop_task =
                 Self::start_event_loop(event_loop, manager_clone, read_topic_clone, observer);
 
+            let action_rate_limit = Duration::from_millis(500);
             Ok(ComelitClient {
                 inner: Arc::new(Inner {
                     client,
@@ -277,6 +286,9 @@ impl ComelitClient {
                     mac_address: hub.mac_address().clone(),
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
+                    last_action: Arc::new(Mutex::new(Instant::now() - action_rate_limit)),
+                    action_rate_limit,
+                    relogin_lock: tokio::sync::Mutex::new(()),
                 }),
             })
         } else {
@@ -466,18 +478,105 @@ impl ComelitClient {
         action_type: ActionType,
         value: i32,
     ) -> Result<(), ComelitClientError> {
+        let delay = {
+            let mut last = self.inner.last_action.lock().await;
+            let now = Instant::now();
+            let next_slot = std::cmp::max(now, *last + self.inner.action_rate_limit);
+            *last = next_slot;
+            next_slot.duration_since(now)
+        };
+        if !delay.is_zero() {
+            sleep(delay).await;
+        }
         let session = self.get_session().await?;
-        let _resp = self
+        let old_token = session.1.clone();
+        let result = self
             .send_request(make_action_message(
                 make_id(&self.inner.req_id).await,
                 session.0,
                 session.1.as_str(),
                 device_id,
-                action_type,
+                action_type.clone(),
                 value,
+            ))
+            .await;
+        match result {
+            Ok(_) => Ok(()),
+            Err(ComelitClientError::InvalidToken) => {
+                warn!("Invalid token for device {device_id}, re-logging in...");
+                self.re_login(Some(&old_token)).await?;
+                let session = self.get_session().await?;
+                self.send_request(make_action_message(
+                    make_id(&self.inner.req_id).await,
+                    session.0,
+                    session.1.as_str(),
+                    device_id,
+                    action_type,
+                    value,
+                ))
+                .await
+                .map(|_| ())
+                .map_err(|e| ComelitClientError::Generic(e.to_string()))
+            }
+            Err(e) => Err(ComelitClientError::Generic(e.to_string())),
+        }
+    }
+
+    async fn re_login(&self, old_token: Option<&str>) -> Result<(), ComelitClientError> {
+        let _guard = self.inner.relogin_lock.lock().await;
+
+        // Skip if a concurrent call already refreshed the token
+        {
+            let session = self.inner.session.read().await;
+            if let Some(ref s) = *session {
+                if Some(s.session_token.as_str()) != old_token {
+                    info!("Session already refreshed by concurrent re-login, skipping");
+                    return Ok(());
+                }
+            }
+        }
+
+        info!("Re-logging in after invalid/expired token...");
+
+        let announce_resp = self
+            .send_request(make_announce_message(make_id(&self.inner.req_id).await, 0))
+            .await
+            .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+
+        let agent_data = serde_json::from_value::<AgentDeviceData>(
+            announce_resp
+                .out_data
+                .into_iter()
+                .next()
+                .ok_or_else(|| ComelitClientError::Login("No agent data in announce response".into()))?,
+        )
+        .map_err(|e| ComelitClientError::Login(format!("Failed to parse agent data: {e}")))?;
+
+        let agent_id = agent_data.agent_id;
+        let login_resp = self
+            .send_request(make_login_message(
+                make_id(&self.inner.req_id).await,
+                self.inner.user.as_str(),
+                self.inner.password.as_str(),
+                agent_id,
             ))
             .await
             .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
+
+        let new_token = login_resp
+            .session_token
+            .ok_or_else(|| ComelitClientError::Login("No session token in login response".into()))?;
+
+        self.inner.session.write().await.replace(Session {
+            session_token: new_token.clone(),
+            agent_id,
+        });
+
+        info!("Re-login successful, new session token obtained");
+
+        // Re-subscribe to root device so the hub sends push updates with the new session
+        self.subscribe(ROOT_ID).await?;
+
         Ok(())
     }
 
@@ -561,24 +660,20 @@ impl ComelitClient {
                         let session = state.read().await.clone();
                         match session {
                             Some(session) => {
-                                // Send ping message. We don't use the manager, so the responses will be just ignored
+                                // Send ping message.
                                 info!("Sending ping message");
                                 let id = req_id.fetch_add(1, Ordering::Acquire);
                                 let payload = make_ping_message(id, session.agent_id, session.session_token.as_str());
+                                // Register BEFORE publishing to avoid the race where the hub
+                                // responds before the receiver is registered in the pending map.
+                                let receiver = manager.add_request(id);
                                 match client.publish(topic.as_str(), QoS::AtMostOnce, false, serde_json::to_string(&payload).unwrap()).await {
                                     Ok(_) => {
                                         debug!("Ping message sent successfully");
-                                        let receiver = manager.add_request(id);
-                                        let mut res_interval = tokio::time::interval(Duration::from_secs(5));
-                                        res_interval.tick().await; // first tick is immediate
                                         tokio::select! {
-                                            _ = res_interval.tick() => {
+                                            _ = sleep(Duration::from_secs(5)) => {
                                                 error!("Ping response timed out");
                                                 failed_ping_requests += 1;
-                                                if failed_ping_requests >= 3 {
-                                                    state.write().await.take(); // invalidate session
-                                                    failed_ping_requests = 0;
-                                                }
                                             }
                                             res = receiver => {
                                                 match res {
@@ -588,16 +683,25 @@ impl ComelitClient {
                                                                 warn!("Ping response returned error code: {}", code);
                                                                 state.write().await.take(); // invalidate session
                                                             },
-                                                            _ => {}
+                                                            _ => {
+                                                                failed_ping_requests = 0;
+                                                            }
                                                         }
                                                         info!("Ping response received: {:?}", response);
                                                     },
-                                                    Err(e) => error!("Failed to receive ping response: {:?}", e),
+                                                    Err(e) => {
+                                                        error!("Failed to receive ping response: {:?}", e);
+                                                        failed_ping_requests += 1;
+                                                    }
                                                 }
                                             }
                                         }
                                     },
-                                    Err(e) => error!("Failed to send ping message: {:?}", e),
+                                    Err(e) => {
+                                        error!("Failed to send ping message: {:?}", e);
+                                        manager.cancel_request(id);
+                                        failed_ping_requests += 1;
+                                    }
                                 }
                             },
                             _ => {
@@ -607,7 +711,10 @@ impl ComelitClient {
                         }
                     }
                 }
-                interval.tick().await;
+                if failed_ping_requests >= 3 {
+                    state.write().await.take(); // invalidate session
+                    break;
+                }
                 if !manager.is_running() {
                     info!("Stopping ping thread, request manager is not running");
                     break;
@@ -662,21 +769,23 @@ impl ComelitClient {
                                                         response.out_data.first().unwrap().clone(),
                                                         2,
                                                     );
-                                                    let device = vec.first().unwrap();
+                                                    let device = vec.first().unwrap().clone();
                                                     info!(
                                                         "Received new data from server: {:?}",
                                                         device
                                                     );
-                                                    if let Some(observer) = &observer {
-                                                        observer.status_update(device).await;
+                                                    if let Some(observer) = observer.clone() {
+                                                        tokio::spawn(async move {
+                                                            observer.status_update(&device).await;
+                                                        });
                                                     }
                                                 }
                                             }
                                         }
                                         _ => {
                                             if request_manager.complete_request(&response) {
-                                                info!(
-                                                    "Request {} completed successfully",
+                                                debug!(
+                                                    "Request {} dispatched to waiter",
                                                     response.seq_id.unwrap()
                                                 );
                                             } else {
@@ -727,46 +836,53 @@ impl ComelitClient {
         &self,
         payload: MqttMessage,
     ) -> Result<MqttResponseMessage, ComelitClientError> {
-        info!("Request sent successfully");
-        let request_manager = self.inner.request_manager.clone();
-        let mqtt_client = self.inner.client.clone();
-        let write_topic = self.inner.write_topic.clone();
-        let receiver_task = tokio::spawn(async move {
-            match Self::send_mqtt_message(mqtt_client, &write_topic, payload.clone()).await {
-                Ok(_) => debug!("Request {} published successfully", payload.seq_id),
-                Err(e) => return Err(e),
-            }
-            // Register the request to receive the response
-            let response_receiver = request_manager.add_request(payload.seq_id);
+        let seq_id = payload.seq_id;
 
-            // Wait for the response
-            debug!("Waiting for response for request {}", payload.seq_id);
-            match response_receiver.await {
-                Ok(response) => {
-                    if response.req_result.unwrap() != 0 {
-                        Err(ComelitClientError::Publish(format!(
-                            "Failed to publish request after receiving an error: {response:?}"
-                        )))
-                    } else {
-                        debug!("Received response for request {}", payload.seq_id);
-                        Ok(response)
-                    }
-                }
-                Err(e) => Err(ComelitClientError::ReadError(format!(
-                    "Failed to receive response: {e}"
-                ))),
-            }
-        });
+        // Register BEFORE publishing: if the hub responds before add_request the
+        // response would arrive in the event loop, find no pending entry, and be
+        // silently discarded — leaving the caller waiting forever.
+        let response_receiver = self.inner.request_manager.add_request(seq_id);
 
-        let mut interval = interval(Duration::from_secs(5));
-        interval.tick().await; // first tick is immediate
+        if let Err(e) = Self::send_mqtt_message(
+            self.inner.client.clone(),
+            &self.inner.write_topic,
+            payload,
+        )
+        .await
+        {
+            self.inner.request_manager.cancel_request(seq_id);
+            return Err(e);
+        }
+        info!("Request {} sent successfully", seq_id);
+
         tokio::select! {
-            _ = interval.tick() => {
+            _ = sleep(Duration::from_secs(5)) => {
                 error!("Request timed out");
                 Err(ComelitClientError::ReadError("Request timed out".to_string()))
             }
-            res = receiver_task => {
-                res.unwrap_or_else(|e| Err(ComelitClientError::ReadError(format!("Failed to receive response: {e}"))))
+            res = response_receiver => {
+                match res {
+                    Ok(response) => {
+                        if response.req_result.unwrap_or(0) != 0 {
+                            if response.message.as_deref()
+                                .map(|m| m.eq_ignore_ascii_case("invalid token"))
+                                .unwrap_or(false)
+                            {
+                                warn!("Hub rejected request {seq_id} with invalid token");
+                                return Err(ComelitClientError::InvalidToken);
+                            }
+                            Err(ComelitClientError::Publish(format!(
+                                "Failed to publish request after receiving an error: {response:?}"
+                            )))
+                        } else {
+                            info!("Request {} completed successfully", seq_id);
+                            Ok(response)
+                        }
+                    }
+                    Err(e) => Err(ComelitClientError::ReadError(format!(
+                        "Failed to receive response: {e}"
+                    ))),
+                }
             }
         }
     }
@@ -779,7 +895,7 @@ impl ComelitClient {
         mqtt_client
             .publish(
                 write_topic,
-                QoS::ExactlyOnce,
+                QoS::AtLeastOnce,
                 false,
                 serde_json::to_string(&payload)
                     .map(|json| {
@@ -795,11 +911,38 @@ impl ComelitClient {
     }
 
     async fn get_session(&self) -> Result<(u32, String), ComelitClientError> {
-        if let Some(session) = self.inner.session.read().await.as_ref() {
-            Ok((session.agent_id, session.session_token.clone()))
-        } else {
-            Err(ComelitClientError::InvalidState)
+        let cached = self
+            .inner
+            .session
+            .read()
+            .await
+            .as_ref()
+            .map(|s| (s.agent_id, s.session_token.clone()));
+        if let Some(session) = cached {
+            return Ok(session);
         }
+
+        // Session was invalidated (e.g. by the ping task) since the last call.
+        // Try to recover it with a re-login before giving up — the event loop
+        // is still running at this point, so the round-trip can complete.
+        warn!("Session is None in get_session(), attempting re-login before restart");
+        if Box::pin(self.re_login(None)).await.is_ok()
+            && let Some(session) = self
+                .inner
+                .session
+                .read()
+                .await
+                .as_ref()
+                .map(|s| (s.agent_id, s.session_token.clone()))
+        {
+            return Ok(session);
+        }
+
+        // Re-login failed too — signal the ping task to stop so the bridge
+        // detects a connection loss and restarts automatically.
+        warn!("Re-login failed, stopping request manager to trigger restart");
+        self.inner.request_manager.stop();
+        Err(ComelitClientError::InvalidState)
     }
 }
 

@@ -69,6 +69,10 @@ impl RequestManager {
         }
     }
 
+    pub fn cancel_request(&self, id: u32) {
+        self.pending.remove(&id);
+    }
+
     pub fn complete_request(&self, response: &MqttResponseMessage) -> bool {
         debug!("Complete request: {response:?}");
         if let Some(seq_id) = response.seq_id
