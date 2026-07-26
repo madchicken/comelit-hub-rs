@@ -1,3 +1,4 @@
+mod audio_video;
 mod channel;
 mod client;
 pub mod command;
@@ -5,7 +6,11 @@ pub mod command_response;
 mod ctpp_channel;
 pub mod device;
 mod helper;
+mod protocol;
+mod rtpc_channel;
 mod stream_wrapper;
+mod udp_stream_wrapper;
+mod udpm_channel;
 
 pub use client::{ICONA_BRIDGE_PORT, ViperClient};
 
@@ -20,6 +25,7 @@ type JSONResult<T> = Result<T, ViperError>;
 pub enum ViperError {
     IOError(io::Error),
     JSONError(serde_json::Error),
+    Generic(String),
 }
 
 impl Display for ViperError {
@@ -27,6 +33,7 @@ impl Display for ViperError {
         match self {
             ViperError::IOError(io_error) => write!(f, "{}", io_error),
             ViperError::JSONError(json_error) => write!(f, "{}", json_error),
+            ViperError::Generic(generic_error) => write!(f, "{}", generic_error),
         }
     }
 }

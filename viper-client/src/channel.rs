@@ -2,19 +2,21 @@ use crate::command::{Command, CommandKind};
 
 pub struct Channel {
     command: String,
-    control: [u8; 2]
+    control: [u8; 2],
+    message_seq: u8,
 }
 
 impl Channel {
     pub fn new(control: &[u8; 2], command: &'static str) -> Channel {
         Channel {
             control: *control,
-            command: command.to_string()
+            command: command.to_string(),
+            message_seq: 0,
         }
     }
 
     pub fn open(&self) -> Vec<u8> {
-        Command::channel(&self.command, &self.control, None)
+        Command::channel(&self.command, &self.control, None, Some(self.message_seq))
     }
 
     pub fn close(&self) -> Vec<u8> {
