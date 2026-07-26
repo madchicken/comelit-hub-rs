@@ -46,7 +46,7 @@ impl MessageType {
 /// Custom protocol header (8 bytes)
 ///
 /// Structure:
-/// ```
+/// ```text
 /// 0x00 0x06                    - Protocol magic
 /// [MessageType: 2 bytes]       - Message type
 /// [SessionID: 2 bytes]         - Session identifier
@@ -219,7 +219,7 @@ impl RtpHeader {
 /// TCP Control packet - "RTPC" handshake
 ///
 /// Example from your capture:
-/// ```
+/// ```text
 /// 00 06 0f 00 00 00 00 00 cd ab 01 00 07 00 00 00 52 54 50 43 49 75 01
 /// ```
 #[derive(Debug, Clone)]
@@ -267,11 +267,11 @@ impl TcpControlPacket {
 /// UDP Init packet - Session handshake
 ///
 /// Client sends:
-/// ```
+/// ```text
 /// 00 06 06 00 48 75 00 00 3a 12 00 67 00 80
 /// ```
 /// Server responds:
-/// ```
+/// ```text
 /// 00 06 06 00 48 75 00 00 3a 12 01 69 01 80 00 00 00 00
 /// ```
 #[derive(Debug, Clone)]
