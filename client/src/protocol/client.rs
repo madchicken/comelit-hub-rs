@@ -911,15 +911,38 @@ impl ComelitClient {
     }
 
     async fn get_session(&self) -> Result<(u32, String), ComelitClientError> {
-        if let Some(session) = self.inner.session.read().await.as_ref() {
-            Ok((session.agent_id, session.session_token.clone()))
-        } else {
-            // Session is gone — signal the ping task to stop so the bridge
-            // detects a connection loss and restarts automatically.
-            warn!("Session is None in get_session(), stopping request manager to trigger restart");
-            self.inner.request_manager.stop();
-            Err(ComelitClientError::InvalidState)
+        let cached = self
+            .inner
+            .session
+            .read()
+            .await
+            .as_ref()
+            .map(|s| (s.agent_id, s.session_token.clone()));
+        if let Some(session) = cached {
+            return Ok(session);
         }
+
+        // Session was invalidated (e.g. by the ping task) since the last call.
+        // Try to recover it with a re-login before giving up — the event loop
+        // is still running at this point, so the round-trip can complete.
+        warn!("Session is None in get_session(), attempting re-login before restart");
+        if Box::pin(self.re_login(None)).await.is_ok()
+            && let Some(session) = self
+                .inner
+                .session
+                .read()
+                .await
+                .as_ref()
+                .map(|s| (s.agent_id, s.session_token.clone()))
+        {
+            return Ok(session);
+        }
+
+        // Re-login failed too — signal the ping task to stop so the bridge
+        // detects a connection loss and restarts automatically.
+        warn!("Re-login failed, stopping request manager to trigger restart");
+        self.inner.request_manager.stop();
+        Err(ComelitClientError::InvalidState)
     }
 }
 
