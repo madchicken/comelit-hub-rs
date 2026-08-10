@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{path::Path, time::Duration};
 
 use serde::Deserialize;
 use tracing::debug;
@@ -12,6 +12,7 @@ use crate::{
     },
     ctpp_channel::CTPPChannel,
     helper::Helper,
+    stream::{record_h264_stream, StreamStats},
     stream_wrapper::StreamWrapper,
 };
 
@@ -98,6 +99,19 @@ impl ViperClient {
         json_response
     }
 
+    pub fn subproxy_registration(&mut self, vip: &VipResponse) -> JSONResult<serde_json::Value> {
+        let sreg = CommandKind::SubproxyRegistration {
+            apt_address: vip.apt_address.clone(),
+            apt_subaddress: vip.apt_subaddress,
+        };
+        let uaut_channel = self.channel("UAUT");
+        self.stream.execute(&uaut_channel.open())?;
+        let sreg_bytes = self.stream.execute(&uaut_channel.com(sreg))?;
+        let json_response = Self::json(&sreg_bytes);
+        self.stream.execute(&uaut_channel.close())?;
+        json_response
+    }
+
     pub fn info(&mut self) -> JSONResult<InfoResponse> {
         let info = CommandKind::INFO;
         let info_channel = self.channel("INFO");
@@ -178,6 +192,19 @@ impl ViperClient {
 
     pub fn shutdown(&mut self) {
         self.stream.die();
+    }
+
+    pub fn record_stream<P: AsRef<Path>>(
+        &mut self,
+        token: &str,
+        output_path: P,
+        duration: Duration,
+    ) -> Result<StreamStats, ViperError> {
+        self.info()?;
+        self.authorize(token)?;
+        let config = self.configuration("all")?;
+        let _ = self.subproxy_registration(&config.vip);
+        Ok(record_h264_stream(&mut self.stream, &config, output_path, duration)?)
     }
 
     // Move the control byte 1 ahead

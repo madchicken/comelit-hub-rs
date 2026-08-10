@@ -6,6 +6,10 @@ const CLOSE: [u8; 8] = [0xef, 0x01, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00];
 pub enum CommandKind {
     UAUT(String),
     UCFG(String),
+    SubproxyRegistration {
+        apt_address: String,
+        apt_subaddress: u16,
+    },
     RemoveAllUsers(String),
     ActivateUser(String),
     INFO,
@@ -52,6 +56,16 @@ struct UCFG {
 
 #[derive(Serialize)]
 #[serde(rename_all = "kebab-case")]
+struct SubproxyRegistration {
+    #[serde(flatten)]
+    base: Base,
+    apt_address: String,
+    apt_subaddress: u16,
+    extra_bytes: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
 struct RemoveAllUsers {
     #[serde(flatten)]
     base: Base,
@@ -86,6 +100,20 @@ impl Command {
                 };
 
                 serde_json::to_string(&ucfg).unwrap()
+            }
+
+            CommandKind::SubproxyRegistration {
+                apt_address,
+                apt_subaddress,
+            } => {
+                let sreg = SubproxyRegistration {
+                    base: Base::request("subproxy-registration", 3),
+                    apt_address,
+                    apt_subaddress,
+                    extra_bytes: String::from("android"),
+                };
+
+                serde_json::to_string(&sreg).unwrap()
             }
 
             CommandKind::INFO => {
