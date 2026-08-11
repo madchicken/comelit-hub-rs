@@ -21,6 +21,7 @@ use crate::accessories::ComelitAccessory;
 use crate::accessories::state::window_covering::{
     FULLY_CLOSED, FULLY_OPENED, PositionState, WindowCoveringState,
 };
+use crate::web::metrics::Metrics;
 use comelit_client_rs::{ComelitClient, ComelitClientTrait, WindowCoveringDeviceData};
 
 #[derive(Clone, Copy)]
@@ -645,6 +646,7 @@ impl ComelitWindowCoveringAccessory {
                 let id_ = id_.clone();
                 let state_ = state_.clone();
                 async move {
+                    Metrics::inc_hap_requests();
                     debug!("Window covering POSITION STATE read {}", id_);
                     let state = state_.lock().await;
                     Ok(Some(state.position_state as u8))
@@ -661,6 +663,7 @@ impl ComelitWindowCoveringAccessory {
                 let id_ = id_.to_string();
                 let state_ = state_.clone();
                 async move {
+                    Metrics::inc_hap_requests();
                     debug!("Window covering POSITION read {}", id_);
                     let state = state_.lock().await;
                     Ok(Some(state.current_position))
@@ -677,6 +680,7 @@ impl ComelitWindowCoveringAccessory {
                 let id_ = id_.to_string();
                 let state_ = state_.clone();
                 async move {
+                    Metrics::inc_hap_requests();
                     debug!("Window covering TARGET POSITION read {}", id_);
                     let state = state_.lock().await;
                     Ok(Some(state.target_position))
@@ -695,6 +699,7 @@ impl ComelitWindowCoveringAccessory {
             .on_update_async(Some(move |old_pos, new_pos| {
                 let command_sender = command_sender.clone();
                 async move {
+                    Metrics::inc_hap_requests();
                     info!(
                         "Window covering target position update: {} -> {}",
                         old_pos, new_pos

@@ -29,6 +29,7 @@ use crate::accessories::{
     ComelitAccessory,
     state::thermostat::{TargetHeatingCoolingState, ThermostatState},
 };
+use crate::web::metrics::Metrics;
 use comelit_client_rs::{
     ClimaMode, ClimaOnOff, ComelitClient, ObjectSubtype, ThermoSeason, ThermostatDeviceData,
 };
@@ -503,7 +504,11 @@ impl ComelitThermostatAccessory {
                 .current_temperature
                 .on_read_async(Some(move || {
                     let s = s.clone();
-                    async move { Ok(Some(s.lock().await.temperature)) }.boxed()
+                    async move {
+                        Metrics::inc_hap_requests();
+                        Ok(Some(s.lock().await.temperature))
+                    }
+                    .boxed()
                 }));
         }
         {
@@ -513,7 +518,11 @@ impl ComelitThermostatAccessory {
                 .target_temperature
                 .on_read_async(Some(move || {
                     let s = s.clone();
-                    async move { Ok(Some(s.lock().await.target_temperature)) }.boxed()
+                    async move {
+                        Metrics::inc_hap_requests();
+                        Ok(Some(s.lock().await.target_temperature))
+                    }
+                    .boxed()
                 }));
         }
         {
@@ -523,7 +532,11 @@ impl ComelitThermostatAccessory {
                 .current_heating_cooling_state
                 .on_read_async(Some(move || {
                     let s = s.clone();
-                    async move { Ok(Some(s.lock().await.heating_cooling_state as u8)) }.boxed()
+                    async move {
+                        Metrics::inc_hap_requests();
+                        Ok(Some(s.lock().await.heating_cooling_state as u8))
+                    }
+                    .boxed()
                 }));
         }
         {
@@ -533,22 +546,33 @@ impl ComelitThermostatAccessory {
                 .target_heating_cooling_state
                 .on_read_async(Some(move || {
                     let s = s.clone();
-                    async move { Ok(Some(s.lock().await.target_heating_cooling_state as u8)) }
-                        .boxed()
+                    async move {
+                        Metrics::inc_hap_requests();
+                        Ok(Some(s.lock().await.target_heating_cooling_state as u8))
+                    }
+                    .boxed()
                 }));
         }
         if let Some(ref mut char) = accessory.thermostat.current_relative_humidity {
             let s = Arc::clone(&arc_state);
             char.on_read_async(Some(move || {
                 let s = s.clone();
-                async move { Ok(Some(s.lock().await.humidity)) }.boxed()
+                async move {
+                    Metrics::inc_hap_requests();
+                    Ok(Some(s.lock().await.humidity))
+                }
+                .boxed()
             }));
         }
         if let Some(ref mut char) = accessory.thermostat.target_relative_humidity {
             let s = Arc::clone(&arc_state);
             char.on_read_async(Some(move || {
                 let s = s.clone();
-                async move { Ok(Some(s.lock().await.target_humidity)) }.boxed()
+                async move {
+                    Metrics::inc_hap_requests();
+                    Ok(Some(s.lock().await.target_humidity))
+                }
+                .boxed()
             }));
         }
 
@@ -564,6 +588,7 @@ impl ComelitThermostatAccessory {
                 .on_update_async(Some(move |_, new: f32| {
                     let tx = tx.clone();
                     async move {
+                        Metrics::inc_hap_requests();
                         tx.send(ThermostatCommand::SetTargetTemperature(new))
                             .await
                             .ok();
@@ -578,6 +603,7 @@ impl ComelitThermostatAccessory {
             char.on_update_async(Some(move |_prev, new: f32| {
                 let tx = tx.clone();
                 async move {
+                    Metrics::inc_hap_requests();
                     tx.send(ThermostatCommand::SetTargetHumidity(new))
                         .await
                         .ok();
@@ -595,6 +621,7 @@ impl ComelitThermostatAccessory {
                 .on_update_async(Some(move |_prev: u8, new: u8| {
                     let tx = tx.clone();
                     async move {
+                        Metrics::inc_hap_requests();
                         tx.send(ThermostatCommand::SetHvacMode(new)).await.ok();
                         Ok(())
                     }
@@ -617,7 +644,11 @@ impl ComelitThermostatAccessory {
                 let s = Arc::clone(&arc_state);
                 hd.active.on_read_async(Some(move || {
                     let s = s.clone();
-                    async move { Ok(Some(s.lock().await.dehumidifier_active as u8)) }.boxed()
+                    async move {
+                        Metrics::inc_hap_requests();
+                        Ok(Some(s.lock().await.dehumidifier_active as u8))
+                    }
+                    .boxed()
                 }));
             }
 
@@ -630,7 +661,11 @@ impl ComelitThermostatAccessory {
                 hd.current_humidifier_dehumidifier_state
                     .on_read_async(Some(move || {
                         let s = s.clone();
-                        async move { Ok(Some(s.lock().await.dehumidifier_current_state)) }.boxed()
+                        async move {
+                            Metrics::inc_hap_requests();
+                            Ok(Some(s.lock().await.dehumidifier_current_state))
+                        }
+                        .boxed()
                     }));
             }
 
@@ -642,7 +677,11 @@ impl ComelitThermostatAccessory {
                 let s = Arc::clone(&arc_state);
                 hd.current_relative_humidity.on_read_async(Some(move || {
                     let s = s.clone();
-                    async move { Ok(Some(s.lock().await.humidity)) }.boxed()
+                    async move {
+                        Metrics::inc_hap_requests();
+                        Ok(Some(s.lock().await.humidity))
+                    }
+                    .boxed()
                 }));
             }
 
@@ -655,7 +694,11 @@ impl ComelitThermostatAccessory {
                     let s = Arc::clone(&arc_state);
                     threshold.on_read_async(Some(move || {
                         let s = s.clone();
-                        async move { Ok(Some(s.lock().await.target_humidity)) }.boxed()
+                        async move {
+                            Metrics::inc_hap_requests();
+                            Ok(Some(s.lock().await.target_humidity))
+                        }
+                        .boxed()
                     }));
                 }
 
@@ -663,6 +706,7 @@ impl ComelitThermostatAccessory {
                 threshold.on_update_async(Some(move |_prev, new: f32| {
                     let tx = tx.clone();
                     async move {
+                        Metrics::inc_hap_requests();
                         tx.send(ThermostatCommand::SetDehumidifierThreshold(new))
                             .await
                             .ok();
@@ -677,6 +721,7 @@ impl ComelitThermostatAccessory {
                 hd.active.on_update_async(Some(move |_prev: u8, new: u8| {
                     let tx = tx.clone();
                     async move {
+                        Metrics::inc_hap_requests();
                         tx.send(ThermostatCommand::SetDehumidifierActive(new))
                             .await
                             .ok();

@@ -16,6 +16,7 @@ use tracing::{debug, info, warn};
 
 use crate::accessories::comelit_accessory::ComelitAccessory;
 use crate::accessories::state::light::LightState;
+use crate::web::metrics::Metrics;
 use comelit_client_rs::{ComelitClient, DeviceStatus, LightDeviceData};
 
 #[derive(Debug)]
@@ -150,6 +151,7 @@ impl ComelitLightbulbAccessory {
             let id_ = device_id.clone();
             let state_ = state.clone();
             lightbulb_accessory.lightbulb.power_state.on_read(Some(move || {
+                Metrics::inc_hap_requests();
                 let value = state_.on.load(Ordering::Acquire);
                 debug!("Lightbulb {} read: {}", id_, value);
                 Ok(Some(value))
@@ -165,6 +167,7 @@ impl ComelitLightbulbAccessory {
                 .on_update_async(Some(move |_current_val: bool, new_val: bool| {
                     let tx = tx.clone();
                     async move {
+                        Metrics::inc_hap_requests();
                         if let Err(e) = tx.send(LightbulbCommand::HapWrite(new_val)).await {
                             warn!("Failed to send lightbulb HapWrite command: {e}");
                         }
