@@ -14,9 +14,12 @@ use hap::{
 use serde_json::Value;
 use tracing::{info, warn};
 
-use crate::accessories::{
-    ComelitAccessory,
-    state::door::{DoorPositionState, DoorState, FULLY_CLOSED, FULLY_OPENED},
+use crate::{
+    accessories::{
+        ComelitAccessory,
+        state::door::{DoorPositionState, DoorState, FULLY_CLOSED, FULLY_OPENED},
+    },
+    web::metrics::Metrics,
 };
 
 #[allow(dead_code)]
@@ -119,6 +122,7 @@ impl ComelitDoorAccessory {
         let id_ = id.to_string();
         let state_ = state.clone();
         accessory.door.position_state.on_read(Some(move || {
+            Metrics::inc_hap_requests();
             info!("Door POSITION STATE read {}", id_);
             let state = state_.lock().unwrap();
             Ok(Some(state.position_state))
@@ -127,6 +131,7 @@ impl ComelitDoorAccessory {
         let id_ = id.to_string();
         let state_ = state.clone();
         accessory.door.current_position.on_read(Some(move || {
+            Metrics::inc_hap_requests();
             info!("Door CURRENT POSITION read {}", id_);
             let state = state_.lock().unwrap();
             Ok(Some(state.current_position))
@@ -135,6 +140,7 @@ impl ComelitDoorAccessory {
         let id_ = id.to_string();
         let state_ = state.clone();
         accessory.door.target_position.on_read(Some(move || {
+            Metrics::inc_hap_requests();
             info!("Door TARGET POSITION read {}", id_);
             let state = state_.lock().unwrap();
             Ok(Some(state.target_position))
@@ -166,6 +172,7 @@ impl ComelitDoorAccessory {
                 let client = client.clone();
                 let id = id.to_string();
                 async move {
+                    Metrics::inc_hap_requests();
                     if new_pos != FULLY_OPENED {
                         info!(
                             "Target position equals current position for door {}, no action taken",
