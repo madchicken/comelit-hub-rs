@@ -13,7 +13,7 @@ use hap::{
 use serde_json::Value;
 use std::sync::Arc;
 use tokio::sync::Mutex as TokioMutex;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 
 use crate::accessories::ComelitAccessory;
 use crate::web::metrics::Metrics;
@@ -30,6 +30,7 @@ pub(crate) struct ComelitWindowCoveringAccessory {
 
 /// Writes worker position updates to the HomeKit accessory's characteristics.
 struct HapWindowCoveringSink {
+    id: String,
     accessory: Accessory,
 }
 
@@ -38,23 +39,60 @@ impl WindowCoveringSink for HapWindowCoveringSink {
     async fn update(&self, state: WindowCoveringState) {
         let mut accessory = self.accessory.lock().await;
         let Some(service) = accessory.get_mut_service(HapType::WindowCovering) else {
+            warn!(
+                "WindowCovering service missing for window covering {}, dropping position update",
+                self.id
+            );
             return;
         };
 
         if let Some(characteristic) = service.get_mut_characteristic(HapType::CurrentPosition) {
-            let _ = characteristic
+            if let Err(e) = characteristic
                 .update_value(Value::from(state.current_position))
-                .await;
+                .await
+            {
+                warn!(
+                    "update_value for window covering {} CurrentPosition failed: {e}",
+                    self.id
+                );
+            }
+        } else {
+            warn!(
+                "CurrentPosition characteristic missing for window covering {}",
+                self.id
+            );
         }
         if let Some(characteristic) = service.get_mut_characteristic(HapType::TargetPosition) {
-            let _ = characteristic
+            if let Err(e) = characteristic
                 .update_value(Value::from(state.target_position))
-                .await;
+                .await
+            {
+                warn!(
+                    "update_value for window covering {} TargetPosition failed: {e}",
+                    self.id
+                );
+            }
+        } else {
+            warn!(
+                "TargetPosition characteristic missing for window covering {}",
+                self.id
+            );
         }
         if let Some(characteristic) = service.get_mut_characteristic(HapType::PositionState) {
-            let _ = characteristic
+            if let Err(e) = characteristic
                 .update_value(Value::from(state.position_state as u8))
-                .await;
+                .await
+            {
+                warn!(
+                    "update_value for window covering {} PositionState failed: {e}",
+                    self.id
+                );
+            }
+        } else {
+            warn!(
+                "PositionState characteristic missing for window covering {}",
+                self.id
+            );
         }
     }
 }
@@ -144,6 +182,7 @@ impl ComelitWindowCoveringAccessory {
 
         handle
             .set_sink(Box::new(HapWindowCoveringSink {
+                id: device_id.clone(),
                 accessory: accessory.clone(),
             }))
             .await;
