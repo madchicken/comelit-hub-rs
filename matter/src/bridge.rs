@@ -308,11 +308,11 @@ impl AsyncHandler for ComelitBridgeHandler {
         let futs: Vec<DynFut<'_>> = self
             .entries
             .iter()
-            .filter_map(|entry| match entry {
-                BridgedEntry::Light(light) => {
-                    Some(Box::pin(light.on_off.run(&ctx)) as DynFut<'_>)
+            .map(|entry| match entry {
+                BridgedEntry::Light(light) => Box::pin(light.on_off.run(&ctx)) as DynFut<'_>,
+                BridgedEntry::WindowCovering(covering) => {
+                    Box::pin(covering.window_covering.run(&ctx)) as DynFut<'_>
                 }
-                BridgedEntry::WindowCovering(_) => None,
             })
             .collect();
 

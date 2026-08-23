@@ -13,7 +13,7 @@ use rs_matter::dm::clusters::decl::window_covering::{
     GoToLiftPercentageRequest, GoToLiftValueRequest, GoToTiltPercentageRequest,
     GoToTiltValueRequest, Mode, OperationalStatus, SafetyStatus, Type,
 };
-use rs_matter::dm::{Dataver, InvokeContext, ReadContext, WriteContext};
+use rs_matter::dm::{Dataver, HandlerContext, InvokeContext, ReadContext, WriteContext};
 use rs_matter::error::{Error, ErrorCode};
 use rs_matter::tlv::Nullable;
 use rs_matter::with;
@@ -178,6 +178,16 @@ impl ClusterAsyncHandler for ComelitCoveringHandler {
 
     fn dataver_changed(&self) {
         self.dataver.changed();
+    }
+
+    /// Pushes attribute changes to Matter subscriptions as soon as the worker
+    /// publishes a new position (mirrors `ComelitOnOffHooks::run`). Without
+    /// this, subscribers would only see updates on their max-interval sweep.
+    async fn run(&self, ctx: impl HandlerContext) -> Result<(), Error> {
+        loop {
+            self.state.signal.wait().await;
+            ctx.notify_cluster_changed(self.state.ep_id, Self::CLUSTER.id);
+        }
     }
 
     async fn r#type(&self, _ctx: impl ReadContext) -> Result<Type, Error> {
