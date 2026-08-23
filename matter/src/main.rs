@@ -43,7 +43,8 @@ use comelit_client_rs::{
 };
 use tokio::sync::mpsc;
 
-use bridge::{BridgeMetadata, BridgedInfo, ComelitBridgeHandler, LightEntry, NonRootMatcher};
+use bridge::{BridgeMetadata, BridgedEntry, BridgedInfo, ComelitBridgeHandler, CoveringEntry, LightEntry, NonRootMatcher};
+use covering::ComelitCoveringHandler;
 use light::{ComelitOnOffHooks, LightState, MultiLightObserver, MqttCommand};
 
 // ── DeferredObserver ──────────────────────────────────────────────────────────
@@ -82,6 +83,43 @@ struct Args {
     #[arg(long, env = "COMELIT_PASSWORD", default_value = "admin")]
     password: String,
 
+    /// Path to the same settings JSON file used by the HAP bridge (only the
+    /// `window_covering` section is read; every other field is ignored).
+    #[arg(long, env = "COMELIT_SETTINGS")]
+    settings: Option<String>,
+}
+
+/// Reads only the `window_covering` section out of the same settings JSON
+/// file the HAP bridge uses (`hap::settings::Settings`). Unknown fields
+/// (pairing_code, mount_*, prometheus_*, ...) are ignored by serde.
+#[derive(serde::Deserialize)]
+struct MatterSettings {
+    #[serde(default)]
+    window_covering: comelit_client_rs::covering::WindowCoveringSettings,
+}
+
+impl Default for MatterSettings {
+    fn default() -> Self {
+        Self {
+            window_covering: comelit_client_rs::covering::WindowCoveringSettings::default(),
+        }
+    }
+}
+
+fn load_settings(path: &Option<String>) -> MatterSettings {
+    match path {
+        Some(path) => match std::fs::read_to_string(path) {
+            Ok(contents) => serde_json::from_str(&contents).unwrap_or_else(|e| {
+                error!("Failed to parse settings file {path}: {e}, using defaults");
+                MatterSettings::default()
+            }),
+            Err(e) => {
+                error!("Failed to read settings file {path}: {e}, using defaults");
+                MatterSettings::default()
+            }
+        },
+        None => MatterSettings::default(),
+    }
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
@@ -114,7 +152,9 @@ async fn main() -> anyhow::Result<()> {
     let client = ComelitClient::new(options, Some(deferred as _)).await?;
     client.login(State::Disconnected).await?;
 
-    // ── 3. Discover all lights ────────────────────────────────────────────────
+    // ── 3. Discover all lights and window coverings ──────────────────────────
+
+    let settings = load_settings(&args.settings);
 
     let index = client.fetch_index(2).await?;
     let mut lights_data: Vec<(String, String, bool)> = index
@@ -130,36 +170,95 @@ async fn main() -> anyhow::Result<()> {
             }
         })
         .collect();
-
-    // Stable order: sort by device ID
     lights_data.sort_by(|a, b| a.0.cmp(&b.0));
 
-    if lights_data.is_empty() {
-        return Err(anyhow::anyhow!("No lights found in Comelit index"));
+    let mut covering_data: Vec<(String, String, comelit_client_rs::covering::WindowCoveringState)> = index
+        .iter()
+        .filter_map(|entry| {
+            if let HomeDeviceData::WindowCovering(wc) = entry.value() {
+                let label = wc.description.clone().unwrap_or_else(|| entry.key().clone());
+                let initial_state = comelit_client_rs::covering::WindowCoveringState::from(wc);
+                Some((entry.key().clone(), label, initial_state))
+            } else {
+                None
+            }
+        })
+        .collect();
+    covering_data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if lights_data.is_empty() && covering_data.is_empty() {
+        return Err(anyhow::anyhow!("No lights or window coverings found in Comelit index"));
     }
 
-    info!("Discovered {} lights:", lights_data.len());
-    for (i, (id, label, on)) in lights_data.iter().enumerate() {
-        info!("  ep{}: {} ({}) — {}", i + 2, label, id, if *on { "ON" } else { "OFF" });
+    info!("Discovered {} lights, {} window coverings:", lights_data.len(), covering_data.len());
+    let mut next_ep: u16 = 2;
+    for (id, label, on) in &lights_data {
+        info!("  ep{}: light {} ({}) — {}", next_ep, label, id, if *on { "ON" } else { "OFF" });
+        next_ep += 1;
+    }
+    for (id, label, state) in &covering_data {
+        info!("  ep{}: window covering {} ({}) — pos={}", next_ep, label, id, state.current_position);
+        next_ep += 1;
     }
 
-    // ── 4. Create shared state and wire up observer ───────────────────────────
+    // ── 4. Create shared state and wire up observers ──────────────────────────
 
     let mut light_states: Vec<Arc<LightState>> = Vec::new();
-    for (i, (id, _, initial_on)) in lights_data.iter().enumerate() {
-        let ep_id = (i + 2) as u16;
+    let mut ep_id: u16 = 2;
+    for (id, _, initial_on) in &lights_data {
         let state = Arc::new(LightState::new(ep_id, id.clone(), *initial_on, cmd_tx.clone()));
-        // Prime the signal so Matter fires an Update notification immediately on start
         state.signal.signal(());
         light_states.push(state);
+        ep_id += 1;
     }
 
-    let observer = Arc::new(MultiLightObserver { states: light_states.clone() });
-    *deferred_slot.write().await = Some(observer as _);
+    let covering_config = comelit_client_rs::covering::WindowCoveringConfig {
+        opening_time: Duration::from_secs(settings.window_covering.opening_time),
+        closing_time: Duration::from_secs(settings.window_covering.closing_time),
+    };
 
-    // ── 5. Subscribe to MQTT push for every light ─────────────────────────────
+    let mut covering_states: Vec<Arc<covering::CoveringState>> = Vec::new();
+    for (id, _, initial_state) in &covering_data {
+        let shared_state = Arc::new(tokio::sync::Mutex::new(*initial_state));
+        let handle = comelit_client_rs::covering::spawn_window_covering_worker(
+            id.clone(),
+            shared_state,
+            client.clone(),
+            covering_config,
+        );
+        let state = Arc::new(covering::CoveringState::new(ep_id, id.clone(), *initial_state, handle));
+        state.handle.set_sink(Box::new(covering::MatterCoveringSink::new(state.clone()))).await;
+        covering_states.push(state);
+        ep_id += 1;
+    }
+
+    let light_observer = Arc::new(MultiLightObserver { states: light_states.clone() });
+    let covering_observer = Arc::new(covering::MultiCoveringObserver { states: covering_states.clone() });
+
+    struct FanOutObserver {
+        light: Arc<MultiLightObserver>,
+        covering: Arc<covering::MultiCoveringObserver>,
+    }
+
+    #[async_trait]
+    impl StatusUpdate for FanOutObserver {
+        async fn status_update(&self, device: &HomeDeviceData) {
+            self.light.status_update(device).await;
+            self.covering.status_update(device).await;
+        }
+    }
+
+    *deferred_slot.write().await = Some(Arc::new(FanOutObserver {
+        light: light_observer,
+        covering: covering_observer,
+    }) as _);
+
+    // ── 5. Subscribe to MQTT push for every discovered device ─────────────────
 
     for (id, _, _) in &lights_data {
+        client.subscribe(id).await?;
+    }
+    for (id, _, _) in &covering_data {
         client.subscribe(id).await?;
     }
 
@@ -179,7 +278,7 @@ async fn main() -> anyhow::Result<()> {
     let matter_thread = std::thread::Builder::new()
         .name("matter".into())
         .stack_size(600 * 1024)
-        .spawn(move || run_matter(light_states, lights_data))?;
+        .spawn(move || run_matter(light_states, lights_data, covering_states, covering_data))?;
 
     matter_thread
         .join()
@@ -193,6 +292,8 @@ async fn main() -> anyhow::Result<()> {
 fn run_matter(
     light_states: Vec<Arc<LightState>>,
     lights_data: Vec<(String, String, bool)>,
+    covering_states: Vec<Arc<covering::CoveringState>>,
+    covering_data: Vec<(String, String, comelit_client_rs::covering::WindowCoveringState)>,
 ) -> anyhow::Result<()> {
     let mut matter = Matter::new(&TEST_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, MATTER_PORT);
 
@@ -206,14 +307,12 @@ fn run_matter(
     let crypto = default_crypto(rand::thread_rng(), DAC_PRIVKEY);
     let mut rand = crypto.rand().map_err(|e| anyhow::anyhow!("rand: {e:?}"))?;
 
-    // Build one LightEntry per light
-    let mut entries: Vec<LightEntry> = Vec::new();
-    for (i, (state, (device_id, label, _))) in
-        light_states.into_iter().zip(lights_data.iter()).enumerate()
-    {
-        let ep_id = (i + 2) as u16;
+    // Build one BridgedEntry per light and per window covering.
+    let mut entries: Vec<BridgedEntry> = Vec::new();
+    for (state, (device_id, label, _)) in light_states.into_iter().zip(lights_data.iter()) {
+        let ep_id = state.ep_id;
         let hooks = ComelitOnOffHooks::new(state);
-        entries.push(LightEntry {
+        entries.push(BridgedEntry::Light(LightEntry {
             ep_id,
             on_off: on_off::OnOffHandler::new_standalone(
                 Dataver::new_rand(&mut rand),
@@ -227,7 +326,21 @@ fn run_matter(
                 label.clone(),
                 device_id.clone(),
             ),
-        });
+        }));
+    }
+    for (state, (device_id, label, _)) in covering_states.into_iter().zip(covering_data.iter()) {
+        let ep_id = state.ep_id;
+        entries.push(BridgedEntry::WindowCovering(CoveringEntry {
+            ep_id,
+            window_covering: ComelitCoveringHandler::new(Dataver::new_rand(&mut rand), state),
+            desc: desc::DescHandler::new(Dataver::new_rand(&mut rand)),
+            groups: groups::GroupsHandler::new(Dataver::new_rand(&mut rand)),
+            bridged: BridgedInfo::new(
+                Dataver::new_rand(&mut rand),
+                label.clone(),
+                device_id.clone(),
+            ),
+        }));
     }
 
     let agg_desc = desc::DescHandler::new_aggregator(Dataver::new_rand(&mut rand));
