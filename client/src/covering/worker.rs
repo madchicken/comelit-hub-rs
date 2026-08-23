@@ -46,7 +46,10 @@ enum WorkerCommand {
     /// Attach (or replace) the sink used to publish position updates.
     SetSink { sink: Box<dyn WindowCoveringSink> },
 
-    /// Shut the worker down.
+    /// Shut the worker down. Nothing sends this today: dropping the last
+    /// `WindowCoveringHandle` closes the channel, which makes `recv()` return
+    /// `None` and stops the worker. Kept as an explicit escape hatch.
+    #[allow(dead_code)]
     Shutdown,
 }
 
@@ -481,8 +484,14 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
     }
 }
 
-/// Handle for controlling a spawned window-covering worker. Dropping it shuts
-/// the worker task down (best effort).
+/// Handle for controlling a spawned window-covering worker. The handle is
+/// cheaply cloneable; the worker shuts itself down once the *last* clone is
+/// dropped (the command channel closes and `recv()` returns `None`).
+///
+/// Note: this type deliberately has no `Drop` impl. An earlier version sent
+/// `WorkerCommand::Shutdown` on drop, which killed the worker as soon as any
+/// single clone went out of scope (e.g. the per-callback clone HAP creates for
+/// each target-position write).
 #[derive(Clone)]
 pub struct WindowCoveringHandle {
     command_sender: Sender<WorkerCommand>,
@@ -512,12 +521,6 @@ impl WindowCoveringHandle {
             .command_sender
             .send(WorkerCommand::SetSink { sink })
             .await;
-    }
-}
-
-impl Drop for WindowCoveringHandle {
-    fn drop(&mut self) {
-        let _ = self.command_sender.try_send(WorkerCommand::Shutdown);
     }
 }
 
@@ -985,6 +988,43 @@ mod test {
         assert_eq!(toggles.len(), 2, "expected start toggle + stop toggle");
         assert_eq!(toggles[0], ("test-id".to_string(), true));
         assert_eq!(toggles[1], ("test-id".to_string(), false));
+    }
+
+    /// Regression test: `WindowCoveringHandle` is `Clone`, and HAP clones it
+    /// inside the `on_update_async` callback, dropping that clone as soon as
+    /// the boxed future completes. An earlier `impl Drop for
+    /// WindowCoveringHandle` sent `WorkerCommand::Shutdown` on every drop, so
+    /// the very first target-position write killed the worker task: the 1s
+    /// position ticker died, the "reached target → send stop" toggle never
+    /// fired, and every later command was silently ignored.
+    ///
+    /// Dropping a clone must leave the worker alive and processing commands.
+    #[tokio::test]
+    async fn test_worker_survives_dropped_handle_clone() {
+        let initial = WindowCoveringState {
+            current_position: FULLY_CLOSED,
+            target_position: FULLY_CLOSED,
+            position_state: PositionState::Stopped,
+        };
+        let (handle, _state, client, _sink) =
+            create_test_worker_with_config(initial, slow_test_config()).await;
+
+        // Simulate HAP's per-callback clone going out of scope.
+        let clone = handle.clone();
+        drop(clone);
+        sleep(Duration::from_millis(50)).await;
+
+        // The worker must still be alive and act on the move.
+        handle.move_to(FULLY_CLOSED, FULLY_OPENED).await;
+        sleep(Duration::from_millis(100)).await;
+
+        let toggles = client.toggle_calls.read().await;
+        assert_eq!(
+            toggles.len(),
+            1,
+            "worker died after a handle clone was dropped"
+        );
+        assert_eq!(toggles[0], ("test-id".to_string(), true));
     }
 
     #[tokio::test]
