@@ -1,4 +1,5 @@
 mod protocol;
+pub mod covering;
 
 pub use protocol::client::*;
 pub use protocol::credentials::get_secrets;
