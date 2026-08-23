@@ -636,6 +636,8 @@ dependencies = [
  "log",
  "rand 0.8.5",
  "rs-matter",
+ "serde",
+ "serde_json",
  "socket2 0.5.10",
  "tokio",
 ]

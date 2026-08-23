@@ -28,5 +28,7 @@ rs-matter = { git = "https://github.com/project-chip/rs-matter", rev = "e8b0b0cb
     "max-group-keys-per-fabric-2",
     "max-group-endpoints-per-fabric-3",
 ] }
+serde = { version = "1.0.219", features = ["derive"] }
+serde_json = { version = "1.0.140" }
 socket2 = { version = "0.5", features = ["all"] }
 tokio = { version = "1", features = ["full"] }
