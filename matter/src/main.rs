@@ -92,18 +92,10 @@ struct Args {
 /// Reads only the `window_covering` section out of the same settings JSON
 /// file the HAP bridge uses (`hap::settings::Settings`). Unknown fields
 /// (pairing_code, mount_*, prometheus_*, ...) are ignored by serde.
-#[derive(serde::Deserialize)]
+#[derive(serde::Deserialize, Default)]
 struct MatterSettings {
     #[serde(default)]
     window_covering: comelit_client_rs::covering::WindowCoveringSettings,
-}
-
-impl Default for MatterSettings {
-    fn default() -> Self {
-        Self {
-            window_covering: comelit_client_rs::covering::WindowCoveringSettings::default(),
-        }
-    }
 }
 
 fn load_settings(path: &Option<String>) -> MatterSettings {
@@ -185,6 +177,16 @@ async fn main() -> anyhow::Result<()> {
         })
         .collect();
     covering_data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Prefer the position estimate persisted by whichever bridge ran last
+    // (both bridges share `data/misc/<id>.json`): the state derived from the
+    // live Comelit status can only ever be 0 or 100, so using it blindly would
+    // both forget our own estimate and clobber the HAP bridge's on restart.
+    for (id, _, state) in covering_data.iter_mut() {
+        *state = comelit_client_rs::covering::WindowCoveringState::from_storage(id)
+            .await
+            .unwrap_or(*state);
+    }
 
     if lights_data.is_empty() && covering_data.is_empty() {
         return Err(anyhow::anyhow!("No lights or window coverings found in Comelit index"));
