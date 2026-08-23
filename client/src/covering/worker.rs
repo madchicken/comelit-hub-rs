@@ -483,6 +483,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
 
 /// Handle for controlling a spawned window-covering worker. Dropping it shuts
 /// the worker task down (best effort).
+#[derive(Clone)]
 pub struct WindowCoveringHandle {
     command_sender: Sender<WorkerCommand>,
 }
