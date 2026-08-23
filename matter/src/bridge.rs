@@ -7,6 +7,7 @@ use rs_matter::dm::clusters::decl::bridged_device_basic_information::{
 };
 use rs_matter::dm::clusters::desc::{self, ClusterHandler as DescCH};
 use rs_matter::dm::clusters::groups::{self, ClusterHandler as GroupsCH};
+use rs_matter::dm::clusters::decl::window_covering::{self as covering_cluster, ClusterAsyncHandler as _};
 use rs_matter::dm::devices::{DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_ON_OFF_LIGHT};
 use rs_matter::dm::{
     AsyncHandler, Async as DmAsync, Cluster, Dataver, DeviceType, Endpoint, HandlerContext,
@@ -18,6 +19,7 @@ use rs_matter::tlv::{TLVBuilderParent, Utf8StrBuilder};
 use rs_matter::utils::select::Coalesce;
 use rs_matter::{root_endpoint, with};
 
+use crate::covering::ComelitCoveringHandler;
 use crate::light::ComelitOnOffHooks;
 
 // ── Module-level statics for 'static endpoint data ───────────────────────────
@@ -33,6 +35,16 @@ static LIGHT_CLUSTERS: [Cluster<'static>; 4] = [
     groups::GroupsHandler::CLUSTER,
     <BridgedInfo as BridgedCH>::CLUSTER,
     ComelitOnOffHooks::CLUSTER,
+];
+
+const DEV_TYPE_WINDOW_COVERING: DeviceType = DeviceType { dtype: 0x0202, drev: 1 };
+
+static COVERING_DEVICE_TYPES: [DeviceType; 2] = [DEV_TYPE_WINDOW_COVERING, DEV_TYPE_BRIDGED_NODE];
+static COVERING_CLUSTERS: [Cluster<'static>; 4] = [
+    desc::DescHandler::CLUSTER,
+    groups::GroupsHandler::CLUSTER,
+    <BridgedInfo as BridgedCH>::CLUSTER,
+    ComelitCoveringHandler::CLUSTER,
 ];
 
 // ── BridgedInfo ───────────────────────────────────────────────────────────────
@@ -104,17 +116,45 @@ pub struct LightEntry {
     pub bridged: BridgedInfo,
 }
 
+// ── CoveringEntry ─────────────────────────────────────────────────────────────
+
+/// All handlers and shared state for a single bridged window-covering endpoint.
+pub struct CoveringEntry {
+    pub ep_id: u16,
+    pub window_covering: ComelitCoveringHandler,
+    pub desc: desc::DescHandler<'static>,
+    pub groups: groups::GroupsHandler,
+    pub bridged: BridgedInfo,
+}
+
+// ── BridgedEntry ──────────────────────────────────────────────────────────────
+
+/// One bridged endpoint: either a light or a window covering.
+pub enum BridgedEntry {
+    Light(LightEntry),
+    WindowCovering(CoveringEntry),
+}
+
+impl BridgedEntry {
+    fn ep_id(&self) -> u16 {
+        match self {
+            BridgedEntry::Light(l) => l.ep_id,
+            BridgedEntry::WindowCovering(c) => c.ep_id,
+        }
+    }
+}
+
 // ── ComelitBridgeHandler ──────────────────────────────────────────────────────
 
 /// Handles all non-root endpoints: aggregator (ep1) and bridged lights (ep2+).
 pub struct ComelitBridgeHandler {
     agg_desc: desc::DescHandler<'static>,
-    lights: Vec<LightEntry>,
+    entries: Vec<BridgedEntry>,
 }
 
 impl ComelitBridgeHandler {
-    pub fn new(agg_desc: desc::DescHandler<'static>, lights: Vec<LightEntry>) -> Self {
-        Self { agg_desc, lights }
+    pub fn new(agg_desc: desc::DescHandler<'static>, entries: Vec<BridgedEntry>) -> Self {
+        Self { agg_desc, entries }
     }
 
     /// Recursive balanced select tree over boxed futures.
@@ -144,9 +184,11 @@ impl AsyncHandler for ComelitBridgeHandler {
         let cluster_id = ctx.attr().cluster_id;
 
         if ep_id == 1 {
-            DmAsync(desc::HandlerAdaptor(&self.agg_desc)).read(ctx, reply).await
-        } else if let Some(light) = self.lights.iter().find(|l| l.ep_id == ep_id) {
-            match cluster_id {
+            return DmAsync(desc::HandlerAdaptor(&self.agg_desc)).read(ctx, reply).await;
+        }
+
+        match self.entries.iter().find(|e| e.ep_id() == ep_id) {
+            Some(BridgedEntry::Light(light)) => match cluster_id {
                 c if c == desc::DescHandler::CLUSTER.id =>
                     DmAsync(desc::HandlerAdaptor(&light.desc)).read(ctx, reply).await,
                 c if c == groups::GroupsHandler::CLUSTER.id =>
@@ -156,9 +198,19 @@ impl AsyncHandler for ComelitBridgeHandler {
                 c if c == ComelitOnOffHooks::CLUSTER.id =>
                     on_off::HandlerAsyncAdaptor(&light.on_off).read(ctx, reply).await,
                 _ => Err(ErrorCode::ClusterNotFound.into()),
-            }
-        } else {
-            Err(ErrorCode::EndpointNotFound.into())
+            },
+            Some(BridgedEntry::WindowCovering(covering)) => match cluster_id {
+                c if c == desc::DescHandler::CLUSTER.id =>
+                    DmAsync(desc::HandlerAdaptor(&covering.desc)).read(ctx, reply).await,
+                c if c == groups::GroupsHandler::CLUSTER.id =>
+                    DmAsync(groups::HandlerAdaptor(&covering.groups)).read(ctx, reply).await,
+                c if c == bridged_device_basic_information::FULL_CLUSTER.id =>
+                    DmAsync(bridged_device_basic_information::HandlerAdaptor(&covering.bridged)).read(ctx, reply).await,
+                c if c == ComelitCoveringHandler::CLUSTER.id =>
+                    covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).read(ctx, reply).await,
+                _ => Err(ErrorCode::ClusterNotFound.into()),
+            },
+            None => Err(ErrorCode::EndpointNotFound.into()),
         }
     }
 
@@ -166,14 +218,18 @@ impl AsyncHandler for ComelitBridgeHandler {
         let ep_id = ctx.attr().endpoint_id;
         let cluster_id = ctx.attr().cluster_id;
 
-        if let Some(light) = self.lights.iter().find(|l| l.ep_id == ep_id) {
-            match cluster_id {
+        match self.entries.iter().find(|e| e.ep_id() == ep_id) {
+            Some(BridgedEntry::Light(light)) => match cluster_id {
                 c if c == ComelitOnOffHooks::CLUSTER.id =>
                     on_off::HandlerAsyncAdaptor(&light.on_off).write(ctx).await,
                 _ => Err(ErrorCode::AttributeNotFound.into()),
-            }
-        } else {
-            Err(ErrorCode::EndpointNotFound.into())
+            },
+            Some(BridgedEntry::WindowCovering(covering)) => match cluster_id {
+                c if c == ComelitCoveringHandler::CLUSTER.id =>
+                    covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).write(ctx).await,
+                _ => Err(ErrorCode::AttributeNotFound.into()),
+            },
+            None => Err(ErrorCode::EndpointNotFound.into()),
         }
     }
 
@@ -185,14 +241,18 @@ impl AsyncHandler for ComelitBridgeHandler {
         let ep_id = ctx.cmd().endpoint_id;
         let cluster_id = ctx.cmd().cluster_id;
 
-        if let Some(light) = self.lights.iter().find(|l| l.ep_id == ep_id) {
-            match cluster_id {
+        match self.entries.iter().find(|e| e.ep_id() == ep_id) {
+            Some(BridgedEntry::Light(light)) => match cluster_id {
                 c if c == ComelitOnOffHooks::CLUSTER.id =>
                     on_off::HandlerAsyncAdaptor(&light.on_off).invoke(ctx, reply).await,
                 _ => Err(ErrorCode::CommandNotFound.into()),
-            }
-        } else {
-            Err(ErrorCode::EndpointNotFound.into())
+            },
+            Some(BridgedEntry::WindowCovering(covering)) => match cluster_id {
+                c if c == ComelitCoveringHandler::CLUSTER.id =>
+                    covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).invoke(ctx, reply).await,
+                _ => Err(ErrorCode::CommandNotFound.into()),
+            },
+            None => Err(ErrorCode::EndpointNotFound.into()),
         }
     }
 
@@ -206,19 +266,38 @@ impl AsyncHandler for ComelitBridgeHandler {
             }
         }
 
-        for light in &self.lights {
-            if ep.map(|e| e == light.ep_id).unwrap_or(true) {
-                if cl.map(|c| c == desc::DescHandler::CLUSTER.id).unwrap_or(true) {
-                    DescCH::dataver_changed(&light.desc);
+        for entry in &self.entries {
+            if !ep.map(|e| e == entry.ep_id()).unwrap_or(true) {
+                continue;
+            }
+            match entry {
+                BridgedEntry::Light(light) => {
+                    if cl.map(|c| c == desc::DescHandler::CLUSTER.id).unwrap_or(true) {
+                        DescCH::dataver_changed(&light.desc);
+                    }
+                    if cl.map(|c| c == groups::GroupsHandler::CLUSTER.id).unwrap_or(true) {
+                        GroupsCH::dataver_changed(&light.groups);
+                    }
+                    if cl.map(|c| c == bridged_device_basic_information::FULL_CLUSTER.id).unwrap_or(true) {
+                        BridgedCH::dataver_changed(&light.bridged);
+                    }
+                    if cl.map(|c| c == ComelitOnOffHooks::CLUSTER.id).unwrap_or(true) {
+                        on_off::HandlerAsyncAdaptor(&light.on_off).bump_dataver(&ctx);
+                    }
                 }
-                if cl.map(|c| c == groups::GroupsHandler::CLUSTER.id).unwrap_or(true) {
-                    GroupsCH::dataver_changed(&light.groups);
-                }
-                if cl.map(|c| c == bridged_device_basic_information::FULL_CLUSTER.id).unwrap_or(true) {
-                    BridgedCH::dataver_changed(&light.bridged);
-                }
-                if cl.map(|c| c == ComelitOnOffHooks::CLUSTER.id).unwrap_or(true) {
-                    on_off::HandlerAsyncAdaptor(&light.on_off).bump_dataver(&ctx);
+                BridgedEntry::WindowCovering(covering) => {
+                    if cl.map(|c| c == desc::DescHandler::CLUSTER.id).unwrap_or(true) {
+                        DescCH::dataver_changed(&covering.desc);
+                    }
+                    if cl.map(|c| c == groups::GroupsHandler::CLUSTER.id).unwrap_or(true) {
+                        GroupsCH::dataver_changed(&covering.groups);
+                    }
+                    if cl.map(|c| c == bridged_device_basic_information::FULL_CLUSTER.id).unwrap_or(true) {
+                        BridgedCH::dataver_changed(&covering.bridged);
+                    }
+                    if cl.map(|c| c == ComelitCoveringHandler::CLUSTER.id).unwrap_or(true) {
+                        covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).bump_dataver(&ctx);
+                    }
                 }
             }
         }
@@ -227,9 +306,14 @@ impl AsyncHandler for ComelitBridgeHandler {
     async fn run(&self, ctx: impl HandlerContext) -> Result<(), Error> {
         type DynFut<'a> = Pin<Box<dyn core::future::Future<Output = Result<(), Error>> + 'a>>;
         let futs: Vec<DynFut<'_>> = self
-            .lights
+            .entries
             .iter()
-            .map(|light| -> DynFut<'_> { Box::pin(light.on_off.run(&ctx)) })
+            .filter_map(|entry| match entry {
+                BridgedEntry::Light(light) => {
+                    Some(Box::pin(light.on_off.run(&ctx)) as DynFut<'_>)
+                }
+                BridgedEntry::WindowCovering(_) => None,
+            })
             .collect();
 
         if futs.is_empty() {
@@ -259,13 +343,20 @@ pub struct BridgeMetadata {
 }
 
 impl BridgeMetadata {
-    pub fn new(lights: &[LightEntry]) -> Self {
+    pub fn new(entries: &[BridgedEntry]) -> Self {
         let mut endpoints = vec![
             ROOT_EP,
             Endpoint::new(1, &AGG_DEVICE_TYPES, &AGG_CLUSTERS),
         ];
-        for light in lights {
-            endpoints.push(Endpoint::new(light.ep_id, &LIGHT_DEVICE_TYPES, &LIGHT_CLUSTERS));
+        for entry in entries {
+            match entry {
+                BridgedEntry::Light(light) => {
+                    endpoints.push(Endpoint::new(light.ep_id, &LIGHT_DEVICE_TYPES, &LIGHT_CLUSTERS));
+                }
+                BridgedEntry::WindowCovering(covering) => {
+                    endpoints.push(Endpoint::new(covering.ep_id, &COVERING_DEVICE_TYPES, &COVERING_CLUSTERS));
+                }
+            }
         }
         Self { endpoints }
     }
