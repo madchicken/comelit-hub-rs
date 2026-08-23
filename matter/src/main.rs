@@ -1,4 +1,5 @@
 mod bridge;
+mod covering;
 mod light;
 mod mdns;
 
