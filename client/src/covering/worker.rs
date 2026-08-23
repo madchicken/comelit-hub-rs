@@ -694,8 +694,20 @@ mod test {
         }
     }
 
-    async fn create_test_worker(
+    /// A slower config than `test_config`, used by tests that need to observe
+    /// an *in-progress* (not yet completed) position update: with the 1s
+    /// position-ticker interval, a 500ms travel time reaches the target on
+    /// the very first tick, leaving no window to observe a partial position.
+    fn slow_test_config() -> WindowCoveringConfig {
+        WindowCoveringConfig {
+            opening_time: Duration::from_secs(3),
+            closing_time: Duration::from_secs(3),
+        }
+    }
+
+    async fn create_test_worker_with_config(
         state: WindowCoveringState,
+        config: WindowCoveringConfig,
     ) -> (
         WindowCoveringHandle,
         Arc<TokioMutex<WindowCoveringState>>,
@@ -708,7 +720,7 @@ mod test {
             "test-id".to_string(),
             shared_state.clone(),
             client.clone(),
-            test_config(),
+            config,
         );
         let sink = FakeSink::default();
         handle.set_sink(Box::new(sink.clone())).await;
@@ -716,38 +728,90 @@ mod test {
         (handle, shared_state, client, sink)
     }
 
+    async fn create_test_worker(
+        state: WindowCoveringState,
+    ) -> (
+        WindowCoveringHandle,
+        Arc<TokioMutex<WindowCoveringState>>,
+        FakeComelitClient,
+        FakeSink,
+    ) {
+        create_test_worker_with_config(state, test_config()).await
+    }
+
     #[tokio::test]
     async fn test_move_to_open() {
         let initial = WindowCoveringState {
-            current_position: 0,
-            target_position: 0,
+            current_position: FULLY_CLOSED,
+            target_position: FULLY_CLOSED,
             position_state: PositionState::Stopped,
         };
-        let (handle, _state, client, _sink) = create_test_worker(initial).await;
+        let (handle, state, client, _sink) =
+            create_test_worker_with_config(initial, slow_test_config()).await;
 
-        handle.move_to(0, 100).await;
-        sleep(Duration::from_millis(50)).await;
+        handle.move_to(FULLY_CLOSED, FULLY_OPENED).await;
+        sleep(Duration::from_millis(100)).await;
 
-        let toggles = client.toggle_calls.read().await;
-        assert_eq!(toggles.len(), 1);
-        assert_eq!(toggles[0], ("test-id".to_string(), true));
+        {
+            let toggles = client.toggle_calls.read().await;
+            assert_eq!(toggles.len(), 1);
+            assert_eq!(toggles[0], ("test-id".to_string(), true));
+        }
+
+        // Simulate Comelit confirmation of the move.
+        handle
+            .status_update(WindowCoveringState {
+                current_position: FULLY_CLOSED,
+                target_position: FULLY_OPENED,
+                position_state: PositionState::MovingUp,
+            })
+            .await;
+
+        // Wait for at least one position-ticker tick (1s) while still well
+        // short of the 3s travel time, so the position should be partway
+        // between fully closed and fully open.
+        sleep(Duration::from_millis(1600)).await;
+
+        let current_state = state.lock().await;
+        assert!(current_state.current_position > FULLY_CLOSED);
+        assert!(current_state.current_position < FULLY_OPENED);
     }
 
     #[tokio::test]
     async fn test_move_to_close() {
         let initial = WindowCoveringState {
-            current_position: 100,
-            target_position: 100,
+            current_position: FULLY_OPENED,
+            target_position: FULLY_OPENED,
             position_state: PositionState::Stopped,
         };
-        let (handle, _state, client, _sink) = create_test_worker(initial).await;
+        let (handle, state, client, _sink) =
+            create_test_worker_with_config(initial, slow_test_config()).await;
 
-        handle.move_to(100, 0).await;
-        sleep(Duration::from_millis(50)).await;
+        handle.move_to(FULLY_OPENED, FULLY_CLOSED).await;
+        sleep(Duration::from_millis(100)).await;
 
-        let toggles = client.toggle_calls.read().await;
-        assert_eq!(toggles.len(), 1);
-        assert_eq!(toggles[0], ("test-id".to_string(), false));
+        {
+            let toggles = client.toggle_calls.read().await;
+            assert_eq!(toggles.len(), 1);
+            assert_eq!(toggles[0], ("test-id".to_string(), false));
+        }
+
+        // Simulate Comelit confirmation of the move.
+        handle
+            .status_update(WindowCoveringState {
+                current_position: FULLY_OPENED,
+                target_position: FULLY_CLOSED,
+                position_state: PositionState::MovingDown,
+            })
+            .await;
+
+        // Wait for at least one position-ticker tick (1s) while still well
+        // short of the 3s travel time.
+        sleep(Duration::from_millis(1600)).await;
+
+        let current_state = state.lock().await;
+        assert!(current_state.current_position < FULLY_OPENED);
+        assert_eq!(current_state.position_state, PositionState::MovingDown);
     }
 
     #[tokio::test]
@@ -806,8 +870,10 @@ mod test {
             target_position: 50,
             position_state: PositionState::Stopped,
         };
-        let (handle, state, _client, sink) = create_test_worker(initial).await;
+        let (handle, state, _client, sink) =
+            create_test_worker_with_config(initial, slow_test_config()).await;
 
+        // External movement starts (physical button / independent Comelit command).
         handle
             .status_update(WindowCoveringState {
                 current_position: 50,
@@ -817,11 +883,41 @@ mod test {
             .await;
         sleep(Duration::from_millis(50)).await;
 
-        let s = state.lock().await;
-        assert_eq!(s.position_state, PositionState::MovingUp);
-        assert_eq!(s.target_position, FULLY_OPENED);
-        drop(s);
+        {
+            let s = state.lock().await;
+            assert_eq!(s.position_state, PositionState::MovingUp);
+            assert_eq!(s.target_position, FULLY_OPENED);
+        }
         assert!(!sink.updates.read().await.is_empty());
+
+        // Wait for at least one position-ticker tick so current_position
+        // progresses above the starting position.
+        sleep(Duration::from_millis(1200)).await;
+        {
+            let s = state.lock().await;
+            assert!(s.current_position > 50);
+            assert_eq!(s.position_state, PositionState::MovingUp);
+        }
+
+        // External stop: Comelit reports Stopped once the covering settles.
+        handle
+            .status_update(WindowCoveringState {
+                current_position: 70,
+                target_position: 70,
+                position_state: PositionState::Stopped,
+            })
+            .await;
+        sleep(Duration::from_millis(100)).await;
+
+        let final_state = *state.lock().await;
+        assert_eq!(final_state.position_state, PositionState::Stopped);
+        assert_eq!(final_state.target_position, final_state.current_position);
+
+        // The sink's last published update should reflect the finalized state.
+        let updates = sink.updates.read().await;
+        let last = updates.last().expect("expected at least one sink update");
+        assert_eq!(last.position_state, PositionState::Stopped);
+        assert_eq!(last.target_position, last.current_position);
     }
 
     #[tokio::test]
