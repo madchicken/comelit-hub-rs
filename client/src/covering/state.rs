@@ -18,9 +18,9 @@ pub struct WindowCoveringState {
 
 impl WindowCoveringState {
     /// Same convention as the previous `hap::storage::FileStorage::current_dir()`
-    /// backend: `<current_dir>/data/<device_id>.json`.
+    /// backend with `save_bytes`/`load_bytes` key prefix: `<current_dir>/data/misc/<device_id>.json`.
     async fn state_file_path(device_id: &str) -> std::io::Result<PathBuf> {
-        let dir = std::env::current_dir()?.join("data");
+        let dir = std::env::current_dir()?.join("data").join("misc");
         tokio::fs::create_dir_all(&dir).await?;
         Ok(dir.join(format!("{device_id}.json")))
     }
