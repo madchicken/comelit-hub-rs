@@ -477,7 +477,22 @@ impl ComelitThermostatAccessory {
             }
         }
 
+        if let Some(ref mut char) = accessory.thermostat.current_relative_humidity {
+            let s = Arc::clone(&humidity_arc_state);
+            char.on_read_async(Some(move || {
+                let s = s.clone();
+                async move { Metrics::inc_hap_requests(); Ok(Some(s.lock().await.humidity)) }.boxed()
+            }));
+        }
+
         if let Some(ref mut char) = accessory.thermostat.target_relative_humidity {
+            {
+                let s = Arc::clone(&humidity_arc_state);
+                char.on_read_async(Some(move || {
+                    let s = s.clone();
+                    async move { Metrics::inc_hap_requests(); Ok(Some(s.lock().await.target_humidity)) }.boxed()
+                }));
+            }
             let tx = humidity_sender.clone();
             char.on_update_async(Some(move |_prev, new: f32| {
                 let tx = tx.clone();
