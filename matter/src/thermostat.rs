@@ -114,15 +114,29 @@ fn decode_hvac_state(raw: u8) -> TargetHeatingCoolingState {
 
 /// Maps the client's 4-state model onto Matter's `SystemModeEnum`. `Auto`
 /// (dual-setpoint with deadband) is never exposed — per the design decision,
-/// it's reduced to `Heat`. The `AUTO_MODE` feature is deliberately not
-/// declared in `CLUSTER`, so advertising `SystemModeEnum::Auto` would be a
-/// spec violation as well as semantically wrong (Comelit has a single
-/// setpoint, not a heat/cool pair with a deadband).
+/// it's reduced to `Heat` or `Cool` according to the current Comelit season.
+/// The `AUTO_MODE` feature is deliberately not declared in `CLUSTER`, so
+/// advertising `SystemModeEnum::Auto` would be a spec violation as well as
+/// semantically wrong (Comelit has a single setpoint, not a heat/cool pair
+/// with a deadband).
+///
+/// `Auto` is only ever produced by `ThermostatState::from(&ThermostatDeviceData)`
+/// when `season == Summer` — winter takes priority over auto/manual in that
+/// reduction (see `client/src/thermostat/state.rs`), so a winter scheduled
+/// thermostat already arrives here as `Heat`. `Auto` therefore safely reduces
+/// to `Cool` here, never to `Heat`.
+///
+/// Reducing it to `Heat` instead would not just mis-report a summer thermostat:
+/// a controller that reads `SystemMode` and writes the same value straight back
+/// — a no-op from its point of view — would be accepted by `set_system_mode`,
+/// and the worker's `SetHvacMode` handler (whose `prev == Auto && new != Off`
+/// branch issues `set_thermostat_mode(Manual)` + `set_thermostat_season(...)`)
+/// would physically flip the real thermostat into winter heating.
 fn to_system_mode(state: TargetHeatingCoolingState) -> SystemModeEnum {
     match state {
         TargetHeatingCoolingState::Off => SystemModeEnum::Off,
-        TargetHeatingCoolingState::Heat | TargetHeatingCoolingState::Auto => SystemModeEnum::Heat,
-        TargetHeatingCoolingState::Cool => SystemModeEnum::Cool,
+        TargetHeatingCoolingState::Heat => SystemModeEnum::Heat,
+        TargetHeatingCoolingState::Cool | TargetHeatingCoolingState::Auto => SystemModeEnum::Cool,
     }
 }
 
@@ -438,11 +452,16 @@ mod test {
         assert_eq!(matter_to_celsius(700), 7.0);
     }
 
+    /// Regression: `Auto` must reduce to `Cool`, not `Heat`. It is only ever
+    /// produced when the Comelit season is Summer (winter short-circuits to
+    /// `Heat` in `ThermostatState::from`), so reporting `Heat` both lies to the
+    /// controller and — on a benign read-then-write-back — makes the worker
+    /// flip the real thermostat into winter heating.
     #[test]
-    fn auto_is_reduced_to_heat_and_never_exposed_as_matter_auto() {
+    fn auto_is_reduced_to_cool_and_never_exposed_as_matter_auto() {
         assert_eq!(
             to_system_mode(TargetHeatingCoolingState::Auto),
-            SystemModeEnum::Heat
+            SystemModeEnum::Cool
         );
         assert_eq!(
             to_system_mode(TargetHeatingCoolingState::Heat),

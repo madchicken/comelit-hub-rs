@@ -4,6 +4,17 @@ use crate::protocol::out_data_messages::{ClimaMode, ThermoSeason, ThermostatDevi
 pub struct ThermostatState {
     pub temperature: f32,
     pub target_temperature: f32,
+    /// **Invariant (relied on cross-crate):** when derived from a
+    /// `ThermostatDeviceData`, `Auto` here always means *summer* auto/scheduled
+    /// mode. The reduction in `impl From<&ThermostatDeviceData>` checks the
+    /// season before the auto/manual flag, so a winter thermostat in auto mode
+    /// collapses to `Heat` and `Auto` is unreachable in winter.
+    ///
+    /// The Matter bridge depends on this: `matter/src/thermostat.rs`'s
+    /// `to_system_mode` maps `Auto → SystemModeEnum::Cool` on the strength of
+    /// it. If the precedence in the `From` impl below ever changes so that
+    /// `Auto` can also mean winter, that mapping must change with it —
+    /// otherwise Matter would report a heating thermostat as cooling.
     pub heating_cooling_state: TargetHeatingCoolingState,
     pub target_heating_cooling_state: TargetHeatingCoolingState,
 }
@@ -59,6 +70,12 @@ impl From<&ThermostatDeviceData> for ThermostatState {
         let is_auto = auto_man == ClimaMode::Auto;
         let is_winter = data.season.clone().unwrap_or_default() == ThermoSeason::Winter;
 
+        // Season is deliberately checked *before* `is_auto`: Comelit's auto
+        // mode is a schedule, not a heat/cool deadband, so it still heats in
+        // winter. That ordering makes `Auto` mean "summer auto" and nothing
+        // else — an invariant `matter::thermostat::to_system_mode` relies on
+        // (it reduces `Auto` to `Cool`). See the doc on
+        // `ThermostatState::heating_cooling_state` before reordering these.
         let heating_cooling_state = if is_off {
             TargetHeatingCoolingState::Off
         } else if is_winter {
