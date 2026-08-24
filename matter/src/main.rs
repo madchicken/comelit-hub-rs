@@ -2,6 +2,7 @@ mod bridge;
 mod covering;
 mod light;
 mod mdns;
+mod thermostat;
 
 use core::pin::pin;
 use std::net::UdpSocket;
