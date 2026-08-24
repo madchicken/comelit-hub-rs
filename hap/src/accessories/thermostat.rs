@@ -24,7 +24,7 @@ use serde::{
 use serde_json::Value;
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{self, Sender};
-use tracing::{debug, warn};
+use tracing::{debug, info, warn};
 
 use crate::accessories::{ComelitAccessory, state::thermostat::HumidityState};
 use crate::web::metrics::Metrics;
@@ -121,6 +121,7 @@ impl ComelitThermostat {
 /// latest value rather than a stale, construction-time snapshot. It shares
 /// the same `Arc` as `thermal_state_ro` in `ComelitThermostatAccessory::new`.
 struct HapThermostatSink {
+    device_id: String,
     accessory: Accessory,
     state: Arc<Mutex<ThermostatState>>,
 }
@@ -128,7 +129,22 @@ struct HapThermostatSink {
 #[async_trait]
 impl ThermostatSink for HapThermostatSink {
     async fn update(&self, state: ThermostatState) {
-        *self.state.lock().await = state;
+        // The state lock is taken in its own scope so it is guaranteed released
+        // before the accessory lock below. `hap-rs` locks in the opposite
+        // order: `AccessoryDatabase::read_characteristic` holds the accessory
+        // lock for the whole of `get_value()`, which invokes the
+        // `on_read_async` closures registered in
+        // `ComelitThermostatAccessory::new` — and those lock this very same
+        // state mutex. Holding state while acquiring accessory would therefore
+        // be an ABBA deadlock, and the accessory-database lock is global, so it
+        // would freeze the entire HAP bridge, not just this accessory. Keep
+        // this an explicit block; do not collapse it into a bare
+        // `*self.state.lock().await = state;` whose guard survives only until
+        // the end of the statement by accident.
+        {
+            let mut guard = self.state.lock().await;
+            *guard = state;
+        }
 
         let mut acc = self.accessory.lock().await;
         let Some(thermostat_service) = acc.get_mut_service(HapType::Thermostat) else {
@@ -156,6 +172,8 @@ impl ThermostatSink for HapThermostatSink {
                 warn!("Failed to update TargetHeatingCoolingState: {e}");
             }
         }
+
+        info!("Updated thermostat {} from thermal state push", self.device_id);
     }
 }
 
@@ -245,8 +263,17 @@ impl HumidityWorker {
                 }
             }
             HumidityCommand::MqttPush(new_state) => {
-                *self.state.lock().await = new_state;
+                // Same lock-ordering constraint as `HapThermostatSink::update`:
+                // release the humidity-state lock before `update_accessory`
+                // takes the accessory lock, since `hap-rs` holds the accessory
+                // lock while running the `on_read_async` closures that lock
+                // this state. Keep the explicit scope.
+                {
+                    let mut guard = self.state.lock().await;
+                    *guard = new_state;
+                }
                 self.update_accessory(&new_state).await?;
+                info!("Updated thermostat {} humidity from MQTT push", self.id);
             }
         }
         Ok(())
@@ -513,7 +540,11 @@ impl ComelitThermostatAccessory {
         let accessory = server.add_accessory(accessory).await?;
 
         thermostat_handle
-            .set_sink(Box::new(HapThermostatSink { accessory: accessory.clone(), state: Arc::clone(&thermal_state_ro) }))
+            .set_sink(Box::new(HapThermostatSink {
+                device_id: data.id.clone(),
+                accessory: accessory.clone(),
+                state: Arc::clone(&thermal_state_ro),
+            }))
             .await;
         humidity_sender.send(HumidityCommand::SetAccessory(accessory.clone())).await.ok();
 
