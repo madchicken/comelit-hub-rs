@@ -44,9 +44,10 @@ use comelit_client_rs::{
 };
 use tokio::sync::mpsc;
 
-use bridge::{BridgeMetadata, BridgedEntry, BridgedInfo, ComelitBridgeHandler, CoveringEntry, LightEntry, NonRootMatcher};
+use bridge::{BridgeMetadata, BridgedEntry, BridgedInfo, ComelitBridgeHandler, CoveringEntry, LightEntry, NonRootMatcher, ThermostatEntry};
 use covering::ComelitCoveringHandler;
 use light::{ComelitOnOffHooks, LightState, MultiLightObserver, MqttCommand};
+use thermostat::ComelitThermostatHandler;
 
 // ── DeferredObserver ──────────────────────────────────────────────────────────
 //
@@ -189,11 +190,25 @@ async fn main() -> anyhow::Result<()> {
             .unwrap_or(*state);
     }
 
-    if lights_data.is_empty() && covering_data.is_empty() {
-        return Err(anyhow::anyhow!("No lights or window coverings found in Comelit index"));
+    let mut thermostat_data: Vec<(String, String, comelit_client_rs::thermostat::ThermostatState)> = index
+        .iter()
+        .filter_map(|entry| {
+            if let HomeDeviceData::Thermostat(th) = entry.value() {
+                let label = th.description.clone().unwrap_or_else(|| entry.key().clone());
+                let initial_state = comelit_client_rs::thermostat::ThermostatState::from(th);
+                Some((entry.key().clone(), label, initial_state))
+            } else {
+                None
+            }
+        })
+        .collect();
+    thermostat_data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if lights_data.is_empty() && covering_data.is_empty() && thermostat_data.is_empty() {
+        return Err(anyhow::anyhow!("No lights, window coverings, or thermostats found in Comelit index"));
     }
 
-    info!("Discovered {} lights, {} window coverings:", lights_data.len(), covering_data.len());
+    info!("Discovered {} lights, {} window coverings, {} thermostats:", lights_data.len(), covering_data.len(), thermostat_data.len());
     let mut next_ep: u16 = 2;
     for (id, label, on) in &lights_data {
         info!("  ep{}: light {} ({}) — {}", next_ep, label, id, if *on { "ON" } else { "OFF" });
@@ -201,6 +216,10 @@ async fn main() -> anyhow::Result<()> {
     }
     for (id, label, state) in &covering_data {
         info!("  ep{}: window covering {} ({}) — pos={}", next_ep, label, id, state.current_position);
+        next_ep += 1;
+    }
+    for (id, label, state) in &thermostat_data {
+        info!("  ep{}: thermostat {} ({}) — {:.1}C -> {:.1}C", next_ep, label, id, state.temperature, state.target_temperature);
         next_ep += 1;
     }
 
@@ -235,12 +254,27 @@ async fn main() -> anyhow::Result<()> {
         ep_id += 1;
     }
 
+    let mut thermostat_states: Vec<Arc<thermostat::ThermostatMatterState>> = Vec::new();
+    for (id, _, initial_state) in &thermostat_data {
+        let handle = comelit_client_rs::thermostat::spawn_thermostat_worker(
+            id.clone(),
+            *initial_state,
+            client.clone(),
+        );
+        let state = Arc::new(thermostat::ThermostatMatterState::new(ep_id, id.clone(), *initial_state, handle));
+        state.handle.set_sink(Box::new(thermostat::ThermostatMatterSink::new(state.clone()))).await;
+        thermostat_states.push(state);
+        ep_id += 1;
+    }
+
     let light_observer = Arc::new(MultiLightObserver { states: light_states.clone() });
     let covering_observer = Arc::new(covering::MultiCoveringObserver { states: covering_states.clone() });
+    let thermostat_observer = Arc::new(thermostat::MultiThermostatObserver { states: thermostat_states.clone() });
 
     struct FanOutObserver {
         light: Arc<MultiLightObserver>,
         covering: Arc<covering::MultiCoveringObserver>,
+        thermostat: Arc<thermostat::MultiThermostatObserver>,
     }
 
     #[async_trait]
@@ -248,12 +282,14 @@ async fn main() -> anyhow::Result<()> {
         async fn status_update(&self, device: &HomeDeviceData) {
             self.light.status_update(device).await;
             self.covering.status_update(device).await;
+            self.thermostat.status_update(device).await;
         }
     }
 
     *deferred_slot.write().await = Some(Arc::new(FanOutObserver {
         light: light_observer,
         covering: covering_observer,
+        thermostat: thermostat_observer,
     }) as _);
 
     // ── 5. Subscribe to MQTT push for every discovered device ─────────────────
@@ -262,6 +298,9 @@ async fn main() -> anyhow::Result<()> {
         client.subscribe(id).await?;
     }
     for (id, _, _) in &covering_data {
+        client.subscribe(id).await?;
+    }
+    for (id, _, _) in &thermostat_data {
         client.subscribe(id).await?;
     }
 
@@ -281,7 +320,11 @@ async fn main() -> anyhow::Result<()> {
     let matter_thread = std::thread::Builder::new()
         .name("matter".into())
         .stack_size(600 * 1024)
-        .spawn(move || run_matter(light_states, lights_data, covering_states, covering_data))?;
+        .spawn(move || run_matter(
+            light_states, lights_data,
+            covering_states, covering_data,
+            thermostat_states, thermostat_data,
+        ))?;
 
     matter_thread
         .join()
@@ -297,6 +340,8 @@ fn run_matter(
     lights_data: Vec<(String, String, bool)>,
     covering_states: Vec<Arc<covering::CoveringState>>,
     covering_data: Vec<(String, String, comelit_client_rs::covering::WindowCoveringState)>,
+    thermostat_states: Vec<Arc<thermostat::ThermostatMatterState>>,
+    thermostat_data: Vec<(String, String, comelit_client_rs::thermostat::ThermostatState)>,
 ) -> anyhow::Result<()> {
     let mut matter = Matter::new(&TEST_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, MATTER_PORT);
 
@@ -343,6 +388,16 @@ fn run_matter(
                 label.clone(),
                 device_id.clone(),
             ),
+        }));
+    }
+    for (state, (device_id, label, _)) in thermostat_states.into_iter().zip(thermostat_data.iter()) {
+        let ep_id = state.ep_id;
+        entries.push(BridgedEntry::Thermostat(ThermostatEntry {
+            ep_id,
+            thermostat: ComelitThermostatHandler::new(Dataver::new_rand(&mut rand), state),
+            desc: desc::DescHandler::new(Dataver::new_rand(&mut rand)),
+            groups: groups::GroupsHandler::new(Dataver::new_rand(&mut rand)),
+            bridged: BridgedInfo::new(Dataver::new_rand(&mut rand), label.clone(), device_id.clone()),
         }));
     }
 
