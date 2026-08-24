@@ -7,6 +7,7 @@ use rs_matter::dm::clusters::decl::bridged_device_basic_information::{
 };
 use rs_matter::dm::clusters::desc::{self, ClusterHandler as DescCH};
 use rs_matter::dm::clusters::groups::{self, ClusterHandler as GroupsCH};
+use rs_matter::dm::clusters::decl::thermostat::{self as thermostat_cluster, ClusterAsyncHandler as _};
 use rs_matter::dm::clusters::decl::window_covering::{self as covering_cluster, ClusterAsyncHandler as _};
 use rs_matter::dm::devices::{DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_ON_OFF_LIGHT};
 use rs_matter::dm::{
@@ -21,6 +22,7 @@ use rs_matter::{root_endpoint, with};
 
 use crate::covering::ComelitCoveringHandler;
 use crate::light::ComelitOnOffHooks;
+use crate::thermostat::ComelitThermostatHandler;
 
 // ── Module-level statics for 'static endpoint data ───────────────────────────
 
@@ -45,6 +47,16 @@ static COVERING_CLUSTERS: [Cluster<'static>; 4] = [
     groups::GroupsHandler::CLUSTER,
     <BridgedInfo as BridgedCH>::CLUSTER,
     ComelitCoveringHandler::CLUSTER,
+];
+
+const DEV_TYPE_THERMOSTAT: DeviceType = DeviceType { dtype: 0x0301, drev: 1 };
+
+static THERMOSTAT_DEVICE_TYPES: [DeviceType; 2] = [DEV_TYPE_THERMOSTAT, DEV_TYPE_BRIDGED_NODE];
+static THERMOSTAT_CLUSTERS: [Cluster<'static>; 4] = [
+    desc::DescHandler::CLUSTER,
+    groups::GroupsHandler::CLUSTER,
+    <BridgedInfo as BridgedCH>::CLUSTER,
+    ComelitThermostatHandler::CLUSTER,
 ];
 
 // ── BridgedInfo ───────────────────────────────────────────────────────────────
@@ -127,12 +139,24 @@ pub struct CoveringEntry {
     pub bridged: BridgedInfo,
 }
 
+// ── ThermostatEntry ───────────────────────────────────────────────────────────
+
+/// All handlers and shared state for a single bridged thermostat endpoint.
+pub struct ThermostatEntry {
+    pub ep_id: u16,
+    pub thermostat: ComelitThermostatHandler,
+    pub desc: desc::DescHandler<'static>,
+    pub groups: groups::GroupsHandler,
+    pub bridged: BridgedInfo,
+}
+
 // ── BridgedEntry ──────────────────────────────────────────────────────────────
 
-/// One bridged endpoint: either a light or a window covering.
+/// One bridged endpoint: a light, a window covering, or a thermostat.
 pub enum BridgedEntry {
     Light(LightEntry),
     WindowCovering(CoveringEntry),
+    Thermostat(ThermostatEntry),
 }
 
 impl BridgedEntry {
@@ -140,6 +164,7 @@ impl BridgedEntry {
         match self {
             BridgedEntry::Light(l) => l.ep_id,
             BridgedEntry::WindowCovering(c) => c.ep_id,
+            BridgedEntry::Thermostat(t) => t.ep_id,
         }
     }
 }
@@ -210,6 +235,17 @@ impl AsyncHandler for ComelitBridgeHandler {
                     covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).read(ctx, reply).await,
                 _ => Err(ErrorCode::ClusterNotFound.into()),
             },
+            Some(BridgedEntry::Thermostat(thermostat)) => match cluster_id {
+                c if c == desc::DescHandler::CLUSTER.id =>
+                    DmAsync(desc::HandlerAdaptor(&thermostat.desc)).read(ctx, reply).await,
+                c if c == groups::GroupsHandler::CLUSTER.id =>
+                    DmAsync(groups::HandlerAdaptor(&thermostat.groups)).read(ctx, reply).await,
+                c if c == bridged_device_basic_information::FULL_CLUSTER.id =>
+                    DmAsync(bridged_device_basic_information::HandlerAdaptor(&thermostat.bridged)).read(ctx, reply).await,
+                c if c == ComelitThermostatHandler::CLUSTER.id =>
+                    thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).read(ctx, reply).await,
+                _ => Err(ErrorCode::ClusterNotFound.into()),
+            },
             None => Err(ErrorCode::EndpointNotFound.into()),
         }
     }
@@ -227,6 +263,11 @@ impl AsyncHandler for ComelitBridgeHandler {
             Some(BridgedEntry::WindowCovering(covering)) => match cluster_id {
                 c if c == ComelitCoveringHandler::CLUSTER.id =>
                     covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).write(ctx).await,
+                _ => Err(ErrorCode::AttributeNotFound.into()),
+            },
+            Some(BridgedEntry::Thermostat(thermostat)) => match cluster_id {
+                c if c == ComelitThermostatHandler::CLUSTER.id =>
+                    thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).write(ctx).await,
                 _ => Err(ErrorCode::AttributeNotFound.into()),
             },
             None => Err(ErrorCode::EndpointNotFound.into()),
@@ -250,6 +291,11 @@ impl AsyncHandler for ComelitBridgeHandler {
             Some(BridgedEntry::WindowCovering(covering)) => match cluster_id {
                 c if c == ComelitCoveringHandler::CLUSTER.id =>
                     covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).invoke(ctx, reply).await,
+                _ => Err(ErrorCode::CommandNotFound.into()),
+            },
+            Some(BridgedEntry::Thermostat(thermostat)) => match cluster_id {
+                c if c == ComelitThermostatHandler::CLUSTER.id =>
+                    thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).invoke(ctx, reply).await,
                 _ => Err(ErrorCode::CommandNotFound.into()),
             },
             None => Err(ErrorCode::EndpointNotFound.into()),
@@ -299,6 +345,20 @@ impl AsyncHandler for ComelitBridgeHandler {
                         covering_cluster::HandlerAsyncAdaptor(&covering.window_covering).bump_dataver(&ctx);
                     }
                 }
+                BridgedEntry::Thermostat(thermostat) => {
+                    if cl.map(|c| c == desc::DescHandler::CLUSTER.id).unwrap_or(true) {
+                        DescCH::dataver_changed(&thermostat.desc);
+                    }
+                    if cl.map(|c| c == groups::GroupsHandler::CLUSTER.id).unwrap_or(true) {
+                        GroupsCH::dataver_changed(&thermostat.groups);
+                    }
+                    if cl.map(|c| c == bridged_device_basic_information::FULL_CLUSTER.id).unwrap_or(true) {
+                        BridgedCH::dataver_changed(&thermostat.bridged);
+                    }
+                    if cl.map(|c| c == ComelitThermostatHandler::CLUSTER.id).unwrap_or(true) {
+                        thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).bump_dataver(&ctx);
+                    }
+                }
             }
         }
     }
@@ -313,6 +373,7 @@ impl AsyncHandler for ComelitBridgeHandler {
                 BridgedEntry::WindowCovering(covering) => {
                     Box::pin(covering.window_covering.run(&ctx)) as DynFut<'_>
                 }
+                BridgedEntry::Thermostat(t) => Box::pin(t.thermostat.run(&ctx)) as DynFut<'_>,
             })
             .collect();
 
@@ -355,6 +416,9 @@ impl BridgeMetadata {
                 }
                 BridgedEntry::WindowCovering(covering) => {
                     endpoints.push(Endpoint::new(covering.ep_id, &COVERING_DEVICE_TYPES, &COVERING_CLUSTERS));
+                }
+                BridgedEntry::Thermostat(thermostat) => {
+                    endpoints.push(Endpoint::new(thermostat.ep_id, &THERMOSTAT_DEVICE_TYPES, &THERMOSTAT_CLUSTERS));
                 }
             }
         }
