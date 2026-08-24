@@ -126,16 +126,43 @@ fn to_system_mode(state: TargetHeatingCoolingState) -> SystemModeEnum {
     }
 }
 
-fn from_system_mode(mode: SystemModeEnum) -> TargetHeatingCoolingState {
+/// Maps an incoming Matter `SystemMode` write onto the client's state model,
+/// **rejecting** anything this cluster doesn't advertise support for.
+///
+/// Only `HEATING | COOLING` are declared in `CLUSTER` (no `AUTO_MODE`, no fan
+/// or dehumidify features), so `Auto`, `FanOnly`, `Dry` and `Sleep` are not
+/// legal values for a controller to write here. Reducing them to `Off` — as an
+/// earlier revision of this function did — is actively dangerous: it silently
+/// issues a real `toggle_thermostat_status(OffThermo)` to the physical hub in
+/// response to a request the controller never intended as "turn off", and
+/// reports success. Returning `ConstraintError` is both spec-correct and
+/// keeps unsupported writes away from the hardware.
+fn from_system_mode(mode: SystemModeEnum) -> Result<TargetHeatingCoolingState, Error> {
     match mode {
-        SystemModeEnum::Off => TargetHeatingCoolingState::Off,
-        SystemModeEnum::Heat | SystemModeEnum::EmergencyHeat => TargetHeatingCoolingState::Heat,
-        SystemModeEnum::Cool | SystemModeEnum::Precooling => TargetHeatingCoolingState::Cool,
-        // AUTO_MODE feature isn't declared in CLUSTER, so a controller
-        // shouldn't send Auto — fall back to Off defensively rather than
-        // silently picking a season. Same for the fan/dry/sleep modes, which
-        // this cluster never advertises support for.
-        _ => TargetHeatingCoolingState::Off,
+        SystemModeEnum::Off => Ok(TargetHeatingCoolingState::Off),
+        SystemModeEnum::Heat | SystemModeEnum::EmergencyHeat => Ok(TargetHeatingCoolingState::Heat),
+        SystemModeEnum::Cool | SystemModeEnum::Precooling => Ok(TargetHeatingCoolingState::Cool),
+        SystemModeEnum::Auto
+        | SystemModeEnum::FanOnly
+        | SystemModeEnum::Dry
+        | SystemModeEnum::Sleep => Err(ErrorCode::ConstraintError.into()),
+    }
+}
+
+/// Validates a setpoint write against the limits this cluster advertises via
+/// `AbsMin*/AbsMaxSetpointLimit`, returning the value in Celsius.
+///
+/// Out-of-range writes are rejected rather than clamped: silently substituting
+/// a different temperature than the one requested — and then reporting success
+/// — would leave the controller believing it set a value the hub never
+/// received. (`SetpointRaiseLower` is the one place clamping *is* correct,
+/// since there the controller asks for a relative nudge rather than naming an
+/// absolute target.)
+fn validate_setpoint(value: i16) -> Result<f32, Error> {
+    if (ABS_MIN_SETPOINT..=ABS_MAX_SETPOINT).contains(&value) {
+        Ok(matter_to_celsius(value))
+    } else {
+        Err(ErrorCode::ConstraintError.into())
     }
 }
 
@@ -236,10 +263,10 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         _ctx: impl WriteContext,
         value: SystemModeEnum,
     ) -> Result<(), Error> {
-        self.state
-            .handle
-            .set_hvac_mode(from_system_mode(value))
-            .await;
+        // Reject before touching the hub: `from_system_mode` errors on any
+        // mode outside {Off, Heat, EmergencyHeat, Cool, Precooling}.
+        let mode = from_system_mode(value)?;
+        self.state.handle.set_hvac_mode(mode).await;
         Ok(())
     }
 
@@ -252,10 +279,10 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         _ctx: impl WriteContext,
         value: i16,
     ) -> Result<(), Error> {
-        self.state
-            .handle
-            .set_target_temperature(matter_to_celsius(value))
-            .await;
+        // Reject before touching the hub: must fall within the limits this
+        // cluster advertises as AbsMin/AbsMaxHeatSetpointLimit.
+        let celsius = validate_setpoint(value)?;
+        self.state.handle.set_target_temperature(celsius).await;
         Ok(())
     }
 
@@ -268,10 +295,10 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         _ctx: impl WriteContext,
         value: i16,
     ) -> Result<(), Error> {
-        self.state
-            .handle
-            .set_target_temperature(matter_to_celsius(value))
-            .await;
+        // Reject before touching the hub: must fall within the limits this
+        // cluster advertises as AbsMin/AbsMaxCoolSetpointLimit.
+        let celsius = validate_setpoint(value)?;
+        self.state.handle.set_target_temperature(celsius).await;
         Ok(())
     }
 
@@ -432,23 +459,71 @@ mod test {
     }
 
     #[test]
-    fn unsupported_matter_modes_fall_back_to_off() {
+    fn supported_matter_modes_are_accepted() {
         assert_eq!(
-            from_system_mode(SystemModeEnum::Auto),
+            from_system_mode(SystemModeEnum::Off).unwrap(),
             TargetHeatingCoolingState::Off
         );
         assert_eq!(
-            from_system_mode(SystemModeEnum::FanOnly),
-            TargetHeatingCoolingState::Off
-        );
-        assert_eq!(
-            from_system_mode(SystemModeEnum::EmergencyHeat),
+            from_system_mode(SystemModeEnum::Heat).unwrap(),
             TargetHeatingCoolingState::Heat
         );
         assert_eq!(
-            from_system_mode(SystemModeEnum::Precooling),
+            from_system_mode(SystemModeEnum::EmergencyHeat).unwrap(),
+            TargetHeatingCoolingState::Heat
+        );
+        assert_eq!(
+            from_system_mode(SystemModeEnum::Cool).unwrap(),
             TargetHeatingCoolingState::Cool
         );
+        assert_eq!(
+            from_system_mode(SystemModeEnum::Precooling).unwrap(),
+            TargetHeatingCoolingState::Cool
+        );
+    }
+
+    /// Regression: these must be *rejected*, not silently reduced to `Off`.
+    /// Mapping them to `Off` would send a real power-off command to the hub in
+    /// response to a mode this cluster never advertised support for.
+    #[test]
+    fn unsupported_matter_modes_are_rejected_not_reduced_to_off() {
+        for mode in [
+            SystemModeEnum::Auto,
+            SystemModeEnum::FanOnly,
+            SystemModeEnum::Dry,
+            SystemModeEnum::Sleep,
+        ] {
+            let err = from_system_mode(mode)
+                .expect_err("unsupported system mode must be rejected, not mapped to Off");
+            assert_eq!(err.code(), ErrorCode::ConstraintError, "for {mode:?}");
+        }
+    }
+
+    #[test]
+    fn in_range_setpoints_are_accepted() {
+        assert_eq!(validate_setpoint(2150).unwrap(), 21.5);
+        // Both bounds are inclusive.
+        assert_eq!(validate_setpoint(ABS_MIN_SETPOINT).unwrap(), 7.0);
+        assert_eq!(validate_setpoint(ABS_MAX_SETPOINT).unwrap(), 35.0);
+    }
+
+    /// Regression: writes outside the advertised AbsMin/AbsMax limits must be
+    /// rejected rather than forwarded to the hub unvalidated.
+    #[test]
+    fn out_of_range_setpoints_are_rejected() {
+        for value in [
+            5000, // 50 C, above AbsMax
+            ABS_MAX_SETPOINT + 1,
+            ABS_MIN_SETPOINT - 1,
+            0,
+            -1000, // below AbsMin, and negative
+            i16::MAX,
+            i16::MIN,
+        ] {
+            let err = validate_setpoint(value)
+                .expect_err("out-of-range setpoint must be rejected, not forwarded to the hub");
+            assert_eq!(err.code(), ErrorCode::ConstraintError, "for {value}");
+        }
     }
 
     #[test]
