@@ -18,10 +18,11 @@ use tokio::sync::RwLock;
 
 use rs_matter::crypto::{default_crypto, Crypto};
 use rs_matter::dm::clusters::app::on_off::{self};
+use rs_matter::dm::clusters::basic_info::BasicInfoConfig;
 use rs_matter::dm::clusters::desc;
 use rs_matter::dm::clusters::groups;
 use rs_matter::dm::clusters::net_comm::SharedNetworks;
-use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM, TEST_DEV_DET};
+use rs_matter::dm::devices::test::{DAC_PRIVKEY, TEST_DEV_ATT, TEST_DEV_COMM};
 use rs_matter::dm::endpoints;
 use rs_matter::dm::events::NoEvents;
 use rs_matter::dm::networks::eth::EthNetwork;
@@ -48,6 +49,22 @@ use bridge::{BridgeMetadata, BridgedEntry, BridgedInfo, ComelitBridgeHandler, Co
 use covering::ComelitCoveringHandler;
 use light::{ComelitOnOffHooks, LightState, MultiLightObserver, MqttCommand};
 use thermostat::ComelitThermostatHandler;
+
+// ── Basic device information ─────────────────────────────────────────────────
+//
+// Same vendor/product ID and attestation credentials as rs-matter's built-in
+// test device (this remains an uncertified device — see `TEST_DEV_ATT` below),
+// but with a distinct name/mDNS-visible identity so it doesn't show up in
+// controller apps as "MyTest" / "ACME Test" alongside every other rs-matter
+// example on the network, and so it's visibly distinct from the HomeKit
+// bridge's "ComelitHUB-HK" (hap/src/bridge.rs).
+
+const COMELIT_DEV_DET: BasicInfoConfig = BasicInfoConfig {
+    vendor_name: "Comelit",
+    product_name: "Comelit HUB Matter Bridge",
+    device_name: "Comelit HUB (Matter)",
+    ..rs_matter::dm::devices::test::TEST_DEV_DET
+};
 
 // ── DeferredObserver ──────────────────────────────────────────────────────────
 //
@@ -343,7 +360,7 @@ fn run_matter(
     thermostat_states: Vec<Arc<thermostat::ThermostatMatterState>>,
     thermostat_data: Vec<(String, String, comelit_client_rs::thermostat::ThermostatState)>,
 ) -> anyhow::Result<()> {
-    let mut matter = Matter::new(&TEST_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, MATTER_PORT);
+    let mut matter = Matter::new(&COMELIT_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, MATTER_PORT);
 
     let mut kv_buf = [0u8; 4096];
     let mut kv = DirKvBlobStore::new_default();
