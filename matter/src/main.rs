@@ -435,8 +435,23 @@ fn run_matter(
     );
 
     let responder = DefaultResponder::new(&dm);
-    let socket = Async::<UdpSocket>::bind(MATTER_SOCKET_BIND_ADDR)
-        .map_err(|e| anyhow::anyhow!("socket bind: {e}"))?;
+    // Bind manually via socket2 instead of `Async::<UdpSocket>::bind` so we can
+    // force a dual-stack (IPv4+IPv6) socket. `MATTER_SOCKET_BIND_ADDR` is `::`
+    // (IPv6 unspecified); on Linux that's dual-stack by default, but macOS/BSD
+    // defaults IPV6_V6ONLY to true, so without this the bridge is unreachable
+    // from any IPv4-only Matter controller on the local network even though
+    // mDNS discovery (which can succeed over IPv6 alone) looks fine.
+    let socket = {
+        use socket2::{Domain, Protocol, Socket, Type};
+        let sock = Socket::new(Domain::IPV6, Type::DGRAM, Some(Protocol::UDP))
+            .map_err(|e| anyhow::anyhow!("socket create: {e}"))?;
+        sock.set_only_v6(false)
+            .map_err(|e| anyhow::anyhow!("socket set dual-stack: {e}"))?;
+        sock.bind(&MATTER_SOCKET_BIND_ADDR.into())
+            .map_err(|e| anyhow::anyhow!("socket bind: {e}"))?;
+        Async::<UdpSocket>::new(sock.into())
+            .map_err(|e| anyhow::anyhow!("socket async wrap: {e}"))?
+    };
 
     if !matter.is_commissioned() {
         matter
