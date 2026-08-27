@@ -80,6 +80,20 @@ fn register_metric_descriptions() {
         "Total number of HomeKit requests received"
     );
 
+    // HAP health check metrics
+    describe_counter!(
+        "comelit_hap_health_check_total",
+        "Total number of local HAP server health check probes"
+    );
+    describe_counter!(
+        "comelit_hap_health_check_failure_total",
+        "Total number of failed local HAP server health check probes"
+    );
+    describe_gauge!(
+        "comelit_hap_health_check_last_success_timestamp",
+        "Unix timestamp of the last successful HAP server health check probe"
+    );
+
     // Thermostat metrics
     describe_gauge!(
         "comelit_thermostat_temperature",
@@ -177,6 +191,20 @@ impl Metrics {
     /// Increment HAP request counter.
     pub fn inc_hap_requests() {
         counter!("comelit_hap_requests_total").increment(1);
+    }
+
+    /// Record a local HAP server health check probe.
+    pub fn record_hap_health_check(success: bool) {
+        counter!("comelit_hap_health_check_total").increment(1);
+        if success {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs_f64();
+            gauge!("comelit_hap_health_check_last_success_timestamp").set(now);
+        } else {
+            counter!("comelit_hap_health_check_failure_total").increment(1);
+        }
     }
 
     /// Set the current temperature for a thermostat.
