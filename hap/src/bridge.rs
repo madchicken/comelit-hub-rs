@@ -204,6 +204,81 @@ fn doorbell_mac(device_id: &str) -> [u8; 6] {
     [(h[0] | 0x02) & 0xFE, h[1], h[2], h[3], h[4], h[5]]
 }
 
+/// Polls the local HAP server's TCP port until it stops answering requests.
+///
+/// `hap-rs` guards its whole accessory database behind a single lock shared
+/// by every endpoint handler. If a request handler ever gets stuck holding
+/// that lock, the HAP server keeps running (the MQTT client, ping task, and
+/// pushed-state updates are unaffected) but silently stops responding to
+/// *any* HomeKit request, with nothing logged — this happened in production
+/// for over 7 hours before anyone noticed. This probe doesn't need to
+/// complete HAP pairing; it only needs proof that the accept loop and
+/// request dispatch are still making progress, since that's exactly what
+/// froze. Resolves with an error once the server has failed to respond for
+/// `MAX_CONSECUTIVE_FAILURES` probes in a row, so the caller can restart it.
+async fn hap_health_check_task(port: u16) -> anyhow::Error {
+    const CHECK_INTERVAL: Duration = Duration::from_secs(60);
+    const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+    const MAX_CONSECUTIVE_FAILURES: u32 = 3;
+
+    let mut consecutive_failures = 0u32;
+    let mut interval = tokio::time::interval(CHECK_INTERVAL);
+    // The first tick fires immediately; skip it so we don't probe before the
+    // server has finished starting up.
+    interval.tick().await;
+
+    loop {
+        interval.tick().await;
+        let outcome = tokio::time::timeout(PROBE_TIMEOUT, probe_hap_server(port)).await;
+        match outcome {
+            Ok(Ok(())) => {
+                consecutive_failures = 0;
+                Metrics::record_hap_health_check(true);
+            }
+            Ok(Err(e)) => {
+                consecutive_failures += 1;
+                warn!(
+                    "HAP health check probe failed ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES}): {e}"
+                );
+                Metrics::record_hap_health_check(false);
+            }
+            Err(_) => {
+                consecutive_failures += 1;
+                warn!(
+                    "HAP health check probe timed out after {PROBE_TIMEOUT:?} ({consecutive_failures}/{MAX_CONSECUTIVE_FAILURES})"
+                );
+                Metrics::record_hap_health_check(false);
+            }
+        }
+
+        if consecutive_failures >= MAX_CONSECUTIVE_FAILURES {
+            return anyhow::anyhow!(
+                "HAP server unresponsive: {MAX_CONSECUTIVE_FAILURES} consecutive health check failures"
+            );
+        }
+    }
+}
+
+/// Opens a raw TCP connection to the local HAP server and waits for any byte
+/// of response to a minimal HTTP request. The request is intentionally
+/// unauthenticated (no HAP pair-verify session) — we only care whether the
+/// server's accept loop and request dispatch are alive, not whether the
+/// request itself succeeds.
+async fn probe_hap_server(port: u16) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let mut stream = tokio::net::TcpStream::connect(("127.0.0.1", port)).await?;
+    stream
+        .write_all(b"GET /accessories HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+        .await?;
+    let mut buf = [0u8; 1];
+    let n = stream.read(&mut buf).await?;
+    if n == 0 {
+        anyhow::bail!("connection closed with no response");
+    }
+    Ok(())
+}
+
 pub async fn start_bridge(
     user: &str,
     password: &str,
@@ -297,6 +372,7 @@ pub async fn start_bridge(
         bridge_state.set_paired(config.status_flag == BonjourStatusFlag::Zero);
         let pin = config.pin.clone().to_string();
         let url = config.setup_url();
+        let hap_port = config.port;
 
         // Update bridge state with pairing info
         bridge_state.set_pairing_pin(pin.clone());
@@ -675,6 +751,13 @@ pub async fn start_bridge(
                 let _ = client.disconnect().await;
                 Err(anyhow::anyhow!("HAP server exited unexpectedly"))
             }
+            e = hap_health_check_task(hap_port) => {
+                error!("{e:#}");
+                bridge_state.set_connection_status(ConnectionStatus::Disconnected);
+                Metrics::set_connected(false);
+                let _ = client.disconnect().await;
+                Err(e)
+            }
             _ = ctrl_c => {
                 info!("signal received, starting graceful shutdown");
                 bridge_state.set_connection_status(ConnectionStatus::Disconnected);
@@ -695,5 +778,51 @@ pub async fn start_bridge(
         bridge_state.set_error(Some("Login failed".to_string()));
         Metrics::set_connected(false);
         Err(ComelitClientError::Login("Login failed".to_string()).into())
+    }
+}
+
+#[cfg(test)]
+mod health_check_tests {
+    use super::probe_hap_server;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[tokio::test]
+    async fn probe_succeeds_when_server_responds() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = socket.read(&mut buf).await;
+            let _ = socket
+                .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n")
+                .await;
+        });
+
+        probe_hap_server(port).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn probe_fails_when_nothing_listens() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        drop(listener); // free the port so the connection is refused
+
+        assert!(probe_hap_server(port).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn probe_fails_when_connection_closes_without_response() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+
+        tokio::spawn(async move {
+            let (socket, _) = listener.accept().await.unwrap();
+            drop(socket); // accept, then hang up without writing anything
+        });
+
+        assert!(probe_hap_server(port).await.is_err());
     }
 }
