@@ -23,7 +23,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
-use tokio::time::{Instant, sleep};
+use tokio::time::{Instant, sleep, timeout};
 use tracing::{debug, error, info, warn};
 use uuid::Uuid;
 
@@ -667,8 +667,25 @@ impl ComelitClient {
                                 // Register BEFORE publishing to avoid the race where the hub
                                 // responds before the receiver is registered in the pending map.
                                 let receiver = manager.add_request(id);
-                                match client.publish(topic.as_str(), QoS::AtMostOnce, false, serde_json::to_string(&payload).unwrap()).await {
-                                    Ok(_) => {
+                                // QoS::AtLeastOnce (not AtMostOnce) so the ping is
+                                // subject to the same broker-ack bookkeeping as every
+                                // other request. A silent stall here is exactly what
+                                // let a production incident run for 3+ hours: writes
+                                // (which already used AtLeastOnce) failed instantly
+                                // and never recovered, while an AtMostOnce ping kept
+                                // "succeeding" and never tripped the ping-failure
+                                // restart path. The publish itself is wrapped in a
+                                // timeout because `publish().await` can block
+                                // indefinitely if the client's in-flight QoS1 buffer
+                                // is ever exhausted — without this, a stuck publish
+                                // would freeze the ping loop rather than count as a
+                                // failure.
+                                let publish_result = timeout(
+                                    Duration::from_secs(5),
+                                    client.publish(topic.as_str(), QoS::AtLeastOnce, false, serde_json::to_string(&payload).unwrap()),
+                                ).await;
+                                match publish_result {
+                                    Ok(Ok(_)) => {
                                         debug!("Ping message sent successfully");
                                         tokio::select! {
                                             _ = sleep(Duration::from_secs(5)) => {
@@ -697,8 +714,13 @@ impl ComelitClient {
                                             }
                                         }
                                     },
-                                    Err(e) => {
+                                    Ok(Err(e)) => {
                                         error!("Failed to send ping message: {:?}", e);
+                                        manager.cancel_request(id);
+                                        failed_ping_requests += 1;
+                                    }
+                                    Err(_) => {
+                                        error!("Publishing ping message timed out");
                                         manager.cancel_request(id);
                                         failed_ping_requests += 1;
                                     }
