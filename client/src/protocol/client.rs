@@ -948,16 +948,23 @@ impl ComelitClient {
         // Try to recover it with a re-login before giving up — the event loop
         // is still running at this point, so the round-trip can complete.
         warn!("Session is None in get_session(), attempting re-login before restart");
-        if Box::pin(self.re_login(None)).await.is_ok()
-            && let Some(session) = self
-                .inner
-                .session
-                .read()
-                .await
-                .as_ref()
-                .map(|s| (s.agent_id, s.session_token.clone()))
-        {
-            return Ok(session);
+        match Box::pin(self.re_login(None)).await {
+            Ok(()) => {
+                if let Some(session) = self
+                    .inner
+                    .session
+                    .read()
+                    .await
+                    .as_ref()
+                    .map(|s| (s.agent_id, s.session_token.clone()))
+                {
+                    return Ok(session);
+                }
+            }
+            // Logged here because the caller only sees "Re-login failed" below —
+            // this is the one place the actual underlying error (e.g. the specific
+            // MQTT publish failure) is available before it's discarded.
+            Err(e) => error!("Re-login attempt failed: {e}"),
         }
 
         // Re-login failed too — signal the ping task to stop so the bridge
