@@ -13,7 +13,7 @@ use async_io::Async;
 use async_trait::async_trait;
 use clap::Parser;
 use embassy_futures::select::select4;
-use log::{error, info};
+use log::{error, info, warn};
 use tokio::sync::RwLock;
 
 use rs_matter::crypto::{default_crypto, Crypto};
@@ -141,6 +141,25 @@ async fn main() -> anyhow::Result<()> {
 
     let args = Args::parse();
 
+    // Restart the whole bridge from scratch on any error instead of taking
+    // the process down — mirrors the retry loop `hap/src/main.rs` already
+    // has around `start_bridge`. There is no graceful-shutdown signal yet
+    // (unlike the HAP bridge), so `run_bridge` only ever returns `Ok(())`
+    // if the Matter transport thread itself exits normally.
+    loop {
+        match run_bridge(&args).await {
+            Ok(()) => break,
+            Err(e) => {
+                warn!("Matter bridge exited with error: {e:#}, restarting in 10s...");
+                tokio::time::sleep(Duration::from_secs(10)).await;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+async fn run_bridge(args: &Args) -> anyhow::Result<()> {
     // ── 1. MQTT command channel ───────────────────────────────────────────────
 
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<MqttCommand>();
