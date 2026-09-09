@@ -12,7 +12,7 @@ use hap::{
     server::{IpServer, Server},
 };
 use serde_json::Value;
-use tracing::{info, warn};
+use tracing::info;
 
 use crate::{
     accessories::{
@@ -180,17 +180,21 @@ impl ComelitDoorAccessory {
                         );
                         return Ok(());
                     }
+                    info!("Door {id} started opening");
+                    // Wait for the real outcome of the hub call before
+                    // reporting success to HomeKit — safe now that
+                    // send_action's rate limiter is per-device. Everything
+                    // after this point is our own simulated timing of the
+                    // door's physical movement (the hub doesn't push
+                    // position updates for it), not a real command, so it
+                    // stays fire-and-forget in the spawned task below.
+                    client.toggle_device_status(&id, true).await?;
+                    {
+                        let mut state = state.lock().unwrap();
+                        state.target_position = FULLY_OPENED;
+                        state.position_state = DoorPositionState::Opening as u8;
+                    }
                     tokio::spawn(async move {
-                        info!("Door {id} started opening");
-                        if let Err(e) = client.toggle_device_status(&id, true).await {
-                            warn!("toggle_device_status for door {id} failed: {e}");
-                            return;
-                        }
-                        {
-                            let mut state = state.lock().unwrap();
-                            state.target_position = FULLY_OPENED;
-                            state.position_state = DoorPositionState::Opening as u8;
-                        }
                         tokio::time::sleep(opening_closing_time).await;
                         {
                             let mut state = state.lock().unwrap();

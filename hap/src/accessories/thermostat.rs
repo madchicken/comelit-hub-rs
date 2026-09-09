@@ -406,7 +406,7 @@ impl ComelitThermostatAccessory {
                 let handle = handle.clone();
                 async move {
                     Metrics::inc_hap_requests();
-                    handle.set_target_temperature(new).await;
+                    handle.set_target_temperature(new).await?;
                     Ok(())
                 }
                 .boxed()
@@ -419,7 +419,7 @@ impl ComelitThermostatAccessory {
                 let handle = handle.clone();
                 async move {
                     Metrics::inc_hap_requests();
-                    handle.set_hvac_mode(TargetHeatingCoolingState::from(new)).await;
+                    handle.set_hvac_mode(TargetHeatingCoolingState::from(new)).await?;
                     Ok(())
                 }
                 .boxed()

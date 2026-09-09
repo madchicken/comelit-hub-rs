@@ -2,6 +2,7 @@
 use async_trait::async_trait;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::oneshot;
 use std::sync::Arc;
 use tracing::{debug, warn};
 
@@ -19,8 +20,8 @@ pub trait ThermostatSink: Send + Sync + 'static {
 }
 
 enum ThermostatCommand {
-    SetTargetTemperature(f32),
-    SetHvacMode(TargetHeatingCoolingState),
+    SetTargetTemperature(f32, oneshot::Sender<anyhow::Result<()>>),
+    SetHvacMode(TargetHeatingCoolingState, oneshot::Sender<anyhow::Result<()>>),
     MqttPush(ThermostatState),
     SetSink(Box<dyn ThermostatSink>),
 }
@@ -51,9 +52,10 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
                 self.sink = Some(sink);
             }
 
-            ThermostatCommand::SetTargetTemperature(new) => {
+            ThermostatCommand::SetTargetTemperature(new, reply) => {
                 let temperature = (new * 10.0) as i32;
-                match self.client.set_thermostat_temperature(&self.id, temperature).await {
+                let result = self.client.set_thermostat_temperature(&self.id, temperature).await;
+                match &result {
                     Ok(()) => {
                         // Echo the value we just sent immediately: the confirmation
                         // push from the hub can take minutes (or never arrive for
@@ -68,9 +70,10 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
                     }
                     Err(e) => warn!("set_thermostat_temperature failed: {e}"),
                 }
+                let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
             }
 
-            ThermostatCommand::SetHvacMode(new) => {
+            ThermostatCommand::SetHvacMode(new, reply) => {
                 let prev = self.state.lock().await.target_heating_cooling_state;
                 debug!("Target heating cooling state updated from {:?} to {:?}", prev, new);
 
@@ -127,6 +130,18 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
                     };
                     self.notify_sink(state).await;
                 }
+
+                // Report success based on the toggle alone: it's the command
+                // HomeKit/Matter actually asked for. The follow-up mode/season
+                // calls are implementation details of reaching that HVAC
+                // state — their failure is logged but doesn't fail the write,
+                // consistent with how `toggle_ok` already gates the local
+                // state update above.
+                let _ = reply.send(if toggle_ok {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("toggle_thermostat_status failed"))
+                });
             }
 
             ThermostatCommand::MqttPush(new_state) => {
@@ -155,12 +170,41 @@ pub struct ThermostatHandle {
 }
 
 impl ThermostatHandle {
-    pub async fn set_target_temperature(&self, celsius: f32) {
-        let _ = self.command_sender.send(ThermostatCommand::SetTargetTemperature(celsius)).await;
+    /// Sends the command to the worker and waits for the real outcome of the
+    /// hub call (not just "the worker accepted the command") — the whole
+    /// point of returning `Result` here instead of the old fire-and-forget
+    /// `()`. Safe now that send_action's rate limiter is per-device: this
+    /// can no longer be delayed behind an unrelated device's queued
+    /// commands, so it stays well within HomeKit's per-write timeout even on
+    /// the retry path (see client::protocol::client::send_action).
+    pub async fn set_target_temperature(&self, celsius: f32) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .command_sender
+            .send(ThermostatCommand::SetTargetTemperature(celsius, reply_tx))
+            .await
+            .is_err()
+        {
+            anyhow::bail!("thermostat worker is gone");
+        }
+        reply_rx
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("thermostat worker dropped the reply")))
     }
 
-    pub async fn set_hvac_mode(&self, mode: TargetHeatingCoolingState) {
-        let _ = self.command_sender.send(ThermostatCommand::SetHvacMode(mode)).await;
+    pub async fn set_hvac_mode(&self, mode: TargetHeatingCoolingState) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .command_sender
+            .send(ThermostatCommand::SetHvacMode(mode, reply_tx))
+            .await
+            .is_err()
+        {
+            anyhow::bail!("thermostat worker is gone");
+        }
+        reply_rx
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("thermostat worker dropped the reply")))
     }
 
     pub async fn mqtt_push(&self, state: ThermostatState) {
@@ -310,8 +354,7 @@ mod test {
     async fn test_set_target_temperature_echoes_immediately() {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
 
-        handle.set_target_temperature(21.5).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_target_temperature(21.5).await.is_ok());
 
         assert_eq!(client.temperature_calls.read().await.as_slice(), &[("test-id".to_string(), 215)]);
         let updates = sink.updates.read().await;
@@ -323,8 +366,7 @@ mod test {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
         client.should_fail.store(true, Ordering::Relaxed);
 
-        handle.set_target_temperature(21.5).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_target_temperature(21.5).await.is_err());
 
         assert!(sink.updates.read().await.is_empty());
     }
@@ -333,8 +375,7 @@ mod test {
     async fn test_set_hvac_mode_heat_sets_season_winter_and_manual() {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
 
-        handle.set_hvac_mode(TargetHeatingCoolingState::Heat).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Heat).await.is_ok());
 
         assert_eq!(client.toggle_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaOnOff::OnThermo)]);
         assert_eq!(client.season_calls.read().await.as_slice(), &[("test-id".to_string(), ThermoSeason::Winter)]);
@@ -347,8 +388,7 @@ mod test {
     async fn test_set_hvac_mode_off_sends_off_toggle_only() {
         let (handle, client, _sink) = create_test_worker(ThermostatState::default()).await;
 
-        handle.set_hvac_mode(TargetHeatingCoolingState::Off).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Off).await.is_ok());
 
         assert_eq!(client.toggle_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaOnOff::OffThermo)]);
         assert!(client.season_calls.read().await.is_empty());
@@ -358,8 +398,7 @@ mod test {
     async fn test_set_hvac_mode_auto_sends_auto_mode() {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
 
-        handle.set_hvac_mode(TargetHeatingCoolingState::Auto).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Auto).await.is_ok());
 
         assert_eq!(client.mode_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaMode::Auto)]);
         let updates = sink.updates.read().await;
@@ -374,8 +413,7 @@ mod test {
         };
         let (handle, client, _sink) = create_test_worker(initial).await;
 
-        handle.set_hvac_mode(TargetHeatingCoolingState::Heat).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Heat).await.is_ok());
 
         assert_eq!(client.mode_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaMode::Manual)]);
         assert_eq!(client.season_calls.read().await.as_slice(), &[("test-id".to_string(), ThermoSeason::Winter)]);
@@ -406,8 +444,7 @@ mod test {
         drop(clone);
         sleep(Duration::from_millis(20)).await;
 
-        handle.set_target_temperature(20.0).await;
-        sleep(Duration::from_millis(20)).await;
+        assert!(handle.set_target_temperature(20.0).await.is_ok());
 
         assert_eq!(client.temperature_calls.read().await.len(), 1);
     }

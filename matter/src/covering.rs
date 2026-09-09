@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use async_trait::async_trait;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use log::info;
+use log::{info, warn};
 
 use rs_matter::dm::Cluster;
 use rs_matter::dm::clusters::decl::window_covering::{
@@ -314,18 +314,27 @@ impl ClusterAsyncHandler for ComelitCoveringHandler {
 
     async fn handle_up_or_open(&self, _ctx: impl InvokeContext) -> Result<(), Error> {
         let current = self.state.current_position.load(Ordering::Relaxed);
-        self.state.handle.move_to(current, FULLY_OPENED).await;
+        self.state.handle.move_to(current, FULLY_OPENED).await.map_err(|e| {
+            warn!("move_to(open) failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 
     async fn handle_down_or_close(&self, _ctx: impl InvokeContext) -> Result<(), Error> {
         let current = self.state.current_position.load(Ordering::Relaxed);
-        self.state.handle.move_to(current, FULLY_CLOSED).await;
+        self.state.handle.move_to(current, FULLY_CLOSED).await.map_err(|e| {
+            warn!("move_to(close) failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 
     async fn handle_stop_motion(&self, _ctx: impl InvokeContext) -> Result<(), Error> {
-        self.state.handle.stop().await;
+        self.state.handle.stop().await.map_err(|e| {
+            warn!("stop failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 
@@ -345,7 +354,10 @@ impl ClusterAsyncHandler for ComelitCoveringHandler {
         let percent_100ths = request.lift_percent_100_ths_value()?;
         let target = matter_percent_100ths_to_comelit(percent_100ths);
         let current = self.state.current_position.load(Ordering::Relaxed);
-        self.state.handle.move_to(current, target).await;
+        self.state.handle.move_to(current, target).await.map_err(|e| {
+            warn!("move_to({target}) failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 

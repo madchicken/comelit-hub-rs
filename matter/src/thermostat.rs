@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicI16, AtomicU8, Ordering};
 use async_trait::async_trait;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::signal::Signal;
-use log::info;
+use log::{info, warn};
 
 use rs_matter::dm::Cluster;
 use rs_matter::dm::clusters::decl::thermostat::{
@@ -280,7 +280,10 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         // Reject before touching the hub: `from_system_mode` errors on any
         // mode outside {Off, Heat, EmergencyHeat, Cool, Precooling}.
         let mode = from_system_mode(value)?;
-        self.state.handle.set_hvac_mode(mode).await;
+        self.state.handle.set_hvac_mode(mode).await.map_err(|e| {
+            warn!("set_hvac_mode failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 
@@ -296,7 +299,10 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         // Reject before touching the hub: must fall within the limits this
         // cluster advertises as AbsMin/AbsMaxHeatSetpointLimit.
         let celsius = validate_setpoint(value)?;
-        self.state.handle.set_target_temperature(celsius).await;
+        self.state.handle.set_target_temperature(celsius).await.map_err(|e| {
+            warn!("set_target_temperature failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 
@@ -312,7 +318,10 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         // Reject before touching the hub: must fall within the limits this
         // cluster advertises as AbsMin/AbsMaxCoolSetpointLimit.
         let celsius = validate_setpoint(value)?;
-        self.state.handle.set_target_temperature(celsius).await;
+        self.state.handle.set_target_temperature(celsius).await.map_err(|e| {
+            warn!("set_target_temperature failed: {e}");
+            Error::from(ErrorCode::Failure)
+        })?;
         Ok(())
     }
 
@@ -351,7 +360,11 @@ impl ClusterAsyncHandler for ComelitThermostatHandler {
         self.state
             .handle
             .set_target_temperature(matter_to_celsius(new_value))
-            .await;
+            .await
+            .map_err(|e| {
+                warn!("set_target_temperature failed: {e}");
+                Error::from(ErrorCode::Failure)
+            })?;
         Ok(())
     }
 
