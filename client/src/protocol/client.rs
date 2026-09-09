@@ -488,38 +488,67 @@ impl ComelitClient {
         if !delay.is_zero() {
             sleep(delay).await;
         }
-        let session = self.get_session().await?;
-        let old_token = session.1.clone();
-        let result = self
-            .send_request(make_action_message(
-                make_id(&self.inner.req_id).await,
-                session.0,
-                session.1.as_str(),
-                device_id,
-                action_type.clone(),
-                value,
-            ))
-            .await;
-        match result {
-            Ok(_) => Ok(()),
-            Err(ComelitClientError::InvalidToken) => {
-                warn!("Invalid token for device {device_id}, re-logging in...");
-                self.re_login(Some(&old_token)).await?;
-                let session = self.get_session().await?;
-                self.send_request(make_action_message(
+
+        // Retry the whole operation a bounded number of times. A session
+        // hiccup (get_session() failing to re-login) or an "invalid token"
+        // response are both recoverable once a fresh session is obtained,
+        // but neither get_session() nor this method's caller (a HAP/Matter
+        // characteristic worker, off the HTTP response's critical path)
+        // ever re-attempted the actual command that triggered the failure —
+        // so a single transient MQTT publish hiccup used to silently drop
+        // whatever the user just asked for, even though the bridge recovers
+        // moments later. Mirrors the retry-the-original-request pattern the
+        // TypeScript reference client (comelit-client's publish()) uses.
+        const MAX_ATTEMPTS: u32 = 5;
+        const RETRY_DELAY: Duration = Duration::from_millis(500);
+        let mut last_err = ComelitClientError::InvalidState;
+        for attempt in 1..=MAX_ATTEMPTS {
+            let session = match self.get_session().await {
+                Ok(session) => session,
+                Err(e) => {
+                    last_err = e;
+                    if attempt < MAX_ATTEMPTS {
+                        warn!(
+                            "get_session failed for device {device_id} (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}, retrying..."
+                        );
+                        sleep(RETRY_DELAY).await;
+                    }
+                    continue;
+                }
+            };
+            let old_token = session.1.clone();
+            let result = self
+                .send_request(make_action_message(
                     make_id(&self.inner.req_id).await,
                     session.0,
                     session.1.as_str(),
                     device_id,
-                    action_type,
+                    action_type.clone(),
                     value,
                 ))
-                .await
-                .map(|_| ())
-                .map_err(|e| ComelitClientError::Generic(e.to_string()))
+                .await;
+            match result {
+                Ok(_) => return Ok(()),
+                Err(ComelitClientError::InvalidToken) => {
+                    warn!("Invalid token for device {device_id}, re-logging in...");
+                    if let Err(e) = self.re_login(Some(&old_token)).await {
+                        last_err = e;
+                    }
+                    // Loop again regardless: get_session() picks up whatever
+                    // session state re_login left behind.
+                }
+                Err(e) => {
+                    last_err = ComelitClientError::Generic(e.to_string());
+                    if attempt < MAX_ATTEMPTS {
+                        warn!(
+                            "send_action failed for device {device_id} (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}, retrying..."
+                        );
+                        sleep(RETRY_DELAY).await;
+                    }
+                }
             }
-            Err(e) => Err(ComelitClientError::Generic(e.to_string())),
         }
+        Err(last_err)
     }
 
     async fn re_login(&self, old_token: Option<&str>) -> Result<(), ComelitClientError> {
