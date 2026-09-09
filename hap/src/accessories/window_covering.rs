@@ -265,7 +265,7 @@ impl ComelitWindowCoveringAccessory {
                         "Window covering target position update: {} -> {}",
                         old_pos, new_pos
                     );
-                    handle.move_to(old_pos, new_pos).await;
+                    handle.move_to(old_pos, new_pos).await?;
                     Ok(())
                 }
                 .boxed()

@@ -7,6 +7,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::oneshot;
 use tokio::time::Instant;
 use tracing::{debug, info, warn};
 
@@ -33,7 +34,7 @@ enum WorkerCommand {
     /// or Matter's GoToLiftPercentage/UpOrOpen/DownOrClose). `old_pos` is only
     /// used for logging, never for movement logic (the worker always reads the
     /// authoritative current position from `state`).
-    MoveTo { old_pos: u8, new_pos: u8 },
+    MoveTo { old_pos: u8, new_pos: u8, reply: oneshot::Sender<anyhow::Result<()>> },
 
     /// Comelit reported a status change (external move, or confirmation of a
     /// command we sent).
@@ -41,7 +42,7 @@ enum WorkerCommand {
 
     /// Stop any in-progress movement (Matter's mandatory `StopMotion` command;
     /// HAP never sends this today since it has no hold-position characteristic).
-    Stop,
+    Stop { reply: oneshot::Sender<anyhow::Result<()>> },
 
     /// Attach (or replace) the sink used to publish position updates.
     SetSink { sink: Box<dyn WindowCoveringSink> },
@@ -111,20 +112,24 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
             tokio::select! {
                 cmd = receiver.recv() => {
                     match cmd {
-                        Some(WorkerCommand::MoveTo { old_pos, new_pos }) => {
-                            if let Err(e) = self.handle_move_to(old_pos, new_pos).await {
+                        Some(WorkerCommand::MoveTo { old_pos, new_pos, reply }) => {
+                            let result = self.handle_move_to(old_pos, new_pos).await;
+                            if let Err(e) = &result {
                                 warn!("Error handling move_to: {}", e);
                             }
+                            let _ = reply.send(result);
                         }
                         Some(WorkerCommand::StatusUpdate { new_state }) => {
                             if let Err(e) = self.handle_status_update(new_state).await {
                                 warn!("Error handling status update: {}", e);
                             }
                         }
-                        Some(WorkerCommand::Stop) => {
-                            if let Err(e) = self.handle_stop().await {
+                        Some(WorkerCommand::Stop { reply }) => {
+                            let result = self.handle_stop().await;
+                            if let Err(e) = &result {
                                 warn!("Error handling stop: {}", e);
                             }
+                            let _ = reply.send(result);
                         }
                         Some(WorkerCommand::SetSink { sink }) => {
                             self.sink = Some(sink);
@@ -498,11 +503,24 @@ pub struct WindowCoveringHandle {
 }
 
 impl WindowCoveringHandle {
-    pub async fn move_to(&self, old_pos: u8, new_pos: u8) {
-        let _ = self
+    /// Sends the command and waits for the real outcome of the hub call, not
+    /// just "the worker accepted the command" — safe now that send_action's
+    /// rate limiter is per-device (see
+    /// client::protocol::client::send_action), so this can no longer be
+    /// delayed behind an unrelated device's queued commands.
+    pub async fn move_to(&self, old_pos: u8, new_pos: u8) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
             .command_sender
-            .send(WorkerCommand::MoveTo { old_pos, new_pos })
-            .await;
+            .send(WorkerCommand::MoveTo { old_pos, new_pos, reply: reply_tx })
+            .await
+            .is_err()
+        {
+            anyhow::bail!("window covering worker is gone");
+        }
+        reply_rx
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("window covering worker dropped the reply")))
     }
 
     pub async fn status_update(&self, new_state: WindowCoveringState) {
@@ -512,8 +530,19 @@ impl WindowCoveringHandle {
             .await;
     }
 
-    pub async fn stop(&self) {
-        let _ = self.command_sender.send(WorkerCommand::Stop).await;
+    pub async fn stop(&self) -> anyhow::Result<()> {
+        let (reply_tx, reply_rx) = oneshot::channel();
+        if self
+            .command_sender
+            .send(WorkerCommand::Stop { reply: reply_tx })
+            .await
+            .is_err()
+        {
+            anyhow::bail!("window covering worker is gone");
+        }
+        reply_rx
+            .await
+            .unwrap_or_else(|_| Err(anyhow::anyhow!("window covering worker dropped the reply")))
     }
 
     pub async fn set_sink(&self, sink: Box<dyn WindowCoveringSink>) {
@@ -753,7 +782,7 @@ mod test {
         let (handle, state, client, _sink) =
             create_test_worker_with_config(initial, slow_test_config()).await;
 
-        handle.move_to(FULLY_CLOSED, FULLY_OPENED).await;
+        assert!(handle.move_to(FULLY_CLOSED, FULLY_OPENED).await.is_ok());
         sleep(Duration::from_millis(100)).await;
 
         {
@@ -791,7 +820,7 @@ mod test {
         let (handle, state, client, _sink) =
             create_test_worker_with_config(initial, slow_test_config()).await;
 
-        handle.move_to(FULLY_OPENED, FULLY_CLOSED).await;
+        assert!(handle.move_to(FULLY_OPENED, FULLY_CLOSED).await.is_ok());
         sleep(Duration::from_millis(100)).await;
 
         {
@@ -827,7 +856,7 @@ mod test {
         };
         let (handle, _state, client, _sink) = create_test_worker(initial).await;
 
-        handle.move_to(50, 50).await;
+        assert!(handle.move_to(50, 50).await.is_ok());
         sleep(Duration::from_millis(50)).await;
 
         assert_eq!(client.toggle_calls.read().await.len(), 0);
@@ -851,7 +880,7 @@ mod test {
         // Simulate: worker entered MovingExternal (spurious Comelit GoingDown report)
         // and notify_sink() published target = FULLY_CLOSED = 0.
         // HomeKit responds by writing its desired target = 20 (old target was 0).
-        handle.move_to(FULLY_CLOSED, 20).await;
+        assert!(handle.move_to(FULLY_CLOSED, 20).await.is_ok());
         sleep(Duration::from_millis(100)).await;
 
         // No toggle should have been called: current_pos (20) == new_pos (20)
@@ -933,7 +962,7 @@ mod test {
         };
         let (handle, state, client, _sink) = create_test_worker(initial).await;
 
-        handle.move_to(0, 100).await;
+        assert!(handle.move_to(0, 100).await.is_ok());
         // Confirm movement started.
         handle
             .status_update(WindowCoveringState {
@@ -971,7 +1000,7 @@ mod test {
         };
         let (handle, _state, client, _sink) = create_test_worker(initial).await;
 
-        handle.move_to(0, 100).await;
+        assert!(handle.move_to(0, 100).await.is_ok());
         handle
             .status_update(WindowCoveringState {
                 current_position: 0,
@@ -981,7 +1010,7 @@ mod test {
             .await;
         sleep(Duration::from_millis(50)).await;
 
-        handle.stop().await;
+        assert!(handle.stop().await.is_ok());
         sleep(Duration::from_millis(50)).await;
 
         let toggles = client.toggle_calls.read().await;
@@ -1015,7 +1044,7 @@ mod test {
         sleep(Duration::from_millis(50)).await;
 
         // The worker must still be alive and act on the move.
-        handle.move_to(FULLY_CLOSED, FULLY_OPENED).await;
+        assert!(handle.move_to(FULLY_CLOSED, FULLY_OPENED).await.is_ok());
         sleep(Duration::from_millis(100)).await;
 
         let toggles = client.toggle_calls.read().await;
@@ -1036,7 +1065,7 @@ mod test {
         };
         let (handle, _state, client, _sink) = create_test_worker(initial).await;
 
-        handle.stop().await;
+        assert!(handle.stop().await.is_ok());
         sleep(Duration::from_millis(50)).await;
 
         assert_eq!(client.toggle_calls.read().await.len(), 0);

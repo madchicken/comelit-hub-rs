@@ -12,6 +12,7 @@ use hap::{
 };
 use serde_json::Value;
 use tokio::sync::mpsc::{self, Sender};
+use tokio::sync::oneshot;
 use tracing::{debug, info, warn};
 
 use crate::accessories::comelit_accessory::ComelitAccessory;
@@ -22,7 +23,7 @@ use comelit_client_rs::{ComelitClient, DeviceStatus, LightDeviceData};
 #[derive(Debug)]
 enum LightbulbCommand {
     /// HomeKit wrote a new power state → forward to MQTT
-    HapWrite(bool),
+    HapWrite(bool, oneshot::Sender<anyhow::Result<()>>),
     /// Hub pushed a status update → update HAP characteristic
     MqttPush(bool),
     /// Initialise the accessory pointer inside the worker
@@ -47,24 +48,30 @@ impl LightbulbWorker {
                 LightbulbCommand::SetAccessory(acc) => {
                     self.accessory = Some(acc);
                 }
-                LightbulbCommand::HapWrite(new_val) => {
+                LightbulbCommand::HapWrite(new_val, reply) => {
                     let current = self.state.on.load(Ordering::Acquire);
-                    if new_val != current {
-                        if let Err(e) =
-                            self.client.toggle_device_status(&self.id, new_val).await
-                        {
-                            warn!(
-                                "toggle_device_status for lightbulb {} failed: {e}",
-                                self.id
-                            );
-                        } else {
-                            info!(
-                                "Lightbulb {}: power state set to {}",
-                                self.id, new_val
-                            );
-                            self.state.on.store(new_val, Ordering::Release);
+                    let result = if new_val != current {
+                        match self.client.toggle_device_status(&self.id, new_val).await {
+                            Err(e) => {
+                                warn!(
+                                    "toggle_device_status for lightbulb {} failed: {e}",
+                                    self.id
+                                );
+                                Err(anyhow::anyhow!(e.to_string()))
+                            }
+                            Ok(()) => {
+                                info!(
+                                    "Lightbulb {}: power state set to {}",
+                                    self.id, new_val
+                                );
+                                self.state.on.store(new_val, Ordering::Release);
+                                Ok(())
+                            }
                         }
-                    }
+                    } else {
+                        Ok(())
+                    };
+                    let _ = reply.send(result);
                 }
                 LightbulbCommand::MqttPush(is_on) => {
                     self.state.on.store(is_on, Ordering::Release);
@@ -158,7 +165,10 @@ impl ComelitLightbulbAccessory {
             }));
         }
 
-        // Write callback: only sends to worker channel; returns immediately
+        // Write callback: waits for the worker's real outcome of the hub
+        // call — safe now that send_action's rate limiter is per-device, so
+        // this can no longer be delayed behind an unrelated device's queued
+        // commands.
         {
             let tx = command_sender.clone();
             lightbulb_accessory
@@ -168,9 +178,13 @@ impl ComelitLightbulbAccessory {
                     let tx = tx.clone();
                     async move {
                         Metrics::inc_hap_requests();
-                        if let Err(e) = tx.send(LightbulbCommand::HapWrite(new_val)).await {
-                            warn!("Failed to send lightbulb HapWrite command: {e}");
-                        }
+                        let (reply_tx, reply_rx) = oneshot::channel();
+                        tx.send(LightbulbCommand::HapWrite(new_val, reply_tx))
+                            .await
+                            .map_err(|e| anyhow::anyhow!("lightbulb worker is gone: {e}"))?;
+                        reply_rx
+                            .await
+                            .unwrap_or_else(|_| Err(anyhow::anyhow!("lightbulb worker dropped the reply")))?;
                         Ok(())
                     }
                     .boxed()
