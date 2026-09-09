@@ -21,7 +21,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 use thiserror::Error;
-use tokio::sync::{Mutex, RwLock};
+use tokio::sync::RwLock;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, sleep, timeout};
 use tracing::{debug, error, info, warn};
@@ -136,11 +136,13 @@ struct Inner {
     mac_address: MacAddress,
     user: String,
     password: String,
-    // Global (not per-device) reservation clock: every action sent to the hub,
-    // regardless of target device, is serialized through this single slot so
-    // the physical Comelit bus never sees concurrent commands from different
-    // device workers.
-    last_action: Arc<Mutex<Instant>>,
+    // Per-device reservation clock: each device_id gets its own 500ms slot
+    // sequence, so a burst of unrelated commands (e.g. a HomeKit scene
+    // touching several thermostats) no longer delays a command for a
+    // completely different device — a light toggle doesn't wait behind a
+    // dozen queued thermostat actions. Commands to the *same* device are
+    // still serialized at action_rate_limit apart.
+    last_action: Arc<DashMap<String, Instant>>,
     action_rate_limit: Duration,
     relogin_lock: tokio::sync::Mutex<()>,
 }
@@ -286,7 +288,7 @@ impl ComelitClient {
                     mac_address: hub.mac_address().clone(),
                     user: options.user.unwrap_or_default(),
                     password: options.password.unwrap_or_default(),
-                    last_action: Arc::new(Mutex::new(Instant::now() - action_rate_limit)),
+                    last_action: Arc::new(DashMap::new()),
                     action_rate_limit,
                     relogin_lock: tokio::sync::Mutex::new(()),
                 }),
@@ -479,8 +481,12 @@ impl ComelitClient {
         value: i32,
     ) -> Result<(), ComelitClientError> {
         let delay = {
-            let mut last = self.inner.last_action.lock().await;
             let now = Instant::now();
+            let mut last = self
+                .inner
+                .last_action
+                .entry(device_id.to_string())
+                .or_insert(now - self.inner.action_rate_limit);
             let next_slot = std::cmp::max(now, *last + self.inner.action_rate_limit);
             *last = next_slot;
             next_slot.duration_since(now)
