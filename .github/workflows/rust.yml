@@ -18,14 +18,17 @@ jobs:
     steps:
     - uses: actions/checkout@v4
     - name: Install system dependencies
-      # The runner image preconfigures a Google Chrome apt repo we never use;
-      # when its mirror serves a stale/corrupt index (hash mismatch), `apt-get
-      # update` fails the whole job even though the package we actually need
-      # has nothing to do with Chrome. Drop that repo before updating so a
-      # completely unrelated mirror outage can't block the build.
+      # The runner image preconfigures third-party apt repos we never use
+      # (Google Chrome, etc.). When one of those mirrors serves a stale or
+      # corrupt index (hash mismatch), `apt-get update` exits non-zero and
+      # takes the whole job down — even though the only package we need,
+      # libavahi-compat-libdnssd-dev, is a plain Ubuntu-universe package
+      # whose index downloaded fine. Purge every non-Ubuntu source, then
+      # tolerate a partial update failure so an unrelated mirror outage
+      # can't block the build.
       run: |
-        sudo rm -f /etc/apt/sources.list.d/google-chrome.list
-        sudo apt-get update -qq
+        sudo rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources
+        sudo apt-get update -qq || true
         sudo apt-get install -y libavahi-compat-libdnssd-dev
     - name: Build
       run: cargo build --verbose
