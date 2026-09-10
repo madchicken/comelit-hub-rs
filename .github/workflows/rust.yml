@@ -22,12 +22,10 @@ jobs:
       # (Google Chrome, etc.). When one of those mirrors serves a stale or
       # corrupt index (hash mismatch), `apt-get update` exits non-zero and
       # takes the whole job down — even though the only package we need,
-      # libavahi-compat-libdnssd-dev, is a plain Ubuntu-universe package
-      # whose index downloaded fine. Purge every non-Ubuntu source, then
-      # tolerate a partial update failure so an unrelated mirror outage
-      # can't block the build.
+      # libavahi-compat-libdnssd-dev, is plain Ubuntu universe and its index
+      # updates fine. Tolerate a partial update failure; the install below
+      # still fails the job for real if the package genuinely can't be found.
       run: |
-        sudo rm -f /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources
         sudo apt-get update -qq || true
         sudo apt-get install -y libavahi-compat-libdnssd-dev
     - name: Build
