@@ -1,5 +1,6 @@
 mod bridge;
 mod covering;
+mod dehumidifier;
 mod light;
 mod mdns;
 mod thermostat;
