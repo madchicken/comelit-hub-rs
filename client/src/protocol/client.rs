@@ -507,54 +507,78 @@ impl ComelitClient {
         // TypeScript reference client (comelit-client's publish()) uses.
         const MAX_ATTEMPTS: u32 = 5;
         const RETRY_DELAY: Duration = Duration::from_millis(500);
-        let mut last_err = ComelitClientError::InvalidState;
-        for attempt in 1..=MAX_ATTEMPTS {
-            let session = match self.get_session().await {
-                Ok(session) => session,
-                Err(e) => {
-                    last_err = e;
-                    if attempt < MAX_ATTEMPTS {
-                        warn!(
-                            "get_session failed for device {device_id} (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}, retrying..."
-                        );
-                        sleep(RETRY_DELAY).await;
-                    }
-                    continue;
-                }
-            };
-            let old_token = session.1.clone();
-            let result = self
-                .send_request(make_action_message(
-                    make_id(&self.inner.req_id).await,
-                    session.0,
-                    session.1.as_str(),
-                    device_id,
-                    action_type.clone(),
-                    value,
-                ))
-                .await;
-            match result {
-                Ok(_) => return Ok(()),
-                Err(ComelitClientError::InvalidToken) => {
-                    warn!("Invalid token for device {device_id}, re-logging in...");
-                    if let Err(e) = self.re_login(Some(&old_token)).await {
+        // Every individual network call below is bounded (send_request caps
+        // its publish and its response wait at 5s each), but a session that
+        // genuinely can't be re-established stacks those bounds across up to
+        // 5 attempts, each potentially doing a full get_session() re-login
+        // (2 send_requests) *and* an invalid-token re-login (2 more) — worst
+        // case minutes, not seconds. This method is called synchronously
+        // from inside a HAP on_update_async/get_value callback, which holds
+        // hap-rs's global accessory-database lock for as long as this call
+        // takes, so an outer cap well under the health-check's 30s budget is
+        // needed regardless of how well-behaved each inner call is.
+        const OVERALL_TIMEOUT: Duration = Duration::from_secs(8);
+
+        let attempt_loop = async {
+            let mut last_err = ComelitClientError::InvalidState;
+            for attempt in 1..=MAX_ATTEMPTS {
+                let session = match self.get_session().await {
+                    Ok(session) => session,
+                    Err(e) => {
                         last_err = e;
+                        if attempt < MAX_ATTEMPTS {
+                            warn!(
+                                "get_session failed for device {device_id} (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}, retrying..."
+                            );
+                            sleep(RETRY_DELAY).await;
+                        }
+                        continue;
                     }
-                    // Loop again regardless: get_session() picks up whatever
-                    // session state re_login left behind.
-                }
-                Err(e) => {
-                    last_err = ComelitClientError::Generic(e.to_string());
-                    if attempt < MAX_ATTEMPTS {
-                        warn!(
-                            "send_action failed for device {device_id} (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}, retrying..."
-                        );
-                        sleep(RETRY_DELAY).await;
+                };
+                let old_token = session.1.clone();
+                let result = self
+                    .send_request(make_action_message(
+                        make_id(&self.inner.req_id).await,
+                        session.0,
+                        session.1.as_str(),
+                        device_id,
+                        action_type.clone(),
+                        value,
+                    ))
+                    .await;
+                match result {
+                    Ok(_) => return Ok(()),
+                    Err(ComelitClientError::InvalidToken) => {
+                        warn!("Invalid token for device {device_id}, re-logging in...");
+                        if let Err(e) = self.re_login(Some(&old_token)).await {
+                            last_err = e;
+                        }
+                        // Loop again regardless: get_session() picks up whatever
+                        // session state re_login left behind.
+                    }
+                    Err(e) => {
+                        last_err = ComelitClientError::Generic(e.to_string());
+                        if attempt < MAX_ATTEMPTS {
+                            warn!(
+                                "send_action failed for device {device_id} (attempt {attempt}/{MAX_ATTEMPTS}): {last_err}, retrying..."
+                            );
+                            sleep(RETRY_DELAY).await;
+                        }
                     }
                 }
             }
+            Err(last_err)
+        };
+
+        match timeout(OVERALL_TIMEOUT, attempt_loop).await {
+            Ok(result) => result,
+            Err(_) => {
+                warn!("send_action for device {device_id} timed out after {OVERALL_TIMEOUT:?} across retries");
+                Err(ComelitClientError::Generic(format!(
+                    "send_action timed out after {OVERALL_TIMEOUT:?}"
+                )))
+            }
         }
-        Err(last_err)
     }
 
     async fn re_login(&self, old_token: Option<&str>) -> Result<(), ComelitClientError> {
