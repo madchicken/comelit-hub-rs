@@ -55,36 +55,38 @@ impl<C: ComelitClientTrait + 'static> HumidityWorker<C> {
 
             HumidityCommand::SetTargetHumidity(new, reply) => {
                 let result = self.client.set_humidity(&self.id, new as i32).await;
-                match &result {
-                    Ok(()) => {
-                        let state = {
-                            let mut guard = self.state.lock().await;
-                            guard.target_humidity = new;
-                            *guard
-                        };
-                        self.notify_sink(state).await;
-                    }
-                    Err(e) => warn!("set_humidity failed: {e}"),
+                if let Err(e) = &result {
+                    warn!("set_humidity failed: {e}");
                 }
+                let succeeded = result.is_ok();
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
+                if succeeded {
+                    let state = {
+                        let mut guard = self.state.lock().await;
+                        guard.target_humidity = new;
+                        *guard
+                    };
+                    self.notify_sink(state).await;
+                }
             }
 
             HumidityCommand::SetDehumidifierActive(new, reply) => {
                 let mode = if new { ClimaOnOff::OnHumi } else { ClimaOnOff::OffHumi };
                 let result = self.client.toggle_thermostat_status(&self.id, mode).await;
-                match &result {
-                    Ok(()) => {
-                        let state = {
-                            let mut guard = self.state.lock().await;
-                            guard.dehumidifier_active = new;
-                            guard.dehumidifier_current_state = if new { 1 } else { 0 };
-                            *guard
-                        };
-                        self.notify_sink(state).await;
-                    }
-                    Err(e) => warn!("toggle_thermostat_status (humi) failed: {e}"),
+                if let Err(e) = &result {
+                    warn!("toggle_thermostat_status (humi) failed: {e}");
                 }
+                let succeeded = result.is_ok();
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
+                if succeeded {
+                    let state = {
+                        let mut guard = self.state.lock().await;
+                        guard.dehumidifier_active = new;
+                        guard.dehumidifier_current_state = if new { 1 } else { 0 };
+                        *guard
+                    };
+                    self.notify_sink(state).await;
+                }
             }
 
             HumidityCommand::MqttPush(new_state) => {

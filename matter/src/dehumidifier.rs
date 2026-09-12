@@ -38,10 +38,6 @@ fn percent_to_matter(percent: f32) -> u16 {
     (percent * 100.0).round().clamp(0.0, 10000.0) as u16
 }
 
-fn matter_to_percent(hundredths: u16) -> f32 {
-    hundredths as f32 / 100.0
-}
-
 impl DehumidifierMatterState {
     pub fn new(
         ep_id: u16,
@@ -266,6 +262,10 @@ impl StatusUpdate for MultiDehumidifierObserver {
 #[cfg(test)]
 mod test {
     use super::*;
+
+    fn matter_to_percent(hundredths: u16) -> f32 {
+        hundredths as f32 / 100.0
+    }
 
     #[test]
     fn percent_round_trips_through_hundredths() {
