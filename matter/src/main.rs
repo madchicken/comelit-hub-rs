@@ -41,13 +41,17 @@ use rs_matter::utils::storage::pooled::PooledBuffers;
 use rs_matter::{Matter, MATTER_PORT};
 
 use comelit_client_rs::{
-    ComelitClient, ComelitObserver, ComelitOptionsBuilder, DeviceStatus, HomeDeviceData, State,
-    StatusUpdate, get_secrets,
+    ComelitClient, ComelitObserver, ComelitOptionsBuilder, DeviceStatus, HomeDeviceData,
+    ObjectSubtype, State, StatusUpdate, get_secrets,
 };
 use tokio::sync::mpsc;
 
-use bridge::{BridgeMetadata, BridgedEntry, BridgedInfo, ComelitBridgeHandler, CoveringEntry, LightEntry, NonRootMatcher, ThermostatEntry};
+use bridge::{
+    BridgeMetadata, BridgedEntry, BridgedInfo, ComelitBridgeHandler, CoveringEntry,
+    DehumidifierEntry, LightEntry, NonRootMatcher, ThermostatEntry,
+};
 use covering::ComelitCoveringHandler;
+use dehumidifier::{ComelitDehumidifierOnOffHandler, ComelitHumidityMeasurementHandler, DehumidifierMatterState, DehumidifierMatterSink, MultiDehumidifierObserver};
 use light::{ComelitOnOffHooks, LightState, MultiLightObserver, MqttCommand};
 use thermostat::ComelitThermostatHandler;
 
@@ -241,11 +245,29 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
         .collect();
     thermostat_data.sort_by(|a, b| a.0.cmp(&b.0));
 
-    if lights_data.is_empty() && covering_data.is_empty() && thermostat_data.is_empty() {
-        return Err(anyhow::anyhow!("No lights, window coverings, or thermostats found in Comelit index"));
+    let mut dehumidifier_data: Vec<(String, String, comelit_client_rs::humidity::HumidityState)> = index
+        .iter()
+        .filter_map(|entry| {
+            if let HomeDeviceData::Thermostat(th) = entry.value() {
+                if th.sub_type == ObjectSubtype::ClimaThermostatDehumidifier {
+                    let label = th.description.clone().unwrap_or_else(|| entry.key().clone());
+                    let initial_state = comelit_client_rs::humidity::HumidityState::from(th);
+                    return Some((entry.key().clone(), label, initial_state));
+                }
+            }
+            None
+        })
+        .collect();
+    dehumidifier_data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if lights_data.is_empty() && covering_data.is_empty() && thermostat_data.is_empty() && dehumidifier_data.is_empty() {
+        return Err(anyhow::anyhow!("No lights, window coverings, thermostats, or dehumidifiers found in Comelit index"));
     }
 
-    info!("Discovered {} lights, {} window coverings, {} thermostats:", lights_data.len(), covering_data.len(), thermostat_data.len());
+    info!(
+        "Discovered {} lights, {} window coverings, {} thermostats, {} dehumidifiers:",
+        lights_data.len(), covering_data.len(), thermostat_data.len(), dehumidifier_data.len()
+    );
     let mut next_ep: u16 = 2;
     for (id, label, on) in &lights_data {
         info!("  ep{}: light {} ({}) — {}", next_ep, label, id, if *on { "ON" } else { "OFF" });
@@ -257,6 +279,10 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
     }
     for (id, label, state) in &thermostat_data {
         info!("  ep{}: thermostat {} ({}) — {:.1}C -> {:.1}C", next_ep, label, id, state.temperature, state.target_temperature);
+        next_ep += 1;
+    }
+    for (id, label, state) in &dehumidifier_data {
+        info!("  ep{}: dehumidifier {} ({}) — active={} humidity={:.1}", next_ep, label, id, state.dehumidifier_active, state.humidity);
         next_ep += 1;
     }
 
@@ -304,14 +330,29 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
         ep_id += 1;
     }
 
+    let mut dehumidifier_states: Vec<Arc<DehumidifierMatterState>> = Vec::new();
+    for (id, _, initial_state) in &dehumidifier_data {
+        let handle = comelit_client_rs::humidity::spawn_humidity_worker(
+            id.clone(),
+            *initial_state,
+            client.clone(),
+        );
+        let state = Arc::new(DehumidifierMatterState::new(ep_id, id.clone(), *initial_state, handle));
+        state.handle.set_sink(Box::new(DehumidifierMatterSink::new(state.clone()))).await;
+        dehumidifier_states.push(state);
+        ep_id += 1;
+    }
+
     let light_observer = Arc::new(MultiLightObserver { states: light_states.clone() });
     let covering_observer = Arc::new(covering::MultiCoveringObserver { states: covering_states.clone() });
     let thermostat_observer = Arc::new(thermostat::MultiThermostatObserver { states: thermostat_states.clone() });
+    let dehumidifier_observer = Arc::new(MultiDehumidifierObserver { states: dehumidifier_states.clone() });
 
     struct FanOutObserver {
         light: Arc<MultiLightObserver>,
         covering: Arc<covering::MultiCoveringObserver>,
         thermostat: Arc<thermostat::MultiThermostatObserver>,
+        dehumidifier: Arc<MultiDehumidifierObserver>,
     }
 
     #[async_trait]
@@ -320,6 +361,7 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
             self.light.status_update(device).await;
             self.covering.status_update(device).await;
             self.thermostat.status_update(device).await;
+            self.dehumidifier.status_update(device).await;
         }
     }
 
@@ -327,6 +369,7 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
         light: light_observer,
         covering: covering_observer,
         thermostat: thermostat_observer,
+        dehumidifier: dehumidifier_observer,
     }) as _);
 
     // ── 5. Subscribe to MQTT push for every discovered device ─────────────────
@@ -361,6 +404,7 @@ async fn run_bridge(args: &Args) -> anyhow::Result<()> {
             light_states, lights_data,
             covering_states, covering_data,
             thermostat_states, thermostat_data,
+            dehumidifier_states, dehumidifier_data,
         ))?;
 
     matter_thread
@@ -379,6 +423,8 @@ fn run_matter(
     covering_data: Vec<(String, String, comelit_client_rs::covering::WindowCoveringState)>,
     thermostat_states: Vec<Arc<thermostat::ThermostatMatterState>>,
     thermostat_data: Vec<(String, String, comelit_client_rs::thermostat::ThermostatState)>,
+    dehumidifier_states: Vec<Arc<DehumidifierMatterState>>,
+    dehumidifier_data: Vec<(String, String, comelit_client_rs::humidity::HumidityState)>,
 ) -> anyhow::Result<()> {
     let mut matter = Matter::new(&COMELIT_DEV_DET, TEST_DEV_COMM, &TEST_DEV_ATT, MATTER_PORT);
 
@@ -432,6 +478,17 @@ fn run_matter(
         entries.push(BridgedEntry::Thermostat(ThermostatEntry {
             ep_id,
             thermostat: ComelitThermostatHandler::new(Dataver::new_rand(&mut rand), state),
+            desc: desc::DescHandler::new(Dataver::new_rand(&mut rand)),
+            groups: groups::GroupsHandler::new(Dataver::new_rand(&mut rand)),
+            bridged: BridgedInfo::new(Dataver::new_rand(&mut rand), label.clone(), device_id.clone()),
+        }));
+    }
+    for (state, (device_id, label, _)) in dehumidifier_states.into_iter().zip(dehumidifier_data.iter()) {
+        let ep_id = state.ep_id;
+        entries.push(BridgedEntry::Dehumidifier(DehumidifierEntry {
+            ep_id,
+            on_off: ComelitDehumidifierOnOffHandler::new(Dataver::new_rand(&mut rand), state.clone()),
+            humidity: ComelitHumidityMeasurementHandler::new(Dataver::new_rand(&mut rand), state),
             desc: desc::DescHandler::new(Dataver::new_rand(&mut rand)),
             groups: groups::GroupsHandler::new(Dataver::new_rand(&mut rand)),
             bridged: BridgedInfo::new(Dataver::new_rand(&mut rand), label.clone(), device_id.clone()),
