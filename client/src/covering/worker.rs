@@ -117,7 +117,11 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                             if let Err(e) = &result {
                                 warn!("Error handling move_to: {}", e);
                             }
-                            let _ = reply.send(result);
+                            let should_notify = matches!(result, Ok(true));
+                            let _ = reply.send(result.map(|_| ()));
+                            if should_notify {
+                                self.notify_sink().await;
+                            }
                         }
                         Some(WorkerCommand::StatusUpdate { new_state }) => {
                             if let Err(e) = self.handle_status_update(new_state).await {
@@ -150,7 +154,12 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
         }
     }
 
-    async fn handle_move_to(&mut self, old_pos: u8, new_pos: u8) -> Result<()> {
+    /// Returns whether the sink needs notifying (a move was actually
+    /// initiated). The caller sends the oneshot reply *before* acting on
+    /// this — `notify_sink` takes the same accessory lock hap-rs holds for
+    /// the whole `on_update_async` callback the reply is awaited from, so
+    /// notifying before replying would deadlock the entire HAP bridge.
+    async fn handle_move_to(&mut self, old_pos: u8, new_pos: u8) -> Result<bool> {
         let current_pos = {
             let state = self.state.lock().await;
             state.current_position
@@ -166,7 +175,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                 "Target position equals current position for {}, no action",
                 self.id
             );
-            return Ok(());
+            return Ok(false);
         }
 
         let direction = if new_pos > current_pos {
@@ -189,12 +198,12 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                     },
                 };
 
-                return Ok(());
+                return Ok(false);
             }
             WorkerState::WaitingForMoveConfirmation { .. }
             | WorkerState::WaitingForStopConfirmation { .. } => {
                 info!("Already waiting for confirmation, ignoring move request");
-                return Ok(());
+                return Ok(false);
             }
             WorkerState::Idle => {}
         }
@@ -219,8 +228,7 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
             sent_at: Instant::now(),
         };
 
-        self.notify_sink().await;
-        Ok(())
+        Ok(true)
     }
 
     /// Stop any in-progress movement (mandatory for Matter's `StopMotion`; HAP
