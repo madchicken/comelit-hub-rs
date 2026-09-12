@@ -35,10 +35,16 @@ already used for window coverings and thermostats.
 ## Non-Goals
 
 - Writing the humidity target or dehumidifier-on threshold from Matter.
-  The Matter 1.4.2 standard has no cluster exposing a writable humidity
-  setpoint for an active dehumidifier — `RelativeHumidityMeasurement` is
-  read-only, built for passive sensors. That capability is expected with
-  Matter 1.5, not yet published. Only current humidity (read) and on/off
+  Verified against the actual IDL our `rs-matter` pin (`e8b0b0c`, which
+  already targets the published Matter 1.5.1 data model —
+  `controller-clusters-V1.5.1.0.matter`) compiles from: no cluster in it
+  exposes a writable humidity setpoint for an active dehumidifier.
+  `RelativeHumidityMeasurement` (cluster 0x0405) is the only humidity-related
+  cluster defined, and it's read-only, built for passive sensors. The
+  currently-tracked Matter 1.6 issues upstream (Thread Commissioning,
+  JointFabric/JCM, NFC transport, Groupcast, Network Recovery) are all
+  transport/commissioning work, not new application clusters — there's no
+  near-term signal this gap closes. Only current humidity (read) and on/off
   (read/write) are bridged.
 - Modeling the dehumidifier via `Thermostat`'s `SystemMode::Dry`. Comelit's
   dehumidifier runs *alongside* cooling, not instead of it (confirmed with
