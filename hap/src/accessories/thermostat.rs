@@ -402,11 +402,18 @@ impl ComelitThermostatAccessory {
 
         {
             let handle = thermostat_handle.clone();
-            accessory.thermostat.target_temperature.on_update_async(Some(move |_, new: f32| {
+            accessory.thermostat.target_temperature.on_update_async(Some(move |prev: f32, new: f32| {
                 let handle = handle.clone();
                 async move {
                     Metrics::inc_hap_requests();
-                    handle.set_target_temperature(new).await?;
+                    // hap-rs's get_value() re-invokes this on_update_async after
+                    // *every* read of this characteristic (not just real writes),
+                    // since it always calls set_value() with whatever the read
+                    // callback returned. Without this guard, every routine
+                    // HomeKit poll re-sends the same command to the Comelit hub.
+                    if prev != new {
+                        handle.set_target_temperature(new).await?;
+                    }
                     Ok(())
                 }
                 .boxed()
@@ -415,11 +422,15 @@ impl ComelitThermostatAccessory {
 
         {
             let handle = thermostat_handle.clone();
-            accessory.thermostat.target_heating_cooling_state.on_update_async(Some(move |_prev: u8, new: u8| {
+            accessory.thermostat.target_heating_cooling_state.on_update_async(Some(move |prev: u8, new: u8| {
                 let handle = handle.clone();
                 async move {
                     Metrics::inc_hap_requests();
-                    handle.set_hvac_mode(TargetHeatingCoolingState::from(new)).await?;
+                    // See target_temperature above: skip the no-op re-send that
+                    // hap-rs's get_value() triggers on every plain read.
+                    if prev != new {
+                        handle.set_hvac_mode(TargetHeatingCoolingState::from(new)).await?;
+                    }
                     Ok(())
                 }
                 .boxed()
@@ -479,11 +490,16 @@ impl ComelitThermostatAccessory {
                     }));
                 }
                 let tx = humidity_sender.clone();
-                threshold.on_update_async(Some(move |_prev, new: f32| {
+                // hap-rs's get_value() re-invokes on_update_async after every
+                // read of this characteristic, not just real writes — skip the
+                // no-op re-send that would otherwise happen on every poll.
+                threshold.on_update_async(Some(move |prev, new: f32| {
                     let tx = tx.clone();
                     async move {
                         Metrics::inc_hap_requests();
-                        tx.send(HumidityCommand::SetDehumidifierThreshold(new)).await.ok();
+                        if prev != new {
+                            tx.send(HumidityCommand::SetDehumidifierThreshold(new)).await.ok();
+                        }
                         Ok(())
                     }
                     .boxed()
@@ -492,11 +508,14 @@ impl ComelitThermostatAccessory {
 
             {
                 let tx = humidity_sender.clone();
-                hd.active.on_update_async(Some(move |_prev: u8, new: u8| {
+                // Same get_value()-on-every-read guard as above.
+                hd.active.on_update_async(Some(move |prev: u8, new: u8| {
                     let tx = tx.clone();
                     async move {
                         Metrics::inc_hap_requests();
-                        tx.send(HumidityCommand::SetDehumidifierActive(new)).await.ok();
+                        if prev != new {
+                            tx.send(HumidityCommand::SetDehumidifierActive(new)).await.ok();
+                        }
                         Ok(())
                     }
                     .boxed()
@@ -521,11 +540,15 @@ impl ComelitThermostatAccessory {
                 }));
             }
             let tx = humidity_sender.clone();
-            char.on_update_async(Some(move |_prev, new: f32| {
+            // Same get_value()-on-every-read guard as the dehumidifier's
+            // characteristics above.
+            char.on_update_async(Some(move |prev, new: f32| {
                 let tx = tx.clone();
                 async move {
                     Metrics::inc_hap_requests();
-                    tx.send(HumidityCommand::SetTargetHumidity(new)).await.ok();
+                    if prev != new {
+                        tx.send(HumidityCommand::SetTargetHumidity(new)).await.ok();
+                    }
                     Ok(())
                 }
                 .boxed()

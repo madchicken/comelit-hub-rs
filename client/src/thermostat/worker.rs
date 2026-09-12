@@ -55,22 +55,23 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
             ThermostatCommand::SetTargetTemperature(new, reply) => {
                 let temperature = (new * 10.0) as i32;
                 let result = self.client.set_thermostat_temperature(&self.id, temperature).await;
-                match &result {
-                    Ok(()) => {
-                        // Echo the value we just sent immediately: the confirmation
-                        // push from the hub can take minutes (or never arrive for
-                        // this specific field). Without this, a stale read makes
-                        // the controller think the write failed and retry.
-                        let state = {
-                            let mut guard = self.state.lock().await;
-                            guard.target_temperature = new;
-                            *guard
-                        };
-                        self.notify_sink(state).await;
-                    }
-                    Err(e) => warn!("set_thermostat_temperature failed: {e}"),
+                if let Err(e) = &result {
+                    warn!("set_thermostat_temperature failed: {e}");
                 }
+                let succeeded = result.is_ok();
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
+                if succeeded {
+                    // Echo the value we just sent immediately: the confirmation
+                    // push from the hub can take minutes (or never arrive for
+                    // this specific field). Without this, a stale read makes
+                    // the controller think the write failed and retry.
+                    let state = {
+                        let mut guard = self.state.lock().await;
+                        guard.target_temperature = new;
+                        *guard
+                    };
+                    self.notify_sink(state).await;
+                }
             }
 
             ThermostatCommand::SetHvacMode(new, reply) => {
@@ -121,6 +122,18 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
                     TargetHeatingCoolingState::Off => {}
                 }
 
+                // Report success based on the toggle alone: it's the command
+                // HomeKit/Matter actually asked for. The follow-up mode/season
+                // calls are implementation details of reaching that HVAC
+                // state — their failure is logged but doesn't fail the write,
+                // consistent with how `toggle_ok` already gates the local
+                // state update below.
+                let _ = reply.send(if toggle_ok {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!("toggle_thermostat_status failed"))
+                });
+
                 if toggle_ok {
                     let state = {
                         let mut guard = self.state.lock().await;
@@ -130,18 +143,6 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
                     };
                     self.notify_sink(state).await;
                 }
-
-                // Report success based on the toggle alone: it's the command
-                // HomeKit/Matter actually asked for. The follow-up mode/season
-                // calls are implementation details of reaching that HVAC
-                // state — their failure is logged but doesn't fail the write,
-                // consistent with how `toggle_ok` already gates the local
-                // state update above.
-                let _ = reply.send(if toggle_ok {
-                    Ok(())
-                } else {
-                    Err(anyhow::anyhow!("toggle_thermostat_status failed"))
-                });
             }
 
             ThermostatCommand::MqttPush(new_state) => {
