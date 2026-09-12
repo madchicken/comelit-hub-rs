@@ -949,22 +949,27 @@ impl ComelitClient {
         write_topic: &str,
         payload: MqttMessage,
     ) -> Result<(), ComelitClientError> {
-        mqtt_client
-            .publish(
-                write_topic,
-                QoS::AtLeastOnce,
-                false,
-                serde_json::to_string(&payload)
-                    .map(|json| {
-                        info!("Sending request: {json}");
-                        json
-                    })
-                    .map_err(|e| {
-                        ComelitClientError::Publish(format!("Serialization error: {e:?}"))
-                    })?,
-            )
-            .await
-            .map_err(|e| ComelitClientError::Publish(format!("Failed to publish request: {e}")))
+        let json = serde_json::to_string(&payload)
+            .map(|json| {
+                info!("Sending request: {json}");
+                json
+            })
+            .map_err(|e| ComelitClientError::Publish(format!("Serialization error: {e:?}")))?;
+
+        // Same protection as the ping task's publish (see its comment): rumqttc's
+        // `publish().await` can block indefinitely if the client's in-flight QoS1
+        // buffer is ever exhausted. Unlike the ping, this is called from every
+        // `send_request` — including from inside a HAP `on_update_async`/`get_value`
+        // callback, which holds hap-rs's global accessory-database lock for as long
+        // as this call takes. An unbounded stall here used to freeze the entire HAP
+        // bridge until the health-check watchdog forcibly restarted the process.
+        timeout(
+            Duration::from_secs(5),
+            mqtt_client.publish(write_topic, QoS::AtLeastOnce, false, json),
+        )
+        .await
+        .map_err(|_| ComelitClientError::Publish("Publish timed out after 5s".to_string()))?
+        .map_err(|e| ComelitClientError::Publish(format!("Failed to publish request: {e}")))
     }
 
     async fn get_session(&self) -> Result<(u32, String), ComelitClientError> {
