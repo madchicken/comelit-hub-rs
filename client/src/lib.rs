@@ -1,5 +1,6 @@
 mod protocol;
 pub mod covering;
+pub mod humidity;
 pub mod thermostat;
 
 pub use protocol::client::*;
