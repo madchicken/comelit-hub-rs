@@ -9,6 +9,10 @@ use rs_matter::dm::clusters::desc::{self, ClusterHandler as DescCH};
 use rs_matter::dm::clusters::groups::{self, ClusterHandler as GroupsCH};
 use rs_matter::dm::clusters::decl::thermostat::{self as thermostat_cluster, ClusterAsyncHandler as _};
 use rs_matter::dm::clusters::decl::window_covering::{self as covering_cluster, ClusterAsyncHandler as _};
+use rs_matter::dm::clusters::decl::on_off as on_off_cluster;
+use rs_matter::dm::clusters::decl::relative_humidity_measurement::{
+    self as humidity_cluster, ClusterAsyncHandler as _,
+};
 use rs_matter::dm::devices::{DEV_TYPE_AGGREGATOR, DEV_TYPE_BRIDGED_NODE, DEV_TYPE_ON_OFF_LIGHT};
 use rs_matter::dm::{
     AsyncHandler, Async as DmAsync, Cluster, Dataver, DeviceType, Endpoint, HandlerContext,
@@ -21,6 +25,7 @@ use rs_matter::utils::select::Coalesce;
 use rs_matter::{root_endpoint, with};
 
 use crate::covering::ComelitCoveringHandler;
+use crate::dehumidifier::{ComelitDehumidifierOnOffHandler, ComelitHumidityMeasurementHandler};
 use crate::light::ComelitOnOffHooks;
 use crate::thermostat::ComelitThermostatHandler;
 
@@ -57,6 +62,24 @@ static THERMOSTAT_CLUSTERS: [Cluster<'static>; 4] = [
     groups::GroupsHandler::CLUSTER,
     <BridgedInfo as BridgedCH>::CLUSTER,
     ComelitThermostatHandler::CLUSTER,
+];
+
+// On/Off Plug-in Unit (0x010A, revision 2) is the closest standard Matter
+// device type to "a controllable on/off appliance with an associated
+// sensor reading" — Matter 1.5.1 has no dedicated Dehumidifier device
+// type (verified directly against the pinned rs-matter's IDL; see the
+// design spec). Declaring the endpoint as a Humidity Sensor instead would
+// make most controllers treat it as a read-only sensor and hide the on/off
+// control, defeating the point of this endpoint.
+const DEV_TYPE_ON_OFF_PLUGIN_UNIT: DeviceType = DeviceType { dtype: 0x010A, drev: 2 };
+
+static DEHUMIDIFIER_DEVICE_TYPES: [DeviceType; 2] = [DEV_TYPE_ON_OFF_PLUGIN_UNIT, DEV_TYPE_BRIDGED_NODE];
+static DEHUMIDIFIER_CLUSTERS: [Cluster<'static>; 5] = [
+    desc::DescHandler::CLUSTER,
+    groups::GroupsHandler::CLUSTER,
+    <BridgedInfo as BridgedCH>::CLUSTER,
+    ComelitDehumidifierOnOffHandler::CLUSTER,
+    ComelitHumidityMeasurementHandler::CLUSTER,
 ];
 
 // ── BridgedInfo ───────────────────────────────────────────────────────────────
@@ -150,6 +173,21 @@ pub struct ThermostatEntry {
     pub bridged: BridgedInfo,
 }
 
+// ── DehumidifierEntry ─────────────────────────────────────────────────────────
+
+/// All handlers and shared state for a single bridged dehumidifier endpoint.
+/// This is a separate endpoint from its parent thermostat's `ThermostatEntry`
+/// — see the design spec for why (Comelit's dehumidifier runs alongside
+/// cooling, not instead of it, so it cannot be folded into `SystemMode`).
+pub struct DehumidifierEntry {
+    pub ep_id: u16,
+    pub on_off: ComelitDehumidifierOnOffHandler,
+    pub humidity: ComelitHumidityMeasurementHandler,
+    pub desc: desc::DescHandler<'static>,
+    pub groups: groups::GroupsHandler,
+    pub bridged: BridgedInfo,
+}
+
 // ── BridgedEntry ──────────────────────────────────────────────────────────────
 
 /// One bridged endpoint: a light, a window covering, or a thermostat.
@@ -157,6 +195,7 @@ pub enum BridgedEntry {
     Light(LightEntry),
     WindowCovering(CoveringEntry),
     Thermostat(ThermostatEntry),
+    Dehumidifier(DehumidifierEntry),
 }
 
 impl BridgedEntry {
@@ -165,6 +204,7 @@ impl BridgedEntry {
             BridgedEntry::Light(l) => l.ep_id,
             BridgedEntry::WindowCovering(c) => c.ep_id,
             BridgedEntry::Thermostat(t) => t.ep_id,
+            BridgedEntry::Dehumidifier(d) => d.ep_id,
         }
     }
 }
@@ -246,6 +286,19 @@ impl AsyncHandler for ComelitBridgeHandler {
                     thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).read(ctx, reply).await,
                 _ => Err(ErrorCode::ClusterNotFound.into()),
             },
+            Some(BridgedEntry::Dehumidifier(dehumidifier)) => match cluster_id {
+                c if c == desc::DescHandler::CLUSTER.id =>
+                    DmAsync(desc::HandlerAdaptor(&dehumidifier.desc)).read(ctx, reply).await,
+                c if c == groups::GroupsHandler::CLUSTER.id =>
+                    DmAsync(groups::HandlerAdaptor(&dehumidifier.groups)).read(ctx, reply).await,
+                c if c == bridged_device_basic_information::FULL_CLUSTER.id =>
+                    DmAsync(bridged_device_basic_information::HandlerAdaptor(&dehumidifier.bridged)).read(ctx, reply).await,
+                c if c == ComelitDehumidifierOnOffHandler::CLUSTER.id =>
+                    on_off_cluster::HandlerAsyncAdaptor(&dehumidifier.on_off).read(ctx, reply).await,
+                c if c == ComelitHumidityMeasurementHandler::CLUSTER.id =>
+                    humidity_cluster::HandlerAsyncAdaptor(&dehumidifier.humidity).read(ctx, reply).await,
+                _ => Err(ErrorCode::ClusterNotFound.into()),
+            },
             None => Err(ErrorCode::EndpointNotFound.into()),
         }
     }
@@ -268,6 +321,11 @@ impl AsyncHandler for ComelitBridgeHandler {
             Some(BridgedEntry::Thermostat(thermostat)) => match cluster_id {
                 c if c == ComelitThermostatHandler::CLUSTER.id =>
                     thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).write(ctx).await,
+                _ => Err(ErrorCode::AttributeNotFound.into()),
+            },
+            Some(BridgedEntry::Dehumidifier(dehumidifier)) => match cluster_id {
+                c if c == ComelitDehumidifierOnOffHandler::CLUSTER.id =>
+                    on_off_cluster::HandlerAsyncAdaptor(&dehumidifier.on_off).write(ctx).await,
                 _ => Err(ErrorCode::AttributeNotFound.into()),
             },
             None => Err(ErrorCode::EndpointNotFound.into()),
@@ -296,6 +354,11 @@ impl AsyncHandler for ComelitBridgeHandler {
             Some(BridgedEntry::Thermostat(thermostat)) => match cluster_id {
                 c if c == ComelitThermostatHandler::CLUSTER.id =>
                     thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).invoke(ctx, reply).await,
+                _ => Err(ErrorCode::CommandNotFound.into()),
+            },
+            Some(BridgedEntry::Dehumidifier(dehumidifier)) => match cluster_id {
+                c if c == ComelitDehumidifierOnOffHandler::CLUSTER.id =>
+                    on_off_cluster::HandlerAsyncAdaptor(&dehumidifier.on_off).invoke(ctx, reply).await,
                 _ => Err(ErrorCode::CommandNotFound.into()),
             },
             None => Err(ErrorCode::EndpointNotFound.into()),
@@ -359,6 +422,23 @@ impl AsyncHandler for ComelitBridgeHandler {
                         thermostat_cluster::HandlerAsyncAdaptor(&thermostat.thermostat).bump_dataver(&ctx);
                     }
                 }
+                BridgedEntry::Dehumidifier(dehumidifier) => {
+                    if cl.map(|c| c == desc::DescHandler::CLUSTER.id).unwrap_or(true) {
+                        DescCH::dataver_changed(&dehumidifier.desc);
+                    }
+                    if cl.map(|c| c == groups::GroupsHandler::CLUSTER.id).unwrap_or(true) {
+                        GroupsCH::dataver_changed(&dehumidifier.groups);
+                    }
+                    if cl.map(|c| c == bridged_device_basic_information::FULL_CLUSTER.id).unwrap_or(true) {
+                        BridgedCH::dataver_changed(&dehumidifier.bridged);
+                    }
+                    if cl.map(|c| c == ComelitDehumidifierOnOffHandler::CLUSTER.id).unwrap_or(true) {
+                        on_off_cluster::HandlerAsyncAdaptor(&dehumidifier.on_off).bump_dataver(&ctx);
+                    }
+                    if cl.map(|c| c == ComelitHumidityMeasurementHandler::CLUSTER.id).unwrap_or(true) {
+                        humidity_cluster::HandlerAsyncAdaptor(&dehumidifier.humidity).bump_dataver(&ctx);
+                    }
+                }
             }
         }
     }
@@ -374,6 +454,7 @@ impl AsyncHandler for ComelitBridgeHandler {
                     Box::pin(covering.window_covering.run(&ctx)) as DynFut<'_>
                 }
                 BridgedEntry::Thermostat(t) => Box::pin(t.thermostat.run(&ctx)) as DynFut<'_>,
+                BridgedEntry::Dehumidifier(d) => Box::pin(d.on_off.run(&ctx)) as DynFut<'_>,
             })
             .collect();
 
@@ -419,6 +500,9 @@ impl BridgeMetadata {
                 }
                 BridgedEntry::Thermostat(thermostat) => {
                     endpoints.push(Endpoint::new(thermostat.ep_id, &THERMOSTAT_DEVICE_TYPES, &THERMOSTAT_CLUSTERS));
+                }
+                BridgedEntry::Dehumidifier(dehumidifier) => {
+                    endpoints.push(Endpoint::new(dehumidifier.ep_id, &DEHUMIDIFIER_DEVICE_TYPES, &DEHUMIDIFIER_CLUSTERS));
                 }
             }
         }
