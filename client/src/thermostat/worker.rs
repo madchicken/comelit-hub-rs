@@ -55,23 +55,32 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
             ThermostatCommand::SetTargetTemperature(new, reply) => {
                 let temperature = (new * 10.0) as i32;
                 let result = self.client.set_thermostat_temperature(&self.id, temperature).await;
+                let succeeded = result.is_ok();
                 if let Err(e) = &result {
                     warn!("set_thermostat_temperature failed: {e}");
                 }
-                let succeeded = result.is_ok();
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
-                if succeeded {
-                    // Echo the value we just sent immediately: the confirmation
-                    // push from the hub can take minutes (or never arrive for
-                    // this specific field). Without this, a stale read makes
-                    // the controller think the write failed and retry.
-                    let state = {
-                        let mut guard = self.state.lock().await;
+                // Always notify the sink, whether this succeeded or not.
+                // `ThermostatHandle::set_target_temperature` no longer waits
+                // for this call to finish (see its doc comment) — it returns
+                // as soon as the command is queued, so hap-rs has already
+                // applied `new` optimistically to the HomeKit characteristic
+                // by the time we get here. On success this push is just the
+                // existing immediate echo (the hub's own confirmation can
+                // take minutes, or never arrive for this field). On failure
+                // the state guard below is left untouched, so this same push
+                // re-asserts the last known-good value — a rollback that
+                // corrects what hap-rs already showed HomeKit, without ever
+                // holding hap-rs's global accessory-database lock while we
+                // waited on the network.
+                let state = {
+                    let mut guard = self.state.lock().await;
+                    if succeeded {
                         guard.target_temperature = new;
-                        *guard
-                    };
-                    self.notify_sink(state).await;
-                }
+                    }
+                    *guard
+                };
+                self.notify_sink(state).await;
             }
 
             ThermostatCommand::SetHvacMode(new, reply) => {
@@ -134,15 +143,20 @@ impl<C: ComelitClientTrait + 'static> ThermostatWorker<C> {
                     Err(anyhow::anyhow!("toggle_thermostat_status failed"))
                 });
 
-                if toggle_ok {
-                    let state = {
-                        let mut guard = self.state.lock().await;
+                // Always notify (see the comment in the SetTargetTemperature
+                // arm above): `ThermostatHandle::set_hvac_mode` returns as
+                // soon as the command is queued, so on failure this re-push
+                // rolls HomeKit's optimistic value back to the last
+                // known-good state instead of leaving it stuck on `new`.
+                let state = {
+                    let mut guard = self.state.lock().await;
+                    if toggle_ok {
                         guard.target_heating_cooling_state = new;
                         guard.heating_cooling_state = new;
-                        *guard
-                    };
-                    self.notify_sink(state).await;
-                }
+                    }
+                    *guard
+                };
+                self.notify_sink(state).await;
             }
 
             ThermostatCommand::MqttPush(new_state) => {
@@ -171,41 +185,38 @@ pub struct ThermostatHandle {
 }
 
 impl ThermostatHandle {
-    /// Sends the command to the worker and waits for the real outcome of the
-    /// hub call (not just "the worker accepted the command") — the whole
-    /// point of returning `Result` here instead of the old fire-and-forget
-    /// `()`. Safe now that send_action's rate limiter is per-device: this
-    /// can no longer be delayed behind an unrelated device's queued
-    /// commands, so it stays well within HomeKit's per-write timeout even on
-    /// the retry path (see client::protocol::client::send_action).
+    /// Queues the command and returns as soon as the worker has accepted it
+    /// — it does NOT wait for the real outcome of the hub call anymore.
+    ///
+    /// This used to await the worker's reply, so `on_update_async` (which
+    /// calls this synchronously) held hap-rs's global accessory-database
+    /// lock for as long as the whole retry loop in `send_action` took — up
+    /// to its 8s `OVERALL_TIMEOUT`. With a batch of many characteristics
+    /// (e.g. a scene touching several thermostats), those waits serialized
+    /// under the same lock and stacked up enough to trip the HAP health
+    /// check's 30s budget, restarting the whole bridge. The `Ok(())` this
+    /// returns now means "queued", not "succeeded" — the real hub call runs
+    /// in the worker task, off the lock entirely, and its failure is
+    /// reported asynchronously via a sink rollback (see `handle()`'s
+    /// `SetTargetTemperature`/`SetHvacMode` arms) instead of in this
+    /// `Result`. This mirrors how HomeKit already treats hub-confirmed
+    /// updates: optimistic apply now, corrected later if it turns out wrong.
     pub async fn set_target_temperature(&self, celsius: f32) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .command_sender
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        self.command_sender
             .send(ThermostatCommand::SetTargetTemperature(celsius, reply_tx))
             .await
-            .is_err()
-        {
-            anyhow::bail!("thermostat worker is gone");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("thermostat worker dropped the reply")))
+            .map_err(|_| anyhow::anyhow!("thermostat worker is gone"))
     }
 
+    /// See `set_target_temperature`'s doc comment — same "queued, not
+    /// completed" semantics, for the same reason.
     pub async fn set_hvac_mode(&self, mode: TargetHeatingCoolingState) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .command_sender
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        self.command_sender
             .send(ThermostatCommand::SetHvacMode(mode, reply_tx))
             .await
-            .is_err()
-        {
-            anyhow::bail!("thermostat worker is gone");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("thermostat worker dropped the reply")))
+            .map_err(|_| anyhow::anyhow!("thermostat worker is gone"))
     }
 
     pub async fn mqtt_push(&self, state: ThermostatState) {
@@ -356,6 +367,7 @@ mod test {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
 
         assert!(handle.set_target_temperature(21.5).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
         assert_eq!(client.temperature_calls.read().await.as_slice(), &[("test-id".to_string(), 215)]);
         let updates = sink.updates.read().await;
@@ -363,13 +375,24 @@ mod test {
     }
 
     #[tokio::test]
-    async fn test_set_target_temperature_failure_does_not_echo() {
-        let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
+    async fn test_set_target_temperature_failure_rolls_back() {
+        let initial = ThermostatState { target_temperature: 19.0, ..Default::default() };
+        let (handle, client, sink) = create_test_worker(initial).await;
         client.should_fail.store(true, Ordering::Relaxed);
 
-        assert!(handle.set_target_temperature(21.5).await.is_err());
+        // Returns Ok: the command was queued, not that it succeeded — the
+        // real outcome is no longer awaited here (see set_target_temperature's
+        // doc comment), so the hub call runs off hap-rs's global lock.
+        assert!(handle.set_target_temperature(21.5).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
-        assert!(sink.updates.read().await.is_empty());
+        // The hub call failed, so the worker never queued a new hub write
+        // beyond the one attempt, and the sink was re-notified with the
+        // original (unchanged) value — correcting whatever hap-rs had
+        // already applied optimistically, instead of leaving it stuck on
+        // the rejected 21.5.
+        let updates = sink.updates.read().await;
+        assert_eq!(updates.last().unwrap().target_temperature, 19.0);
     }
 
     #[tokio::test]
@@ -377,6 +400,7 @@ mod test {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
 
         assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Heat).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
         assert_eq!(client.toggle_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaOnOff::OnThermo)]);
         assert_eq!(client.season_calls.read().await.as_slice(), &[("test-id".to_string(), ThermoSeason::Winter)]);
@@ -390,6 +414,7 @@ mod test {
         let (handle, client, _sink) = create_test_worker(ThermostatState::default()).await;
 
         assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Off).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
         assert_eq!(client.toggle_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaOnOff::OffThermo)]);
         assert!(client.season_calls.read().await.is_empty());
@@ -400,6 +425,7 @@ mod test {
         let (handle, client, sink) = create_test_worker(ThermostatState::default()).await;
 
         assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Auto).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
         assert_eq!(client.mode_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaMode::Auto)]);
         let updates = sink.updates.read().await;
@@ -415,6 +441,7 @@ mod test {
         let (handle, client, _sink) = create_test_worker(initial).await;
 
         assert!(handle.set_hvac_mode(TargetHeatingCoolingState::Heat).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
         assert_eq!(client.mode_calls.read().await.as_slice(), &[("test-id".to_string(), ClimaMode::Manual)]);
         assert_eq!(client.season_calls.read().await.as_slice(), &[("test-id".to_string(), ThermoSeason::Winter)]);
@@ -446,6 +473,7 @@ mod test {
         sleep(Duration::from_millis(20)).await;
 
         assert!(handle.set_target_temperature(20.0).await.is_ok());
+        sleep(Duration::from_millis(20)).await;
 
         assert_eq!(client.temperature_calls.read().await.len(), 1);
     }

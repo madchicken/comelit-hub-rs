@@ -343,6 +343,17 @@ impl ComelitThermostatAccessory {
                     // since it always calls set_value() with whatever the read
                     // callback returned. Without this guard, every routine
                     // HomeKit poll re-sends the same command to the Comelit hub.
+                    //
+                    // set_target_temperature() only queues the command now — it
+                    // returns as soon as the worker accepts it, not once the hub
+                    // has actually confirmed it (see its doc comment). This call
+                    // runs inside hap-rs's global accessory-database lock, so
+                    // waiting here for the full hub round-trip (which can retry
+                    // for up to 8s) used to serialize with every other
+                    // characteristic write on the bridge — enough, in a scene
+                    // touching many thermostats, to trip the HAP health check and
+                    // restart the whole bridge. A failed hub call is instead
+                    // surfaced asynchronously as a rollback push to HomeKit.
                     if prev != new {
                         handle.set_target_temperature(new).await?;
                     }
@@ -429,6 +440,12 @@ impl ComelitThermostatAccessory {
                     let handle = handle.clone();
                     async move {
                         Metrics::inc_hap_requests();
+                        // set_target_humidity() only queues the command — see
+                        // ThermostatHandle::set_target_temperature's doc
+                        // comment. It returns quickly, releasing hap-rs's
+                        // global accessory-database lock instead of holding
+                        // it for the hub round-trip; a failed hub call is
+                        // rolled back asynchronously via the sink.
                         if prev != new {
                             handle.set_target_humidity(new).await?;
                         }
@@ -440,7 +457,8 @@ impl ComelitThermostatAccessory {
 
             {
                 let handle = humidity_handle.clone();
-                // Same get_value()-on-every-read guard as above.
+                // Same get_value()-on-every-read guard as above, and same
+                // queue-and-return-quickly semantics on set_dehumidifier_active.
                 hd.active.on_update_async(Some(move |prev: u8, new: u8| {
                     let handle = handle.clone();
                     async move {
@@ -473,7 +491,8 @@ impl ComelitThermostatAccessory {
             }
             let handle = humidity_handle.clone();
             // Same get_value()-on-every-read guard as the dehumidifier's
-            // characteristics above.
+            // characteristics above, and same queue-and-return-quickly
+            // semantics on set_target_humidity.
             char.on_update_async(Some(move |prev, new: f32| {
                 let handle = handle.clone();
                 async move {
