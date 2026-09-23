@@ -55,38 +55,45 @@ impl<C: ComelitClientTrait + 'static> HumidityWorker<C> {
 
             HumidityCommand::SetTargetHumidity(new, reply) => {
                 let result = self.client.set_humidity(&self.id, new as i32).await;
+                let succeeded = result.is_ok();
                 if let Err(e) = &result {
                     warn!("set_humidity failed: {e}");
                 }
-                let succeeded = result.is_ok();
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
-                if succeeded {
-                    let state = {
-                        let mut guard = self.state.lock().await;
+                // Always notify (see ThermostatWorker's SetTargetTemperature
+                // arm for the full rationale): `HumidityHandle::set_target_humidity`
+                // no longer waits for this call to finish, so hap-rs has
+                // already applied `new` optimistically. On success this is
+                // just the existing immediate echo; on failure the state
+                // guard below is left untouched, so this re-asserts the last
+                // known-good value as a rollback.
+                let state = {
+                    let mut guard = self.state.lock().await;
+                    if succeeded {
                         guard.target_humidity = new;
-                        *guard
-                    };
-                    self.notify_sink(state).await;
-                }
+                    }
+                    *guard
+                };
+                self.notify_sink(state).await;
             }
 
             HumidityCommand::SetDehumidifierActive(new, reply) => {
                 let mode = if new { ClimaOnOff::OnHumi } else { ClimaOnOff::OffHumi };
                 let result = self.client.toggle_thermostat_status(&self.id, mode).await;
+                let succeeded = result.is_ok();
                 if let Err(e) = &result {
                     warn!("toggle_thermostat_status (humi) failed: {e}");
                 }
-                let succeeded = result.is_ok();
                 let _ = reply.send(result.map_err(|e| anyhow::anyhow!(e.to_string())));
-                if succeeded {
-                    let state = {
-                        let mut guard = self.state.lock().await;
+                let state = {
+                    let mut guard = self.state.lock().await;
+                    if succeeded {
                         guard.dehumidifier_active = new;
                         guard.dehumidifier_current_state = if new { 1 } else { 0 };
-                        *guard
-                    };
-                    self.notify_sink(state).await;
-                }
+                    }
+                    *guard
+                };
+                self.notify_sink(state).await;
             }
 
             HumidityCommand::MqttPush(new_state) => {
@@ -115,37 +122,32 @@ pub struct HumidityHandle {
 }
 
 impl HumidityHandle {
-    /// Sends the command to the worker and waits for the real outcome of the
-    /// hub call (not just "the worker accepted the command") — no
-    /// fire-and-forget.
+    /// Queues the command and returns as soon as the worker has accepted it
+    /// — it does NOT wait for the real outcome of the hub call anymore. See
+    /// `ThermostatHandle::set_target_temperature`'s doc comment for the full
+    /// rationale: this used to await the worker's reply, so `on_update_async`
+    /// (which calls this synchronously) held hap-rs's global
+    /// accessory-database lock for as long as the whole retry loop in
+    /// `send_action` took (up to 8s). The real hub call now runs in the
+    /// worker task, off that lock entirely, and its failure is reported
+    /// asynchronously via a sink rollback (see `handle()`'s
+    /// `SetTargetHumidity`/`SetDehumidifierActive` arms).
     pub async fn set_target_humidity(&self, value: f32) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .command_sender
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        self.command_sender
             .send(HumidityCommand::SetTargetHumidity(value, reply_tx))
             .await
-            .is_err()
-        {
-            anyhow::bail!("humidity worker is gone");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("humidity worker dropped the reply")))
+            .map_err(|_| anyhow::anyhow!("humidity worker is gone"))
     }
 
+    /// See `set_target_humidity`'s doc comment — same "queued, not
+    /// completed" semantics, for the same reason.
     pub async fn set_dehumidifier_active(&self, active: bool) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .command_sender
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        self.command_sender
             .send(HumidityCommand::SetDehumidifierActive(active, reply_tx))
             .await
-            .is_err()
-        {
-            anyhow::bail!("humidity worker is gone");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("humidity worker dropped the reply")))
+            .map_err(|_| anyhow::anyhow!("humidity worker is gone"))
     }
 
     pub async fn mqtt_push(&self, state: HumidityState) {
@@ -274,22 +276,30 @@ mod test {
         let (handle, client, sink) = create_test_worker(HumidityState::default()).await;
         let result = handle.set_target_humidity(60.0).await;
         assert!(result.is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(client.humidity_calls.read().await.as_slice(), &[("DOM#TH#1".to_string(), 60)]);
         assert_eq!(sink.updates.read().await.last().unwrap().target_humidity, 60.0);
     }
 
     #[tokio::test]
-    async fn test_set_target_humidity_failure_does_not_echo() {
+    async fn test_set_target_humidity_failure_rolls_back() {
         let client = FakeComelitClient { should_fail: Arc::new(AtomicBool::new(true)), ..Default::default() };
-        let handle = spawn_humidity_worker("DOM#TH#2".to_string(), HumidityState::default(), client.clone());
+        let initial = HumidityState { target_humidity: 45.0, ..Default::default() };
+        let handle = spawn_humidity_worker("DOM#TH#2".to_string(), initial, client.clone());
         let sink = FakeSink::default();
         handle.set_sink(Box::new(sink.clone())).await;
 
+        // Ok: the command was queued, not that it succeeded — the real
+        // outcome is no longer awaited (see set_target_humidity's doc
+        // comment), so the hub call runs off hap-rs's global lock.
         let result = handle.set_target_humidity(60.0).await;
+        assert!(result.is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
 
-        assert!(result.is_err());
-        assert!(sink.updates.read().await.is_empty());
-        assert!(client.humidity_calls.read().await.is_empty());
+        // The hub call failed, so the sink was re-notified with the
+        // original value — correcting whatever hap-rs had already applied
+        // optimistically, instead of leaving it stuck on the rejected 60.0.
+        assert_eq!(sink.updates.read().await.last().unwrap().target_humidity, 45.0);
     }
 
     #[tokio::test]
@@ -297,6 +307,7 @@ mod test {
         let (handle, client, sink) = create_test_worker(HumidityState::default()).await;
         let result = handle.set_dehumidifier_active(true).await;
         assert!(result.is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(client.toggle_calls.read().await.as_slice(), &[("DOM#TH#1".to_string(), ClimaOnOff::OnHumi)]);
         let last = *sink.updates.read().await.last().unwrap();
         assert!(last.dehumidifier_active);
@@ -308,6 +319,7 @@ mod test {
         let (handle, client, sink) = create_test_worker(HumidityState { dehumidifier_active: true, ..Default::default() }).await;
         let result = handle.set_dehumidifier_active(false).await;
         assert!(result.is_ok());
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         assert_eq!(client.toggle_calls.read().await.as_slice(), &[("DOM#TH#1".to_string(), ClimaOnOff::OffHumi)]);
         let last = *sink.updates.read().await.last().unwrap();
         assert!(!last.dehumidifier_active);

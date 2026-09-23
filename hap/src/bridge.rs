@@ -27,16 +27,30 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
+use tokio::sync::Mutex;
 use tracing::{error, info, warn};
 
 /// Updater that handles status updates from the Comelit client.
 /// Also updates the shared bridge state for the web UI.
+///
+/// Each accessory is wrapped in its own `Arc<Mutex<...>>` rather than being
+/// stored directly in the `DashMap`. `DashMap`'s `Ref`/`RefMut` guards hold a
+/// per-shard `RwLock` for as long as they're alive — holding one across an
+/// `.await` (as `accessory.update(data).await` would, if `accessory` were
+/// the `RefMut` itself) risks a real deadlock: any other task touching the
+/// same key (or another key that happens to hash into the same shard) blocks
+/// until that `.await` resolves, and if it never does (a stuck downstream
+/// call), the `DashMap` entry is wedged forever. Storing an `Arc<Mutex<_>>`
+/// means `status_update` only ever holds the `DashMap` guard long enough to
+/// clone the `Arc` — a synchronous, near-instant operation — before locking
+/// the `tokio::sync::Mutex` (which is designed to be held across `.await`)
+/// for the actual update.
 struct Updater {
-    lights: DashMap<String, ComelitLightbulbAccessory>,
-    window_coverings: DashMap<String, ComelitWindowCoveringAccessory>,
-    thermostats: DashMap<String, ComelitThermostatAccessory>,
-    doors: DashMap<String, ComelitDoorAccessory>,
-    doorbells: DashMap<String, ComelitDoorbellAccessory>,
+    lights: DashMap<String, Arc<Mutex<ComelitLightbulbAccessory>>>,
+    window_coverings: DashMap<String, Arc<Mutex<ComelitWindowCoveringAccessory>>>,
+    thermostats: DashMap<String, Arc<Mutex<ComelitThermostatAccessory>>>,
+    doors: DashMap<String, Arc<Mutex<ComelitDoorAccessory>>>,
+    doorbells: DashMap<String, Arc<Mutex<ComelitDoorbellAccessory>>>,
     bridge_state: BridgeState,
 }
 
@@ -62,7 +76,12 @@ impl StatusUpdate for Updater {
             HomeDeviceData::Other(_) => {}
             HomeDeviceData::Light(data) => {
                 Metrics::inc_device_updates("light");
-                if let Some(mut accessory) = self.lights.get_mut(&device.id()) {
+                // Clone the Arc while holding the DashMap guard only for this
+                // synchronous statement, then lock the per-accessory Mutex —
+                // see the Updater doc comment for why.
+                let maybe_accessory = self.lights.get(&device.id()).map(|e| e.value().clone());
+                if let Some(accessory_arc) = maybe_accessory {
+                    let mut accessory = accessory_arc.lock().await;
                     let is_on = matches!(
                         data.status,
                         Some(DeviceStatus::On) | Some(DeviceStatus::Running)
@@ -86,7 +105,12 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::WindowCovering(data) => {
                 Metrics::inc_device_updates("window_covering");
-                if let Some(mut accessory) = self.window_coverings.get_mut(&device.id()) {
+                let maybe_accessory = self
+                    .window_coverings
+                    .get(&device.id())
+                    .map(|e| e.value().clone());
+                if let Some(accessory_arc) = maybe_accessory {
+                    let mut accessory = accessory_arc.lock().await;
                     let status = match &data.status {
                         Some(s) => format!("{:?}", s),
                         None => "unknown".to_string(),
@@ -111,7 +135,9 @@ impl StatusUpdate for Updater {
             HomeDeviceData::Irrigation(_irrigation_device_data) => {}
             HomeDeviceData::Thermostat(data) => {
                 Metrics::inc_device_updates("thermostat");
-                if let Some(mut accessory) = self.thermostats.get_mut(&device.id()) {
+                let maybe_accessory = self.thermostats.get(&device.id()).map(|e| e.value().clone());
+                if let Some(accessory_arc) = maybe_accessory {
+                    let mut accessory = accessory_arc.lock().await;
                     let status = format!("{}°C", data.temperature.as_deref().unwrap_or("--"));
                     self.bridge_state.update_device_status(&device.id(), status);
                     let name = accessory.name.as_str();
@@ -160,7 +186,9 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::Doorbell(bell_device_data) => {
                 Metrics::inc_device_updates("doorbell");
-                if let Some(mut accessory) = self.doorbells.get_mut(&device.id()) {
+                let maybe_accessory = self.doorbells.get(&device.id()).map(|e| e.value().clone());
+                if let Some(accessory_arc) = maybe_accessory {
+                    let mut accessory = accessory_arc.lock().await;
                     accessory
                         .update(bell_device_data)
                         .await
@@ -172,7 +200,9 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::Door(door_device_data) => {
                 Metrics::inc_device_updates("door");
-                if let Some(mut accessory) = self.doors.get_mut(&device.id()) {
+                let maybe_accessory = self.doors.get(&device.id()).map(|e| e.value().clone());
+                if let Some(accessory_arc) = maybe_accessory {
+                    let mut accessory = accessory_arc.lock().await;
                     let status = match door_device_data.status {
                         Some(DeviceStatus::On) | Some(DeviceStatus::Running) => "open",
                         _ => "closed",
@@ -456,9 +486,10 @@ pub async fn start_bridge(
                             last_update: None,
                         });
 
-                        updater
-                            .lights
-                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                        updater.lights.insert(
+                            accessory.get_comelit_id().to_string(),
+                            Arc::new(Mutex::new(accessory)),
+                        );
                     }
                     Err(err) => error!("Failed to add light device: {}", err),
                 }
@@ -505,9 +536,10 @@ pub async fn start_bridge(
                             last_update: None,
                         });
 
-                        updater
-                            .window_coverings
-                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                        updater.window_coverings.insert(
+                            accessory.get_comelit_id().to_string(),
+                            Arc::new(Mutex::new(accessory)),
+                        );
                     }
                     Err(err) => error!("Failed to add window covering device: {}", err),
                 }
@@ -538,9 +570,10 @@ pub async fn start_bridge(
                             last_update: None,
                         });
 
-                        updater
-                            .thermostats
-                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                        updater.thermostats.insert(
+                            accessory.get_comelit_id().to_string(),
+                            Arc::new(Mutex::new(accessory)),
+                        );
                     }
                     Err(err) => error!("Failed to add thermostat device: {}", err),
                 };
@@ -580,9 +613,10 @@ pub async fn start_bridge(
                             last_update: None,
                         });
 
-                        updater
-                            .doors
-                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                        updater.doors.insert(
+                            accessory.get_comelit_id().to_string(),
+                            Arc::new(Mutex::new(accessory)),
+                        );
                     }
                     Err(err) => error!("Failed to add door device: {}", err),
                 };
@@ -654,9 +688,10 @@ pub async fn start_bridge(
                             last_update: None,
                         });
 
-                        updater
-                            .doorbells
-                            .insert(accessory.get_comelit_id().to_string(), accessory);
+                        updater.doorbells.insert(
+                            accessory.get_comelit_id().to_string(),
+                            Arc::new(Mutex::new(accessory)),
+                        );
 
                         // Spawn the doorbell's standalone server as a background task
                         let bell_id = bell.id.clone();

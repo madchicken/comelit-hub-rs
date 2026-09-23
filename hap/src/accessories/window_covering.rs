@@ -265,6 +265,14 @@ impl ComelitWindowCoveringAccessory {
                         "Window covering target position update: {} -> {}",
                         old_pos, new_pos
                     );
+                    // move_to() only queues the command now — it returns
+                    // once the worker accepts it, not once the hub confirms
+                    // it (see its doc comment). This call runs inside
+                    // hap-rs's global accessory-database lock, so waiting
+                    // here for the full hub round-trip (retries for up to
+                    // 8s) used to serialize with every other characteristic
+                    // write on the bridge. A failed hub call is instead
+                    // surfaced asynchronously as a rollback push to HomeKit.
                     handle.move_to(old_pos, new_pos).await?;
                     Ok(())
                 }
