@@ -247,7 +247,14 @@ impl ComelitClient {
                 hub.address().unwrap(),
                 options.port.unwrap_or(1883),
             );
-            mqttoptions.set_keep_alive(Duration::from_secs(5));
+            // Kept generous (well above the ~5s round-trip we saw the hub take under
+            // load) because the Comelit hub is an embedded device: a scene that fires
+            // many commands in quick succession can make it slow to ACK the MQTT
+            // keepalive PINGREQ. A tight keepalive here made rumqttc declare the
+            // connection dead (`MqttState(AwaitPingResp)`) mid-scene, which cascaded
+            // into 3 consecutive application-ping failures and a full bridge restart —
+            // exactly when many devices were being written to at once.
+            mqttoptions.set_keep_alive(Duration::from_secs(60));
             mqttoptions.set_credentials(options.mqtt_user, options.mqtt_password);
             mqttoptions.set_max_packet_size(128 * 1024, 128 * 1024);
 
@@ -633,8 +640,26 @@ impl ComelitClient {
 
         info!("Re-login successful, new session token obtained");
 
-        // Re-subscribe to root device so the hub sends push updates with the new session
-        self.subscribe(ROOT_ID).await?;
+        // Re-subscribe to root device so the hub sends push updates with the
+        // new session. This deliberately does NOT call `self.subscribe()`,
+        // which would call `get_session()` — if the session this call just
+        // wrote were invalidated concurrently (e.g. by the ping task, which
+        // can invalidate it at any time from its own independent 5s loop)
+        // before `get_session()` re-reads it, `get_session()` would find it
+        // missing and call `re_login(None)` again on the *same* task, which
+        // would then try to re-acquire `relogin_lock` — a `tokio::sync::Mutex`,
+        // which is not reentrant — while this call still holds it. That's a
+        // guaranteed self-deadlock: this task waits on a lock only this same
+        // task can release. Using the agent_id/token already in hand instead
+        // of going back through get_session() avoids the recursion entirely.
+        self.send_request(make_subscribe_message(
+            make_id(&self.inner.req_id).await,
+            agent_id,
+            new_token.as_str(),
+            ROOT_ID,
+        ))
+        .await
+        .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
 
         Ok(())
     }
