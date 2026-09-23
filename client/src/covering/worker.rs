@@ -117,7 +117,11 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
                             if let Err(e) = &result {
                                 warn!("Error handling move_to: {}", e);
                             }
-                            let should_notify = matches!(result, Ok(true));
+                            // Notify on success (a move was actually
+                            // initiated) AND on failure (the optimistic
+                            // target/direction write was just rolled back
+                            // above and HomeKit needs to see the correction).
+                            let should_notify = matches!(result, Ok(true) | Err(_));
                             let _ = reply.send(result.map(|_| ()));
                             if should_notify {
                                 self.notify_sink().await;
@@ -155,10 +159,12 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
     }
 
     /// Returns whether the sink needs notifying (a move was actually
-    /// initiated). The caller sends the oneshot reply *before* acting on
-    /// this — `notify_sink` takes the same accessory lock hap-rs holds for
-    /// the whole `on_update_async` callback the reply is awaited from, so
-    /// notifying before replying would deadlock the entire HAP bridge.
+    /// initiated, or a previously-optimistic write needs rolling back).
+    /// `WindowCoveringHandle::move_to` no longer awaits this call to finish
+    /// (see its doc comment), so `on_update_async` is long gone by the time
+    /// this runs — notifying from here no longer risks the ABBA deadlock
+    /// with hap-rs's global accessory-database lock that this comment used
+    /// to warn about.
     async fn handle_move_to(&mut self, old_pos: u8, new_pos: u8) -> Result<bool> {
         let current_pos = {
             let state = self.state.lock().await;
@@ -208,6 +214,13 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
             WorkerState::Idle => {}
         }
 
+        // Remember what was published before the optimistic write below, so
+        // a failed hub call can be rolled back to it.
+        let (prev_target, prev_position_state) = {
+            let state = self.state.lock().await;
+            (state.target_position, state.position_state)
+        };
+
         {
             let mut state = self.state.lock().await;
             state.target_position = new_pos;
@@ -220,15 +233,25 @@ impl<C: ComelitClientTrait + 'static> WindowCoveringWorker<C> {
         );
 
         let on = direction == PositionState::MovingUp;
-        self.client.toggle_device_status(&self.id, on).await?;
-
-        self.worker_state = WorkerState::WaitingForMoveConfirmation {
-            target: new_pos,
-            direction,
-            sent_at: Instant::now(),
-        };
-
-        Ok(true)
+        match self.client.toggle_device_status(&self.id, on).await {
+            Ok(()) => {
+                self.worker_state = WorkerState::WaitingForMoveConfirmation {
+                    target: new_pos,
+                    direction,
+                    sent_at: Instant::now(),
+                };
+                Ok(true)
+            }
+            Err(e) => {
+                // The hub never started moving, so roll back the optimistic
+                // write above — `worker_state` was never touched, so it's
+                // still correctly `Idle`.
+                let mut state = self.state.lock().await;
+                state.target_position = prev_target;
+                state.position_state = prev_position_state;
+                Err(e.into())
+            }
+        }
     }
 
     /// Stop any in-progress movement (mandatory for Matter's `StopMotion`; HAP
@@ -511,24 +534,21 @@ pub struct WindowCoveringHandle {
 }
 
 impl WindowCoveringHandle {
-    /// Sends the command and waits for the real outcome of the hub call, not
-    /// just "the worker accepted the command" — safe now that send_action's
-    /// rate limiter is per-device (see
-    /// client::protocol::client::send_action), so this can no longer be
-    /// delayed behind an unrelated device's queued commands.
+    /// Queues the command and returns as soon as the worker has accepted it
+    /// — it does NOT wait for the real outcome of the hub call anymore. See
+    /// `ThermostatHandle::set_target_temperature`'s doc comment for the full
+    /// rationale: this used to await the worker's reply, so `on_update_async`
+    /// (which calls this synchronously) held hap-rs's global
+    /// accessory-database lock for as long as the whole retry loop in
+    /// `send_action` took (up to 8s). The real hub call now runs in the
+    /// worker task, off that lock entirely, and its failure is reported
+    /// asynchronously via a sink rollback (see `handle_move_to`).
     pub async fn move_to(&self, old_pos: u8, new_pos: u8) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .command_sender
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        self.command_sender
             .send(WorkerCommand::MoveTo { old_pos, new_pos, reply: reply_tx })
             .await
-            .is_err()
-        {
-            anyhow::bail!("window covering worker is gone");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("window covering worker dropped the reply")))
+            .map_err(|_| anyhow::anyhow!("window covering worker is gone"))
     }
 
     pub async fn status_update(&self, new_state: WindowCoveringState) {
@@ -538,19 +558,16 @@ impl WindowCoveringHandle {
             .await;
     }
 
+    /// See `move_to`'s doc comment — same "queued, not completed" semantics.
+    /// Matter is the only caller today (HAP has no hold-position
+    /// characteristic to trigger this from), but the same principle applies:
+    /// a slow hub shouldn't hold a caller hostage for up to 8s.
     pub async fn stop(&self) -> anyhow::Result<()> {
-        let (reply_tx, reply_rx) = oneshot::channel();
-        if self
-            .command_sender
+        let (reply_tx, _reply_rx) = oneshot::channel();
+        self.command_sender
             .send(WorkerCommand::Stop { reply: reply_tx })
             .await
-            .is_err()
-        {
-            anyhow::bail!("window covering worker is gone");
-        }
-        reply_rx
-            .await
-            .unwrap_or_else(|_| Err(anyhow::anyhow!("window covering worker dropped the reply")))
+            .map_err(|_| anyhow::anyhow!("window covering worker is gone"))
     }
 
     pub async fn set_sink(&self, sink: Box<dyn WindowCoveringSink>) {
@@ -853,6 +870,33 @@ mod test {
         let current_state = state.lock().await;
         assert!(current_state.current_position < FULLY_OPENED);
         assert_eq!(current_state.position_state, PositionState::MovingDown);
+    }
+
+    #[tokio::test]
+    async fn test_move_to_failure_rolls_back() {
+        let initial = WindowCoveringState {
+            current_position: FULLY_CLOSED,
+            target_position: FULLY_CLOSED,
+            position_state: PositionState::Stopped,
+        };
+        let (handle, state, client, sink) = create_test_worker(initial).await;
+        client.should_fail.store(true, Ordering::Relaxed);
+
+        // Ok: the command was queued, not that it succeeded — the real
+        // outcome is no longer awaited (see move_to's doc comment), so the
+        // hub call runs off hap-rs's global lock.
+        assert!(handle.move_to(FULLY_CLOSED, FULLY_OPENED).await.is_ok());
+        sleep(Duration::from_millis(100)).await;
+
+        // No toggle should have gone through, and the optimistic
+        // target/direction write must have been rolled back — correcting
+        // whatever hap-rs had already applied optimistically.
+        assert_eq!(client.toggle_calls.read().await.len(), 0);
+        let current_state = *state.lock().await;
+        assert_eq!(current_state.target_position, FULLY_CLOSED);
+        assert_eq!(current_state.position_state, PositionState::Stopped);
+        let last = sink.updates.read().await;
+        assert_eq!(last.last().unwrap().target_position, FULLY_CLOSED);
     }
 
     #[tokio::test]
