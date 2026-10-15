@@ -370,10 +370,16 @@ pub async fn start_bridge(
             }
             Err(_) => {
                 info!(
-                    "Creating new config, pairing code is {:?}",
-                    settings.pairing_code
+                    "Creating new config, device id is {:?}",
+                    client.mac_address()
                 );
-                let pin = Pin::new(settings.pairing_code).expect("Invalid pairing code");
+                let pin = loop {
+                    if let Ok(pin) = Pin::new(settings.pairing_code) {
+                        break pin;
+                    } else {
+                        continue;
+                    }
+                };
                 let config = Config {
                     pin,
                     name: bridge_name.into(),

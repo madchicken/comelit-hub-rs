@@ -296,6 +296,9 @@ do_reset() {
     chmod 644 "$LOG_DIR/comelit-hub-hap.err"
     rm -rf "$DATA_DIR/data"
 
+    systemctl daemon-reload
+    systemctl enable comelit-hub-hap
+
     print_info "Service configuration reset successfully"
 }
 
