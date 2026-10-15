@@ -2,7 +2,6 @@ use std::time::Duration;
 
 use crate::{
     JSONResult, ViperError,
-    audio_video::{Args, read_av_stream},
     channel::Channel,
     command::{CommandKind, PushInfo},
     command_response::{
@@ -11,13 +10,11 @@ use crate::{
     },
     ctpp_channel::CTPPChannel,
     helper::Helper,
-    rtpc_channel::RTPCChannel,
     stream_wrapper::StreamWrapper,
     udp_stream_wrapper::UdpStreamWrapper,
-    udpm_channel::UDPMChannel,
+    video::{self, CallTarget, VideoOptions, VideoStats, ctp::LogAddr},
 };
 use serde::Deserialize;
-use tokio::time::{Sleep, sleep};
 use tracing::debug;
 
 pub const ICONA_BRIDGE_PORT: u16 = 64100;
@@ -228,91 +225,55 @@ impl ViperClient {
         Ok(())
     }
 
+    /// Watches an external unit ("auto-ignition") and records its video
+    /// stream, see [`crate::video`] for the protocol. `target` is the name of
+    /// an entrance or of a door in the address books of the configuration.
+    /// The call is released after `options.duration` or when `stop` resolves.
     pub async fn start_video(
         &mut self,
-        ip: &str,
-        port: u16,
         vip: &VipConfig,
-        output_file: &str,
-        door_name: &str,
-    ) -> Result<(), ViperError> {
-        let sub = format!("{}{}", vip.apt_address, vip.apt_subaddress);
-        let door_item = vip
-            .user_parameters
-            .opendoor_address_book
+        target: &str,
+        options: VideoOptions,
+        stop: impl Future<Output = ()>,
+    ) -> Result<VideoStats, ViperError> {
+        let book = &vip.user_parameters;
+        let dst = book
+            .entrance_address_book
             .iter()
-            .find(|d| d.name.as_str() == door_name)
-            .ok_or(ViperError::Generic("Door not found".to_string()))?;
+            .find(|e| e.name == target)
+            .map(|e| e.apt_address.as_str())
+            .or_else(|| {
+                book.opendoor_address_book
+                    .iter()
+                    .find(|d| d.name == target)
+                    .map(|d| d.apt_address.as_str())
+            })
+            .ok_or_else(|| {
+                let names: Vec<&str> = book
+                    .entrance_address_book
+                    .iter()
+                    .map(|e| e.name.as_str())
+                    .chain(book.opendoor_address_book.iter().map(|d| d.name.as_str()))
+                    .collect();
+                ViperError::Generic(format!("Unknown target {target:?}, available: {names:?}"))
+            })?;
+        let target = CallTarget {
+            src: LogAddr::new(&format!("{}{}", vip.apt_address, vip.apt_subaddress))
+                .map_err(ViperError::Generic)?,
+            dst: LogAddr::new(dst).map_err(ViperError::Generic)?,
+        };
 
-        let ctpp_channel = self.ctpp_channel();
-        self.stream.execute(&ctpp_channel.open(&sub))?;
-        debug!("CTPP Channel opened");
-
-        self.stream
-            .execute(&ctpp_channel.get_unknown_open_door_message(vip))?;
-        debug!("Unknown sent");
-        self.stream.read()?;
-        debug!("Read 1");
-        self.stream
-            .execute_no_read(&ctpp_channel.get_init_open_door_message(vip, door_item))?;
-        self.stream.read()?;
-        debug!("Read 2");
-
-        let info = self.push_info(
-            vip.apt_subaddress,
-            vip.user_parameters.opendoor_address_book.first().unwrap(),
-        )?;
-
-        debug!("Push info received {info:?}");
-
-        let mut udpm_channel = self.udpm_channel();
-        let resp = self.stream.execute(&udpm_channel.open())?;
-        let udpm_id = resp.last_chunk::<2>().unwrap();
-        let mut init = false;
+        // The session needs the CTPP, UDPM and two RTPC channel ids
+        self.tick();
+        let first_channel = u16::from_le_bytes(self.control);
         for _ in 0..4 {
-            self.udp.write(&udpm_channel.ping(udpm_id)).await?;
-            let mut buf = [0u8; 14];
-            if self.udp.read(&mut buf).await.is_ok() {
-                Helper::print_buffer(&buf);
-                init = true;
-                break;
-            }
-            sleep(Duration::from_millis(100)).await;
-        }
-        if !init {
-            self.stream.execute(&udpm_channel.close())?;
-            panic!("UDPM channel failed to initialize");
+            self.tick();
         }
 
-        debug!("RTPC Channel opening: ");
-        let rtsp_channel = self.rtpc_channel();
-        let resp = self.stream.execute(&rtsp_channel.open())?;
-        debug!("RTPC Channel opened: ");
-        Helper::print_buffer(&resp);
-        debug!("RTPC Channel starting stream");
-        let resp = self.stream.execute(&rtsp_channel.start_stream(vip))?;
-        Helper::print_buffer(&resp);
-        self.stream
-            .execute_no_read(&rtsp_channel.start_stream(vip))?;
-
-        let args = Args::builder()
-            .no_video(false)
-            .no_audio(false)
-            .max_packets(100000)
-            .remote(ip.into())
-            .bind("0.0.0.0".into())
-            .audio_output(format!("{}.pcm", output_file).into())
-            .video_output(format!("{}.h264", output_file).into())
-            .port(port)
-            .build();
-        debug!("Start audio video recording...");
-        read_av_stream(&self.udp, args)
-            .await
-            .map_err(|e| ViperError::Generic(e.to_string()))?;
-
-        udpm_channel.close();
-        rtsp_channel.close();
-        Ok(())
+        let tcp = self.stream.async_clone()?;
+        let result = video::run(tcp, self.udp.socket(), first_channel, target, options, stop).await;
+        self.stream.restore_blocking()?;
+        result
     }
 
     fn channel(&mut self, command: &'static str) -> Channel {
@@ -325,18 +286,6 @@ impl ViperClient {
         self.tick();
 
         CTPPChannel::new(&self.control)
-    }
-
-    fn rtpc_channel(&mut self) -> RTPCChannel {
-        self.tick();
-
-        RTPCChannel::new(&self.control)
-    }
-
-    fn udpm_channel(&mut self) -> UDPMChannel {
-        self.tick();
-
-        UDPMChannel::new(&self.control)
     }
 
     fn push_channel(&mut self) -> Channel {

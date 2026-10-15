@@ -1,6 +1,8 @@
 use clap::{Parser, Subcommand};
 use dotenvy::dotenv;
+use std::time::Duration;
 use viper_client::device::Device;
+use viper_client::video::{VideoOptions, VideoParams};
 use viper_client::{ICONA_BRIDGE_PORT, ViperClient, ViperError};
 
 #[derive(Debug, Subcommand)]
@@ -14,11 +16,20 @@ enum Command {
         #[arg(long, default_value = None)]
         actuator_name: String,
     },
+    /// Watch an external unit and record its stream until Ctrl-C or --duration
     StartVideo {
-        #[arg(long, default_value = None)]
-        door_name: String,
-        #[arg(long, default_value = None)]
-        output_file: String,
+        /// Entrance or door name from the address books (see `info`)
+        #[arg(long)]
+        target: String,
+        /// Output path without extension (.h264 / .m4v for video, -audio.alaw for audio)
+        #[arg(long, default_value = "doorbell")]
+        output: String,
+        /// Seconds to record
+        #[arg(long, default_value_t = 30)]
+        duration: u64,
+        /// Also record the external unit audio
+        #[arg(long)]
+        audio: bool,
     },
 }
 
@@ -93,22 +104,28 @@ async fn main() -> Result<(), ViperError> {
                 client.shutdown();
             }
             Command::StartVideo {
-                door_name,
-                output_file,
+                target,
+                output,
+                duration,
+                audio,
             } => {
                 let mut client = ViperClient::new(ip.as_str(), port).await;
                 client.authorize(params.token.unwrap().as_str())?;
                 let vip_reponse = client.configuration("all")?;
-                println!("Starting video recording");
-                client
-                    .start_video(
-                        ip.as_str(),
-                        port,
-                        &vip_reponse.vip,
-                        output_file.as_str(),
-                        door_name.as_str(),
-                    )
+                println!("Starting video from {target}, press Ctrl-C to stop");
+                let options = VideoOptions {
+                    output: output.into(),
+                    duration: Duration::from_secs(duration),
+                    audio,
+                    video: VideoParams::default(),
+                };
+                let stop = async {
+                    let _ = tokio::signal::ctrl_c().await;
+                };
+                let stats = client
+                    .start_video(&vip_reponse.vip, &target, options, stop)
                     .await?;
+                println!("{stats:#?}");
                 client.shutdown();
             }
         }

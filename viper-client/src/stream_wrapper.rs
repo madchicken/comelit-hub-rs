@@ -44,6 +44,18 @@ impl StreamWrapper {
         }
     }
 
+    /// Async handle on the same connection, for the video session. The socket
+    /// becomes non-blocking: call [`StreamWrapper::restore_blocking`] after.
+    pub fn async_clone(&self) -> Result<tokio::net::TcpStream, io::Error> {
+        let clone = self.stream.try_clone()?;
+        clone.set_nonblocking(true)?;
+        tokio::net::TcpStream::from_std(clone)
+    }
+
+    pub fn restore_blocking(&self) -> Result<(), io::Error> {
+        self.stream.set_nonblocking(false)
+    }
+
     pub fn die(&mut self) {
         self.stream
             .shutdown(Shutdown::Both)

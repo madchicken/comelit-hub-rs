@@ -109,18 +109,18 @@ Each accessory type (in `hap/src/accessories/`) wraps HAP characteristics and tr
 
 ### Viper Video Protocol
 
-The `viper-client` implements a proprietary protocol for video streaming from Comelit doorbells:
+The `viper-client` implements the ViP protocol used by Comelit video door entry systems, reverse engineered from the official app (`libvipcomelit.so`):
 
-- **Control**: TCP connection on port 64100 with custom binary protocol
-- **Video**: UDP packets also on port 64100 (same port, different protocol)
-- **Sessions**: Little-endian session IDs track logical channels (UDPM, RTPC, device communication)
-- **Channels**: CTPP (control), UDPM (UDP mode), RTPC (RTP control)
-- **Detailed spec**: See `viper-client/README.md` for complete protocol analysis
+- **Tunnel**: TCP and UDP on port 64100, every frame is `00 06 <len LE> <channel id LE> 00 00` + body; channel 0 opens/closes logical channels (INFO, UAUT, UCFG, CTPP, UDPM, RTPC, ...)
+- **CTPP**: carries CTP packets (acknowledged, sequenced) wrapping CSP call messages (START, CAPAB_REPORT, CONNECT, MEDIAREQ, RELEASE)
+- **UDPM**: UDP keepalive lane; once the device acknowledges it, RTPC traffic flows over UDP
+- **RTPC**: plain RTP (H.264 PT 99, PCMA PT 8) requested with a CSP MEDIAREQ pointing at the RTPC channel id
+- **Detailed spec**: See `viper-client/README.md`
 
 Key implementation:
-- `ViperClient` in `viper-client/src/client.rs`: Main API
-- `*_channel.rs` files: Protocol-specific channel handlers
-- `video_assembler.rs` and `audio_assembler.rs`: Stream processing
+- `ViperClient` in `viper-client/src/client.rs`: Main API (`start_video` for the stream)
+- `viper-client/src/video/`: `tunnel.rs` (framing, control channel, UDPM), `ctp.rs` (CTP + CSP), `media.rs` (RTP, H.264 depacketizer), `session.rs` (call state machine)
+- `*_channel.rs` files: JSON channels and the template-based open door messages
 
 ## Common Development Patterns
 
@@ -180,4 +180,4 @@ Metrics include bridge info, uptime, device counts, update counters, ping status
 - The bridge creates random MAC address for HomeKit device ID
 - Window covering position tracking is estimated based on timing (no position feedback from hub)
 - Door state is simulated with timers since hub doesn't report actual door position
-- Video streaming is work in progress (current branch: video-stream)
+- Video streaming (`viper-client start-video`) is implemented from the reverse engineered app but not yet validated against every device model
