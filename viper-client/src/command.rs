@@ -3,6 +3,13 @@ use serde::Serialize;
 const OPEN: [u8; 8] = [0xcd, 0xab, 0x01, 0x00, 0x07, 0x00, 0x00, 0x00];
 const CLOSE: [u8; 8] = [0xef, 0x01, 0x03, 0x00, 0x02, 0x00, 0x00, 0x00];
 
+pub struct PushInfo {
+    pub apt_address: String,
+    pub apt_subaddress: u8,
+    pub device_token: String,
+    pub profile_id: String,
+}
+
 pub enum CommandKind {
     UAUT(String),
     UCFG(String),
@@ -10,6 +17,7 @@ pub enum CommandKind {
     ActivateUser(String),
     INFO,
     FRCG,
+    PUSH(PushInfo),
 }
 
 pub struct Command {}
@@ -67,6 +75,20 @@ struct ActivateUser {
     description: String,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "kebab-case")]
+#[allow(clippy::upper_case_acronyms)]
+struct PUSH {
+    #[serde(flatten)]
+    base: Base,
+    apt_address: String,
+    apt_subaddress: u8,
+    bundle_id: String,
+    os_type: String,
+    profile_id: String,
+    device_token: String,
+}
+
 impl Command {
     pub fn for_kind(kind: CommandKind, control: &[u8]) -> Vec<u8> {
         let json = match kind {
@@ -118,6 +140,20 @@ impl Command {
 
                 serde_json::to_string(&fact).unwrap()
             }
+
+            CommandKind::PUSH(params) => {
+                let fact = PUSH {
+                    base: Base::request("push-info", 2),
+                    apt_address: params.apt_address,
+                    apt_subaddress: params.apt_subaddress,
+                    bundle_id: "com.comelitgroup.friendhome".into(),
+                    os_type: "ios".into(),
+                    profile_id: params.profile_id,
+                    device_token: params.device_token,
+                };
+
+                serde_json::to_string(&fact).unwrap()
+            }
         };
 
         Command::make(json.as_bytes(), control)
@@ -127,16 +163,21 @@ impl Command {
         u16::from_le_bytes([b2, b3]) as usize
     }
 
-    pub fn channel(command: &String, control: &[u8], extra: Option<&[u8]>) -> Vec<u8> {
+    pub fn channel(
+        command: &String,
+        control: &[u8],
+        extra: Option<&[u8]>,
+        message_seq: Option<u8>,
+    ) -> Vec<u8> {
         let com_b = command.as_bytes();
 
         let tail = match extra {
             Some(bytes) => {
                 let len = (bytes.len() + 1) as u8;
                 let start = [0, 0, len, 0, 0, 0];
-                [&start[..], bytes, &[0]].concat()
+                [&start[..], bytes, &[message_seq.unwrap_or(0)]].concat()
             }
-            None => vec![0],
+            None => vec![message_seq.unwrap_or(0)],
         };
 
         let total = [&OPEN, com_b, control, &tail[..]].concat();
@@ -205,11 +246,11 @@ mod tests {
     fn test_command_channel() {
         let control = [1, 2];
         let command = String::from("UCFG");
-        let b = Command::channel(&command, &control, None);
+        let b = Command::channel(&command, &control, None, None);
         assert_eq!(b[2], 15);
         assert_eq!(b[3], 0);
 
-        let b = Command::channel(&command, &control, Some(&[10, 10, 10]));
+        let b = Command::channel(&command, &control, Some(&[10, 10, 10]), None);
         assert_eq!(b[2], 24);
         assert_eq!(b[3], 0);
     }

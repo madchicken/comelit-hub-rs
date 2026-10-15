@@ -1,4 +1,5 @@
 use crate::command::Command;
+use crate::helper::Helper;
 use std::io;
 use std::io::prelude::*;
 use std::net::{Shutdown, TcpStream};
@@ -28,10 +29,31 @@ impl StreamWrapper {
     }
 
     pub fn execute(&mut self, b: &[u8]) -> ByteResult {
+        Helper::print_buffer(b);
         match self.write(b) {
             Ok(_) => self.read(),
             Err(e) => Err(e),
         }
+    }
+
+    pub fn execute_no_read(&mut self, b: &[u8]) -> ByteResult {
+        Helper::print_buffer(b);
+        match self.write(b) {
+            Ok(_) => Ok(vec![]),
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Async handle on the same connection, for the video session. The socket
+    /// becomes non-blocking: call [`StreamWrapper::restore_blocking`] after.
+    pub fn async_clone(&self) -> Result<tokio::net::TcpStream, io::Error> {
+        let clone = self.stream.try_clone()?;
+        clone.set_nonblocking(true)?;
+        tokio::net::TcpStream::from_std(clone)
+    }
+
+    pub fn restore_blocking(&self) -> Result<(), io::Error> {
+        self.stream.set_nonblocking(false)
     }
 
     pub fn die(&mut self) {
@@ -45,8 +67,10 @@ impl StreamWrapper {
     }
 
     pub fn read(&mut self) -> ByteResult {
+        // read the header (8 bytes)
         let mut head = [0; 8];
         self.stream.read_exact(&mut head)?;
+        // get the size of the buffer
         let buffer_size = Command::buffer_length(head[2], head[3]);
 
         let mut buf = vec![0; buffer_size];
@@ -83,7 +107,7 @@ mod tests {
         thread::spawn(move || listener.echo());
 
         let command = "UCFG".to_string();
-        let pre = Command::channel(&command, &[0, 0], None);
+        let pre = Command::channel(&command, &[0, 0], None, None);
         let r = client.execute(&pre).unwrap();
         assert_eq!(&r[0..8], &[205, 171, 1, 0, 7, 0, 0, 0]);
     }
