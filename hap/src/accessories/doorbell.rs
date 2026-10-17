@@ -5,7 +5,10 @@ use anyhow::Result;
 use comelit_client_rs::DoorbellDeviceData;
 use hap::{
     HapType,
-    accessory::{AccessoryInformation, HapAccessory},
+    accessory::{
+        AccessoryInformation, HapAccessory,
+        camera::{VideoDoorbellAccessory, manager::StreamManagerBuilder},
+    },
     characteristic::HapCharacteristic,
     pointer::Accessory,
     server::{IpServer, Server},
@@ -17,6 +20,7 @@ use tokio::sync::Mutex;
 use tracing::info;
 
 use crate::accessories::ComelitAccessory;
+use crate::doorbell_camera::ViperMediaProvider;
 
 /// Doorbell accessory — wraps a single DoorbellService with ProgrammableSwitchEvent.
 #[derive(Debug, Default)]
@@ -95,44 +99,41 @@ pub(crate) struct ComelitDoorbellAccessory {
 }
 
 impl ComelitDoorbellAccessory {
+    /// Adds the doorbell to its server. With `camera` it is a video doorbell
+    /// whose stream comes from the ViP system.
     pub(crate) async fn new(
         id: u64,
         door_data: &DoorbellDeviceData,
         server: &IpServer,
+        camera: Option<ViperMediaProvider>,
     ) -> Result<Self> {
         let device_id = door_data.id.clone();
         let sanitized_id: String = device_id.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
         let name = door_data.description.clone().unwrap_or_else(|| format!("Doorbell {}", sanitized_id));
-        let mut doorbell_accessory = DoorbellAccessory::new(
-            id,
-            AccessoryInformation {
-                name: name.clone(),
-                model: "VIP Doorbell".to_string(),
-                manufacturer: "Comelit".to_string(),
-                serial_number: device_id.clone(),
-                ..Default::default()
-            },
-        )?;
-
-        // Strip optional characteristics we don't use
-        doorbell_accessory.doorbell.brightness = None;
-        doorbell_accessory.doorbell.mute = None;
-        doorbell_accessory.doorbell.operating_state_response = None;
-        doorbell_accessory.doorbell.volume = None;
-
-        // Restrict ProgrammableSwitchEvent to Single Press only (value 0).
-        // hap-rs sets event_only=true on this characteristic so GET returns null,
-        // which is what iOS uses to recognize the accessory as a proper Doorbell
-        // rather than a generic Stateless Programmable Switch.
-        let pse = &mut doorbell_accessory.doorbell.programmable_switch_event;
-        pse.set_valid_values(Some(vec![Value::from(0u8)]))?;
-        pse.set_min_value(None)?;
-        pse.set_max_value(None)?;
-        pse.set_step_value(None)?;
+        let information = AccessoryInformation {
+            name: name.clone(),
+            model: "VIP Doorbell".to_string(),
+            manufacturer: "Comelit".to_string(),
+            serial_number: device_id.clone(),
+            ..Default::default()
+        };
+        let accessory = match camera {
+            None => {
+                let mut doorbell_accessory = DoorbellAccessory::new(id, information)?;
+                configure_doorbell(&mut doorbell_accessory.doorbell)?;
+                server.add_accessory(doorbell_accessory).await?
+            }
+            Some(provider) => {
+                let mut doorbell_accessory = VideoDoorbellAccessory::new(id, 1, information)?;
+                configure_doorbell(&mut doorbell_accessory.doorbell)?;
+                StreamManagerBuilder::new(doorbell_accessory, provider)
+                    .build(server)
+                    .await?
+                    .accessory()
+            }
+        };
 
         let state = Arc::new(Mutex::new(State { accessory: None, last_ring: None }));
-
-        let accessory = server.add_accessory(doorbell_accessory).await?;
         state.lock().await.accessory = Some(accessory.clone());
 
         Ok(Self {
@@ -141,6 +142,26 @@ impl ComelitDoorbellAccessory {
             state,
         })
     }
+}
+
+/// Keeps only what a HomeKit doorbell needs on the Doorbell service.
+fn configure_doorbell(doorbell: &mut DoorbellService) -> Result<()> {
+    // Strip optional characteristics we don't use
+    doorbell.brightness = None;
+    doorbell.mute = None;
+    doorbell.operating_state_response = None;
+    doorbell.volume = None;
+
+    // Restrict ProgrammableSwitchEvent to Single Press only (value 0).
+    // hap-rs sets event_only=true on this characteristic so GET returns null,
+    // which is what iOS uses to recognize the accessory as a proper Doorbell
+    // rather than a generic Stateless Programmable Switch.
+    let pse = &mut doorbell.programmable_switch_event;
+    pse.set_valid_values(Some(vec![Value::from(0u8)]))?;
+    pse.set_min_value(None)?;
+    pse.set_max_value(None)?;
+    pse.set_step_value(None)?;
+    Ok(())
 }
 
 /// Send a Single Press event on ProgrammableSwitchEvent.

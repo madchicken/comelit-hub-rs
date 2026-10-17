@@ -4,7 +4,8 @@
 //! registered as a subunit of the apartment: when someone rings, the ViP
 //! system calls it and the HomeKit doorbell rings, instead of relying on the
 //! Comelit hub MQTT event. The unit is also what the HomeKit camera takes its
-//! video from. The connection is re-established when it drops.
+//! video from (`crate::doorbell_camera`). The connection is re-established
+//! when it drops.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -17,6 +18,7 @@ use viper_client::video::{UnitEvent, ViperUnit};
 use viper_client::{ICONA_BRIDGE_PORT, ViperClient};
 
 use crate::accessories::ComelitDoorbellAccessory;
+use crate::doorbell_camera::SnapshotSource;
 use crate::settings::DoorbellVideoSettings;
 
 const MIN_BACKOFF: Duration = Duration::from_secs(5);
@@ -25,10 +27,12 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// reconnection starts again from the minimum delay.
 const HEALTHY_SESSION: Duration = Duration::from_secs(120);
 
+/// The connected ViP unit, shared with the HomeKit camera.
+pub type UnitSlot = Arc<RwLock<Option<ViperUnit>>>;
+
 /// Handle on the ViP doorbell service. The task is aborted when it is
 /// dropped, i.e. when the bridge restarts.
 pub struct ViperDoorbell {
-    unit: Arc<RwLock<Option<ViperUnit>>>,
     task: JoinHandle<()>,
 }
 
@@ -39,10 +43,13 @@ impl Drop for ViperDoorbell {
 }
 
 impl ViperDoorbell {
-    /// Starts the service; rings are forwarded to `doorbells`.
+    /// Starts the service; rings are forwarded to `doorbells` and the
+    /// connected unit is published in `slot`.
     pub fn spawn(
         settings: DoorbellVideoSettings,
         doorbells: Vec<Arc<Mutex<ComelitDoorbellAccessory>>>,
+        slot: UnitSlot,
+        snapshots: Option<Arc<SnapshotSource>>,
     ) -> Result<ViperDoorbell> {
         let token = settings
             .viper_token
@@ -51,15 +58,8 @@ impl ViperDoorbell {
         if doorbells.is_empty() {
             warn!("ViP doorbell enabled but no doorbell accessory is mounted (mount_doorbells)");
         }
-        let unit = Arc::new(RwLock::new(None));
-        let task = tokio::spawn(run(settings, token, doorbells, unit.clone()));
-        Ok(ViperDoorbell { unit, task })
-    }
-
-    /// The connected unit, if any, to request the video from.
-    #[allow(dead_code)] // used by the HomeKit camera
-    pub async fn unit(&self) -> Option<ViperUnit> {
-        self.unit.read().await.clone()
+        let task = tokio::spawn(run(settings, token, doorbells, slot, snapshots));
+        Ok(ViperDoorbell { task })
     }
 }
 
@@ -67,12 +67,13 @@ async fn run(
     settings: DoorbellVideoSettings,
     token: String,
     doorbells: Vec<Arc<Mutex<ComelitDoorbellAccessory>>>,
-    slot: Arc<RwLock<Option<ViperUnit>>>,
+    slot: UnitSlot,
+    snapshots: Option<Arc<SnapshotSource>>,
 ) {
     let mut backoff = MIN_BACKOFF;
     loop {
         let started = tokio::time::Instant::now();
-        match session(&settings, &token, &doorbells, &slot).await {
+        match session(&settings, &token, &doorbells, &slot, snapshots.as_deref()).await {
             Ok(()) => warn!("ViP connection closed"),
             Err(e) => warn!("ViP connection failed: {e:#}"),
         }
@@ -91,6 +92,7 @@ async fn session(
     token: &str,
     doorbells: &[Arc<Mutex<ComelitDoorbellAccessory>>],
     slot: &RwLock<Option<ViperUnit>>,
+    snapshots: Option<&SnapshotSource>,
 ) -> Result<()> {
     let (host, port) = match &settings.viper_host {
         Some(host) => (host.clone(), settings.viper_port),
@@ -138,6 +140,10 @@ async fn session(
             UnitEvent::UdpLaneOpen => debug!("ViP UDP lane open"),
             UnitEvent::Ringing { caller } => {
                 info!("Ring from {caller:?}");
+                if let Some(snapshots) = snapshots {
+                    // the notification must show who is at the door
+                    snapshots.invalidate();
+                }
                 for doorbell in doorbells {
                     if let Err(e) = doorbell.lock().await.ring_now().await {
                         error!("Cannot ring the HomeKit doorbell: {e:#}");

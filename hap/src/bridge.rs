@@ -3,7 +3,9 @@ use crate::accessories::{
     ComelitThermostatAccessory, ComelitWindowCoveringAccessory, DoorConfig, WindowCoveringConfig,
 };
 use crate::settings::Settings;
-use crate::viper::ViperDoorbell;
+use crate::doorbell_camera::{SnapshotSource, VideoFeed, ViperMediaProvider};
+use crate::viper::{UnitSlot, ViperDoorbell};
+use futures::FutureExt;
 use crate::web::metrics::Metrics;
 use crate::web::state::{BridgeState, ConnectionStatus, DeviceInfo, DeviceType};
 use anyhow::{Context, Result};
@@ -230,6 +232,19 @@ impl StatusUpdate for Updater {
             }
         }
     }
+}
+
+/// Records in `bell_dir` whether the doorbell has a camera and tells whether
+/// that changed since the last start.
+fn camera_changed(bell_dir: &str, has_camera: bool) -> Result<bool> {
+    let marker = std::path::Path::new(bell_dir).join("camera");
+    let had_camera = marker.exists();
+    if has_camera && !had_camera {
+        std::fs::write(&marker, b"")?;
+    } else if !has_camera && had_camera {
+        std::fs::remove_file(&marker)?;
+    }
+    Ok(has_camera != had_camera)
 }
 
 /// Derives a stable, locally-administered MAC address from a device ID string.
@@ -634,6 +649,19 @@ pub async fn start_bridge(
             }
         }
 
+        // With doorbell_video the doorbells get a camera fed by the ViP unit
+        let unit_slot = UnitSlot::default();
+        let video_feed = settings
+            .doorbell_video
+            .enabled
+            .then(|| VideoFeed::new(unit_slot.clone()));
+        let snapshots = video_feed.as_ref().map(|feed| {
+            SnapshotSource::new(
+                feed.clone(),
+                Duration::from_secs(settings.doorbell_video.snapshot_max_age_secs),
+            )
+        });
+
         for (bell_index, bell) in bells.iter().enumerate() {
             if settings.mount_doorbells.unwrap_or_default() {
                 i += 1;
@@ -675,10 +703,27 @@ pub async fn start_bridge(
                     }
                 };
 
+                let mut bell_config = bell_config;
+                if camera_changed(&bell_dir, video_feed.is_some())? {
+                    // a video doorbell has more services: iOS re-reads the
+                    // accessory only when the configuration number changes
+                    bell_config.configuration_number += 1;
+                    bell_storage.save_config(&bell_config).await?;
+                }
+                let camera = video_feed
+                    .as_ref()
+                    .map(|feed| ViperMediaProvider::new(bell_config.host, feed.clone()));
+
                 let bell_pin = bell_config.pin.to_string();
                 let bell_server = IpServer::new(bell_config, bell_storage).await?;
+                if let Some(snapshots) = snapshots.clone() {
+                    bell_server.set_resource_handler(move |_request| {
+                        let snapshots = snapshots.clone();
+                        async move { Ok(snapshots.snapshot().await) }.boxed()
+                    });
+                }
 
-                match ComelitDoorbellAccessory::new(i, bell_data, &bell_server).await {
+                match ComelitDoorbellAccessory::new(i, bell_data, &bell_server, camera).await {
                     Ok(accessory) => {
                         info!(
                             "Doorbell {} added as standalone HAP accessory",
@@ -725,7 +770,12 @@ pub async fn start_bridge(
                 .iter()
                 .map(|entry| entry.value().clone())
                 .collect();
-            match ViperDoorbell::spawn(settings.doorbell_video.clone(), doorbells) {
+            match ViperDoorbell::spawn(
+                settings.doorbell_video.clone(),
+                doorbells,
+                unit_slot,
+                snapshots,
+            ) {
                 Ok(service) => Some(service),
                 Err(e) => {
                     error!("Cannot start the ViP doorbell: {e:#}");
