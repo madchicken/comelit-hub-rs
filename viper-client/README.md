@@ -103,5 +103,23 @@ S→C  UDP: 00 06 <len> 7d 51 00 00 + RTP (H.264, PT 99) / 7c 51 + RTP (PCMA, PT
 C→S  CTP RELEASE, CTRL close channels
 ```
 
+## Long lived unit
+
+`ViperClient::into_unit` turns an authorized connection into a
+[`ViperUnit`](src/video/unit.rs), the building block for the HomeKit bridge:
+
+* it keeps CTPP and UDPM open and registers as a subunit of the apartment,
+  renewing the registration at 90% of its lifetime (10 min);
+* `UnitEvent::Ringing` / `UnitEvent::RingEnded` report incoming calls; our leg
+  is answered with CAPAB_REPORT + ALERTING (never CONNECT) and released after
+  the ring timeout;
+* `start_media` returns the RTP packets of the external unit: from the ringing
+  call, or by calling the configured entrance when nobody rings. If someone
+  rings while the entrance is being watched, the media moves to the incoming
+  call; when the incoming call ends while media is still wanted, the unit goes
+  back to watching the entrance.
+
+The CLI commands are thin wrappers recording a unit's media to files.
+
 RTP payload types used by the engine: 99 H.264 (RFC 6184, FU-A/STAP-A),
 104 MPEG-4 part 2, 26 MJPEG (not recorded), 8 PCMA, 0 PCMU.

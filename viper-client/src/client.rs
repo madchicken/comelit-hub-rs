@@ -12,7 +12,10 @@ use crate::{
     helper::Helper,
     stream_wrapper::StreamWrapper,
     udp_stream_wrapper::UdpStreamWrapper,
-    video::{self, CallMode, CallTarget, VideoOptions, VideoStats, ctp::LogAddr},
+    video::{
+        self, CallMode, CallTarget, UnitConfig, UnitEvent, VideoOptions, VideoParams, VideoStats,
+        ViperUnit, ctp::LogAddr,
+    },
 };
 use serde::Deserialize;
 use tracing::debug;
@@ -23,6 +26,10 @@ pub const ICONA_BRIDGE_PORT: u16 = 64100;
 /// it; a short lived client asks for less so that the apartment stops
 /// forwarding calls to it soon after it is gone.
 const REGISTRATION_TTL_SECS: u16 = 300;
+
+/// Registration lifetime of a long lived unit; it renews the registration at
+/// 90% of it, so a unit that disappears stops receiving calls within 10 min.
+const UNIT_REGISTRATION_TTL_SECS: u16 = 600;
 
 pub struct ViperClient {
     stream: StreamWrapper,
@@ -241,16 +248,66 @@ impl ViperClient {
         options: VideoOptions,
         stop: impl Future<Output = ()>,
     ) -> Result<VideoStats, ViperError> {
+        let target = CallTarget {
+            src: Self::own_address(vip)?,
+            mode: CallMode::Watch {
+                external_unit: Self::entrance_address(vip, target)?,
+            },
+        };
+        self.run_video(target, options, stop).await
+    }
+
+    /// Turns the connection into a long lived [`ViperUnit`] (see
+    /// [`crate::video::unit`]): registered as a subunit of the apartment so
+    /// that rings are reported, with media on demand from the ringing call
+    /// or, when nobody rings, from `entrance` (an entrance or door name of
+    /// the address books). Call after [`Self::authorize`].
+    pub fn into_unit(
+        mut self,
+        vip: &VipConfig,
+        entrance: Option<&str>,
+        ring_timeout: Duration,
+    ) -> Result<
+        (
+            ViperUnit,
+            tokio::sync::mpsc::Receiver<UnitEvent>,
+            tokio::task::JoinHandle<Result<(), ViperError>>,
+        ),
+        ViperError,
+    > {
+        let config = UnitConfig {
+            src: Self::own_address(vip)?,
+            apartment: Some(LogAddr::new(&vip.apt_address).map_err(ViperError::Generic)?),
+            registration_ttl_secs: UNIT_REGISTRATION_TTL_SECS,
+            entrance: entrance
+                .map(|name| Self::entrance_address(vip, name))
+                .transpose()?,
+            ring_timeout,
+            video: VideoParams::default(),
+        };
+        self.tick();
+        let first_channel = u16::from_le_bytes(self.control);
+        let tcp = self.stream.async_clone()?;
+        Ok(ViperUnit::spawn(
+            tcp,
+            self.udp.socket(),
+            first_channel,
+            config,
+        ))
+    }
+
+    /// Address of an entrance or door of the address books, by name.
+    fn entrance_address(vip: &VipConfig, name: &str) -> Result<LogAddr, ViperError> {
         let book = &vip.user_parameters;
-        let dst = book
+        let address = book
             .entrance_address_book
             .iter()
-            .find(|e| e.name == target)
+            .find(|e| e.name == name)
             .map(|e| e.apt_address.as_str())
             .or_else(|| {
                 book.opendoor_address_book
                     .iter()
-                    .find(|d| d.name == target)
+                    .find(|d| d.name == name)
                     .map(|d| d.apt_address.as_str())
             })
             .ok_or_else(|| {
@@ -260,15 +317,9 @@ impl ViperClient {
                     .map(|e| e.name.as_str())
                     .chain(book.opendoor_address_book.iter().map(|d| d.name.as_str()))
                     .collect();
-                ViperError::Generic(format!("Unknown target {target:?}, available: {names:?}"))
+                ViperError::Generic(format!("Unknown entrance {name:?}, available: {names:?}"))
             })?;
-        let target = CallTarget {
-            src: Self::own_address(vip)?,
-            mode: CallMode::Watch {
-                external_unit: LogAddr::new(dst).map_err(ViperError::Generic)?,
-            },
-        };
-        self.run_video(target, options, stop).await
+        LogAddr::new(address).map_err(ViperError::Generic)
     }
 
     /// Registers as a subunit of the apartment and waits for an incoming call
