@@ -1,10 +1,11 @@
 use std::io;
+use std::sync::Arc;
 
 use tokio::net::UdpSocket;
 use tracing::info;
 
 pub struct UdpStreamWrapper {
-    stream: UdpSocket,
+    stream: Arc<UdpSocket>,
 }
 
 impl UdpStreamWrapper {
@@ -16,10 +17,13 @@ impl UdpStreamWrapper {
 
         info!("Connected to remote UDP {}", remote_addr);
 
-        Ok(Self { stream: socket })
+        Ok(Self {
+            stream: Arc::new(socket),
+        })
     }
 
-    pub fn socket(&self) -> &UdpSocket {
-        &self.stream
+    /// The socket, shared with the video unit task.
+    pub fn socket(&self) -> Arc<UdpSocket> {
+        self.stream.clone()
     }
 }

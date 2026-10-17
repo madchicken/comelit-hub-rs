@@ -119,7 +119,7 @@ The `viper-client` implements the ViP protocol used by Comelit video door entry 
 
 Key implementation:
 - `ViperClient` in `viper-client/src/client.rs`: Main API (`start_video` for the stream)
-- `viper-client/src/video/`: `tunnel.rs` (framing, control channel, UDPM), `ctp.rs` (CTP + CSP), `media.rs` (RTP, H.264 depacketizer), `session.rs` (call state machine)
+- `viper-client/src/video/`: `tunnel.rs` (framing, control channel, UDPM), `ctp.rs` (CTP + CSP), `media.rs` (RTP, H.264 depacketizer), `unit.rs` (long lived unit: registration, incoming calls, media on demand), `session.rs` (CLI recording on top of a unit)
 - `*_channel.rs` files: JSON channels and the template-based open door messages
 
 ## Common Development Patterns
