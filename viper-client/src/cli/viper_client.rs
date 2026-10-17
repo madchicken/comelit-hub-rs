@@ -16,6 +16,23 @@ enum Command {
         #[arg(long, default_value = None)]
         actuator_name: String,
     },
+    /// Wait for someone to ring and record the early video of the call,
+    /// without answering it, until the call ends, Ctrl-C or --duration
+    ListenVideo {
+        /// Output path without extension (.h264 / .m4v for video, -audio.alaw for audio)
+        #[arg(long, default_value = "ring")]
+        output: String,
+        /// Seconds to wait for a call and record
+        #[arg(long, default_value_t = 120)]
+        duration: u64,
+        /// Seconds of ringing after which we stop watching the call
+        /// (the app default call wait time)
+        #[arg(long, default_value_t = 60)]
+        ring_timeout: u64,
+        /// Also record the external unit audio
+        #[arg(long)]
+        audio: bool,
+    },
     /// Watch an external unit and record its stream until Ctrl-C or --duration
     StartVideo {
         /// Entrance or door name from the address books (see `info`)
@@ -101,6 +118,36 @@ async fn main() -> Result<(), ViperError> {
                 let vip_reponse = client.configuration("all")?;
                 println!("Opening actuator {actuator_name}");
                 client.open_actuator(&vip_reponse.vip, actuator_name.as_str())?;
+                client.shutdown();
+            }
+            Command::ListenVideo {
+                output,
+                duration,
+                ring_timeout,
+                audio,
+            } => {
+                let mut client = ViperClient::new(ip.as_str(), port).await;
+                client.authorize(params.token.unwrap().as_str())?;
+                let vip_reponse = client.configuration("all")?;
+                println!("Waiting for someone to ring, press Ctrl-C to stop");
+                let options = VideoOptions {
+                    output: output.into(),
+                    duration: Duration::from_secs(duration),
+                    audio,
+                    video: VideoParams::default(),
+                };
+                let stop = async {
+                    let _ = tokio::signal::ctrl_c().await;
+                };
+                let stats = client
+                    .listen_video(
+                        &vip_reponse.vip,
+                        Duration::from_secs(ring_timeout),
+                        options,
+                        stop,
+                    )
+                    .await?;
+                println!("{stats:#?}");
                 client.shutdown();
             }
             Command::StartVideo {

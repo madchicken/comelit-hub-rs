@@ -1,14 +1,27 @@
-//! Video call session: replays the sequence the official app uses to watch an
-//! external unit (see `CallFsm` in `libvipcomelit.so`):
+//! Video call session, replaying what the official app does (see `CallFsm`
+//! and `Subunit` in `libvipcomelit.so`). Two ways to get the stream:
 //!
+//! * [`CallMode::Watch`] ("auto-ignition"): we call the external unit with a
+//!   CSP START. The unit refuses it with USER_BUSY while it is ringing.
+//! * [`CallMode::Listen`]: we register as a subunit of the apartment
+//!   (REGISTER_REQ to the apartment main address) and wait for the unit to
+//!   call us when someone rings. We answer CAPAB_REPORT + ALERTING, never
+//!   CONNECT, so the call keeps ringing everywhere and we only get the early
+//!   video, like the app showing who is at the door before answering.
+//!
+//! In both cases:
 //! 1. open the CTPP channel (our address as parameter) and the UDPM channel;
-//! 2. on CTPP send CSP START + CAPAB_REPORT to the external unit;
-//! 3. ping the UDPM lane over UDP until the device marks it open;
-//! 4. once the device sent its CAPAB_REPORT and CONNECT/ALERTING, open one
-//!    RTPC channel per stream and send a MEDIAREQ pointing at it;
-//! 5. record the RTP packets arriving on the RTPC channels (over UDP, or over
+//! 2. ping the UDPM lane over UDP until the device marks it open;
+//! 3. once the unit sent its CAPAB_REPORT (and CONNECT/ALERTING when
+//!    watching), open one RTPC channel per stream and send a MEDIAREQ on the
+//!    call connection pointing at it;
+//! 4. record the RTP packets arriving on the RTPC channels (over UDP, or over
 //!    TCP if the UDP lane never opened);
-//! 6. on stop, send RELEASE and close all channels.
+//! 5. on stop, release our leg of the call with RELEASE and close its CTP
+//!    connection, then close all channels. An incoming call is kept for at
+//!    most `ring_timeout`, like the app's own ringing timer
+//!    (`call_wait_time`, `CallFsm::st_in_alerting` on 0xb0e): other units
+//!    ring with their own timers, and releasing our leg does not stop them.
 
 use std::collections::VecDeque;
 use std::future::Future;
@@ -22,8 +35,8 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
 
 use super::ctp::{
-    APP_CAPABILITIES, CAPAB_VIDEO, Csp, CtpPacket, FLAG_DATA, FLAG_OPEN, LogAddr, MEDIA_AUDIO,
-    UNIT_INTERNAL, VideoParams,
+    APP_CAPABILITIES, CAPAB_VIDEO, Csp, CtpPacket, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, LogAddr,
+    MEDIA_AUDIO, UNIT_INTERNAL, VideoParams,
 };
 use super::media::{RtpPacket, StreamRecorder};
 use super::tunnel::{CONTROL_CHANNEL, Control, Frame, Transport, UdpmPing};
@@ -46,7 +59,7 @@ pub struct VideoOptions {
     /// Output path without extension; the extension follows the codec
     /// (`.h264`, `.m4v`, `.alaw`, `.ulaw`).
     pub output: PathBuf,
-    /// Stop after this long. The call is also released when `stop` resolves.
+    /// Stop after this long (when listening: including the wait for a call).
     pub duration: Duration,
     /// Also request the external unit audio.
     pub audio: bool,
@@ -56,6 +69,8 @@ pub struct VideoOptions {
 #[derive(Debug, Default)]
 pub struct VideoStats {
     pub udp_lane_open: bool,
+    /// Who called us, when listening.
+    pub caller: Option<String>,
     pub video_file: Option<PathBuf>,
     pub video_packets: usize,
     pub video_lost: usize,
@@ -63,11 +78,22 @@ pub struct VideoStats {
     pub audio_packets: usize,
 }
 
-/// Addresses of the call: `src` is us (apt address + subaddress), `dst` is
-/// the external unit to watch.
+pub enum CallMode {
+    /// Call the external unit (auto-ignition).
+    Watch { external_unit: LogAddr },
+    /// Register as a subunit of the apartment and wait for an incoming call,
+    /// which we stop watching after `ring_timeout`.
+    Listen {
+        apartment: LogAddr,
+        ttl_secs: u16,
+        ring_timeout: Duration,
+    },
+}
+
+/// `src` is us (apt address + subaddress).
 pub struct CallTarget {
     pub src: LogAddr,
-    pub dst: LogAddr,
+    pub mode: CallMode,
 }
 
 struct MediaChannel {
@@ -85,7 +111,8 @@ struct InFlight {
     attempts: u32,
 }
 
-/// Stop-and-wait CTP connection, as observed in the app capture.
+/// Stop-and-wait CTP connection, as observed in the app capture. The side
+/// accepting a connection sets the top bit of the connection id.
 struct Ctp {
     conn: [u8; 2],
     tx: u8,
@@ -99,7 +126,44 @@ struct Ctp {
 }
 
 impl Ctp {
-    fn packet(&self, flags: u8, payload: Vec<u8>) -> CtpPacket {
+    /// A connection we open towards `dst`; `tx`/`rx` are the initial
+    /// sequences we propose for both sides.
+    fn initiate(src: LogAddr, dst: LogAddr) -> Ctp {
+        let mut rng = rand::rng();
+        Ctp {
+            conn: [rng.random_range(0x01..0x80), rng.random()],
+            tx: rng.random(),
+            rx: rng.random(),
+            peer_seen: false,
+            opened: false,
+            src,
+            dst,
+            queue: VecDeque::new(),
+            in_flight: None,
+        }
+    }
+
+    /// A connection opened by the device with `first`; it proposes our
+    /// initial sequence in its rx field.
+    fn accept(first: &CtpPacket) -> Ctp {
+        Ctp {
+            conn: [first.conn[0] ^ 0x80, first.conn[1]],
+            tx: first.rx,
+            rx: first.tx,
+            peer_seen: true,
+            opened: true,
+            src: first.dst,
+            dst: first.src,
+            queue: VecDeque::new(),
+            in_flight: None,
+        }
+    }
+
+    fn matches(&self, packet: &CtpPacket) -> bool {
+        packet.conn == [self.conn[0] ^ 0x80, self.conn[1]]
+    }
+
+    fn packet(&self, flags: u8, payload: Vec<u8>) -> Vec<u8> {
         CtpPacket {
             flags,
             conn: self.conn,
@@ -109,17 +173,90 @@ impl Ctp {
             src: self.src,
             dst: self.dst,
         }
+        .encode()
     }
 
-    fn is_ours(&self, packet: &CtpPacket) -> bool {
-        packet.conn[0] & 0x7f == self.conn[0] && packet.conn[1] == self.conn[1]
+    /// Handles a packet of this connection: returns the ack to send, if any,
+    /// and the payload when it is new data.
+    fn receive(&mut self, packet: &CtpPacket) -> (Option<Vec<u8>>, Option<Vec<u8>>) {
+        if self.in_flight.is_some() && packet.rx == self.tx.wrapping_add(1) {
+            self.in_flight = None;
+            self.tx = self.tx.wrapping_add(1);
+        }
+        if !packet.is_data() {
+            return (None, None);
+        }
+        if !self.peer_seen {
+            self.peer_seen = true;
+            self.rx = packet.tx;
+        }
+        // An empty data packet is a keepalive: it must be acknowledged but
+        // does not consume a sequence number (FUN_00084b54 only advances the
+        // expected sequence for packets with a payload).
+        if packet.payload.is_empty() {
+            return (Some(self.packet(0x00, vec![])), None);
+        }
+        let fresh = packet.tx == self.rx;
+        if fresh {
+            self.rx = self.rx.wrapping_add(1);
+        } else {
+            debug!("Duplicate CTP packet {:02x}", packet.tx);
+        }
+        let ack = self.packet(0x00, vec![]);
+        (Some(ack), fresh.then(|| packet.payload.clone()))
     }
+
+    /// The next packet to send: a retransmission of the unacknowledged one
+    /// when its ack is late, otherwise the next queued message.
+    fn poll(&mut self, now: Instant) -> Result<Option<Vec<u8>>, ViperError> {
+        let send = match &mut self.in_flight {
+            Some(pending) if now.duration_since(pending.sent_at) >= CTP_RETRANSMIT => {
+                if pending.attempts >= CTP_MAX_ATTEMPTS {
+                    return Err(ViperError::Generic(
+                        "The device does not acknowledge CTP messages".into(),
+                    ));
+                }
+                pending.attempts += 1;
+                pending.sent_at = now;
+                Some((pending.flags, pending.payload.clone()))
+            }
+            Some(_) => None,
+            None => self.queue.pop_front().map(|payload| {
+                let flags = if self.opened {
+                    FLAG_DATA
+                } else {
+                    FLAG_OPEN | FLAG_DATA
+                };
+                self.opened = true;
+                self.in_flight = Some(InFlight {
+                    payload: payload.clone(),
+                    flags,
+                    sent_at: now,
+                    attempts: 1,
+                });
+                (flags, payload)
+            }),
+        };
+        Ok(send.map(|(flags, payload)| self.packet(flags, payload)))
+    }
+
+    fn idle(&self) -> bool {
+        self.in_flight.is_none() && self.queue.is_empty()
+    }
+}
+
+struct Registration {
+    ctp: Ctp,
+    id: u16,
+    apartment: LogAddr,
+    ttl_secs: u16,
 }
 
 struct Session<'a> {
     tcp: TcpStream,
     rbuf: Vec<u8>,
     udp: &'a UdpSocket,
+    src: LogAddr,
     ctpp: u16,
     ctpp_open: bool,
     udpm: u16,
@@ -128,7 +265,17 @@ struct Session<'a> {
     udpm_opened_at: Option<Instant>,
     lane_open: bool,
     next_ping: Instant,
-    ctp: Ctp,
+    /// The connection carrying the call: ours when watching, the device's
+    /// when listening.
+    call: Option<Ctp>,
+    /// Pending call towards the external unit, started once CTPP is open.
+    watch: Option<LogAddr>,
+    registration: Option<Registration>,
+    listening: bool,
+    caller: Option<LogAddr>,
+    ring_timeout: Option<Duration>,
+    /// When we stop watching the incoming call.
+    ring_deadline: Option<Instant>,
     peer_caps: Option<(u32, Instant)>,
     peer_ready: bool,
     released: bool,
@@ -145,12 +292,7 @@ pub async fn run(
     options: VideoOptions,
     stop: impl Future<Output = ()>,
 ) -> Result<VideoStats, ViperError> {
-    // ThreadRng is !Send: draw everything up front so the future stays Send.
-    let (conn, tx, rx, udpm_seq) = {
-        let mut rng = rand::rng();
-        let conn: [u8; 2] = [rng.random_range(0x01..0x80), rng.random()];
-        (conn, rng.random(), rng.random(), rng.random())
-    };
+    let udpm_seq = rand::rng().random();
     let started = Instant::now();
     let media = |id: u16, action: Option<u8>, suffix: &str| MediaChannel {
         id,
@@ -159,10 +301,28 @@ pub async fn run(
         opened: false,
         recorder: StreamRecorder::new(with_suffix(&options.output, suffix)),
     };
+    let (watch, registration, ring_timeout) = match target.mode {
+        CallMode::Watch { external_unit } => (Some(external_unit), None, None),
+        CallMode::Listen {
+            apartment,
+            ttl_secs,
+            ring_timeout,
+        } => (
+            None,
+            Some(Registration {
+                ctp: Ctp::initiate(target.src, apartment),
+                id: rand::rng().random(),
+                apartment,
+                ttl_secs,
+            }),
+            Some(ring_timeout),
+        ),
+    };
     let mut session = Session {
         tcp,
         rbuf: Vec::with_capacity(64 * 1024),
         udp,
+        src: target.src,
         ctpp: first_channel,
         ctpp_open: false,
         udpm: first_channel + 1,
@@ -171,17 +331,13 @@ pub async fn run(
         udpm_opened_at: None,
         lane_open: false,
         next_ping: started,
-        ctp: Ctp {
-            conn,
-            tx,
-            rx,
-            peer_seen: false,
-            opened: false,
-            src: target.src,
-            dst: target.dst,
-            queue: VecDeque::new(),
-            in_flight: None,
-        },
+        call: None,
+        listening: registration.is_some(),
+        watch,
+        registration,
+        caller: None,
+        ring_timeout,
+        ring_deadline: None,
         peer_caps: None,
         peer_ready: false,
         released: false,
@@ -198,6 +354,7 @@ pub async fn run(
 
     let mut stats = VideoStats {
         udp_lane_open: session.lane_open,
+        caller: session.caller.map(|c| format!("{c:?}")),
         video_file: session.video.recorder.output(),
         video_packets: session.video.recorder.packets,
         video_lost: session.video.recorder.lost,
@@ -228,7 +385,7 @@ impl Session<'_> {
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut ubuf = vec![0u8; 65536];
 
-        let our_address = self.ctp.src.0;
+        let our_address = self.src.0;
         self.send(&Control::open(
             "CTPP",
             self.ctpp,
@@ -238,10 +395,17 @@ impl Session<'_> {
         .await?;
         self.send(&Control::open("UDPM", self.udpm, Transport::Udp, &[]))
             .await?;
-        info!(
-            "Calling {:?} from {:?} (CTPP 0x{:04x}, UDPM 0x{:04x})",
-            self.ctp.dst, self.ctp.src, self.ctpp, self.udpm
-        );
+        match (&self.watch, &self.registration) {
+            (Some(unit), _) => info!(
+                "Calling {unit:?} from {:?} (CTPP 0x{:04x}, UDPM 0x{:04x})",
+                self.src, self.ctpp, self.udpm
+            ),
+            (_, Some(reg)) => info!(
+                "Registering {:?} with {:?}, then waiting for a call",
+                self.src, reg.apartment
+            ),
+            _ => {}
+        }
 
         let deadline = started + duration;
         loop {
@@ -276,12 +440,21 @@ impl Session<'_> {
                 info!("Recording time elapsed");
                 return Ok(());
             }
+            if self.ring_deadline.is_some_and(|d| Instant::now() >= d) {
+                info!("Ringing time elapsed");
+                return Ok(());
+            }
         }
     }
 
     async fn send(&mut self, bytes: &[u8]) -> Result<(), ViperError> {
         self.tcp.write_all(bytes).await?;
         Ok(())
+    }
+
+    async fn send_ctp(&mut self, packet: Vec<u8>) -> Result<(), ViperError> {
+        let frame = Frame::encode(self.ctpp, &packet);
+        self.send(&frame).await
     }
 
     async fn on_tcp_frame(&mut self, frame: Frame) -> Result<(), ViperError> {
@@ -311,14 +484,19 @@ impl Session<'_> {
                 if channel == self.ctpp {
                     debug!("CTPP channel open");
                     self.ctpp_open = true;
-                    let call_id: u32 = rand::rng().random();
-                    let (src, dst) = (self.ctp.src, self.ctp.dst);
-                    self.ctp
-                        .queue
-                        .push_back(Csp::start(&src, &dst, call_id, UNIT_INTERNAL));
-                    self.ctp
-                        .queue
-                        .push_back(Csp::capab_report(UNIT_INTERNAL, APP_CAPABILITIES));
+                    if let Some(unit) = self.watch.take() {
+                        let mut call = Ctp::initiate(self.src, unit);
+                        let call_id: u32 = rand::rng().random();
+                        call.queue
+                            .push_back(Csp::start(&self.src, &unit, call_id, UNIT_INTERNAL));
+                        call.queue
+                            .push_back(Csp::capab_report(UNIT_INTERNAL, APP_CAPABILITIES));
+                        self.call = Some(call);
+                    }
+                    if let Some(reg) = self.registration.as_mut() {
+                        let request = Csp::register_request(reg.id, &reg.ctp.src, reg.ttl_secs);
+                        reg.ctp.queue.push_back(request);
+                    }
                     self.pump_ctp().await?;
                 } else if channel == self.udpm {
                     if extra.len() < 2 {
@@ -336,7 +514,9 @@ impl Session<'_> {
                         Some(action) => Csp::media_request(action, id),
                     };
                     info!("RTPC channel 0x{id:04x} open, sending MEDIAREQ");
-                    self.ctp.queue.push_back(request);
+                    if let Some(call) = self.call.as_mut() {
+                        call.queue.push_back(request);
+                    }
                     self.pump_ctp().await?;
                 }
             }
@@ -365,39 +545,108 @@ impl Session<'_> {
             debug!("Malformed CTP packet {body:02x?}");
             return Ok(());
         };
-        if !self.ctp.is_ours(&packet) {
+
+        if let Some(reg) = self.registration.as_mut()
+            && reg.ctp.matches(&packet)
+        {
+            let (ack, payload) = reg.ctp.receive(&packet);
+            if let Some(ack) = ack {
+                self.send_ctp(ack).await?;
+            }
+            if let Some(payload) = payload {
+                self.on_registration(&payload).await?;
+            }
+            return self.pump_ctp().await;
+        }
+
+        let incoming = self.call.is_none()
+            && self.listening
+            && packet.is_data()
+            && packet.flags & FLAG_OPEN != 0
+            && matches!(Csp::parse(&packet.payload), Some(Csp::Start { .. }));
+        if incoming {
+            self.call = Some(Ctp::accept(&packet));
+        }
+
+        let Some(call) = self.call.as_mut().filter(|c| c.matches(&packet)) else {
             debug!("Ignoring CTP packet for connection {:02x?}", packet.conn);
             return Ok(());
+        };
+        let (ack, payload) = call.receive(&packet);
+        let close = (packet.flags & FLAG_CLOSE != 0).then(|| call.packet(FLAG_CLOSE, vec![]));
+        if let Some(ack) = ack {
+            self.send_ctp(ack).await?;
         }
-
-        if self.ctp.in_flight.is_some() && packet.rx == self.ctp.tx.wrapping_add(1) {
-            self.ctp.in_flight = None;
-            self.ctp.tx = self.ctp.tx.wrapping_add(1);
+        if let Some(close) = close {
+            // ctp_read reports CTP_DISCONNECTED once the peer closed, and the
+            // app closes its side too: the call is over
+            info!("Device closed the call connection");
+            self.send_ctp(close).await?;
+            self.released = true;
+            return Ok(());
         }
-
-        if packet.is_data() {
-            if !self.ctp.peer_seen {
-                self.ctp.peer_seen = true;
-                self.ctp.rx = packet.tx;
+        if let Some(payload) = payload {
+            if Csp::parse(&payload).is_none() {
+                debug!("Unknown CSP payload {payload:02x?} in {body:02x?}");
             }
-            let fresh = packet.tx == self.ctp.rx;
-            if fresh {
-                self.ctp.rx = self.ctp.rx.wrapping_add(1);
-            }
-            let ack = self.ctp.packet(0x00, vec![]).encode();
-            self.send(&Frame::encode(self.ctpp, &ack)).await?;
-            if fresh {
-                self.on_csp(&packet.payload);
-            } else {
-                debug!("Duplicate CTP packet {:02x}", packet.tx);
-            }
+            self.on_csp(&payload);
         }
-
         self.pump_ctp().await
+    }
+
+    async fn on_registration(&mut self, payload: &[u8]) -> Result<(), ViperError> {
+        let Some(reg) = self.registration.as_mut() else {
+            return Ok(());
+        };
+        match Csp::parse(payload) {
+            Some(Csp::RegisterRes {
+                id,
+                address,
+                status,
+            }) if id == reg.id && address == reg.ctp.src => {
+                if status != 0 {
+                    return Err(ViperError::Generic(format!(
+                        "Registration refused by {:?} (status {status})",
+                        reg.apartment
+                    )));
+                }
+                info!(
+                    "Registered with {:?} for {} s, waiting for a call",
+                    reg.apartment, reg.ttl_secs
+                );
+                // like Subunit::su_st_registering: close the registration
+                // connection once the response arrived
+                let close = reg.ctp.packet(FLAG_CLOSE, vec![]);
+                self.registration = None;
+                self.send_ctp(close).await?;
+            }
+            other => debug!("Unexpected message during registration: {other:?}"),
+        }
+        Ok(())
     }
 
     fn on_csp(&mut self, payload: &[u8]) {
         match Csp::parse(payload) {
+            Some(Csp::Start {
+                src,
+                dst,
+                unit_type,
+            }) => {
+                info!(
+                    "Incoming call from {src:?} ('{}') to {dst:?}",
+                    unit_type as char
+                );
+                self.caller = Some(src);
+                self.peer_ready = true;
+                self.ring_deadline = self.ring_timeout.map(|t| Instant::now() + t);
+                if let Some(call) = self.call.as_mut() {
+                    // CallFsm::initNewConnectionStart: announce ourselves and
+                    // ring, without ever answering
+                    call.queue
+                        .push_back(Csp::capab_report(UNIT_INTERNAL, APP_CAPABILITIES));
+                    call.queue.push_back(Csp::alerting());
+                }
+            }
             Some(Csp::CapabReport {
                 unit_type,
                 capabilities,
@@ -430,41 +679,19 @@ impl Session<'_> {
         }
     }
 
-    /// Sends the next queued CSP message if nothing is waiting for an ack,
-    /// and retransmits the pending one when its ack is late.
+    /// Sends what the CTP connections have to send (new messages or
+    /// retransmissions).
     async fn pump_ctp(&mut self) -> Result<(), ViperError> {
         let now = Instant::now();
-        let resend = match &mut self.ctp.in_flight {
-            Some(pending) if now.duration_since(pending.sent_at) >= CTP_RETRANSMIT => {
-                if pending.attempts >= CTP_MAX_ATTEMPTS {
-                    return Err(ViperError::Generic(
-                        "The device does not acknowledge CTP messages".into(),
-                    ));
-                }
-                pending.attempts += 1;
-                pending.sent_at = now;
-                Some((pending.flags, pending.payload.clone()))
-            }
-            Some(_) => None,
-            None => self.ctp.queue.pop_front().map(|payload| {
-                let flags = if self.ctp.opened {
-                    FLAG_DATA
-                } else {
-                    FLAG_OPEN | FLAG_DATA
-                };
-                self.ctp.opened = true;
-                self.ctp.in_flight = Some(InFlight {
-                    payload: payload.clone(),
-                    flags,
-                    sent_at: now,
-                    attempts: 1,
-                });
-                (flags, payload)
-            }),
-        };
-        if let Some((flags, payload)) = resend {
-            let packet = self.ctp.packet(flags, payload).encode();
-            self.send(&Frame::encode(self.ctpp, &packet)).await?;
+        let mut packets = vec![];
+        if let Some(reg) = self.registration.as_mut() {
+            packets.extend(reg.ctp.poll(now)?);
+        }
+        if let Some(call) = self.call.as_mut() {
+            packets.extend(call.poll(now)?);
+        }
+        for packet in packets {
+            self.send_ctp(packet).await?;
         }
         Ok(())
     }
@@ -524,10 +751,17 @@ impl Session<'_> {
 
     async fn on_tick(&mut self, started: Instant) -> Result<(), ViperError> {
         let now = Instant::now();
-        if !self.ctp.peer_seen && now.duration_since(started) > SETUP_TIMEOUT {
-            return Err(ViperError::Generic(
-                "No answer from the external unit".into(),
-            ));
+        let waiting_for_peer = match (&self.call, &self.registration) {
+            (_, Some(reg)) => !reg.ctp.peer_seen,
+            (Some(call), None) => !self.listening && !call.peer_seen,
+            (None, None) => !self.listening,
+        };
+        if waiting_for_peer && now.duration_since(started) > SETUP_TIMEOUT {
+            return Err(ViperError::Generic(if self.listening {
+                "The apartment did not answer the registration".into()
+            } else {
+                "No answer from the external unit".into()
+            }));
         }
 
         if let Some(token) = self.udpm_token
@@ -560,7 +794,7 @@ impl Session<'_> {
     }
 
     async fn maybe_request_media(&mut self, now: Instant) -> Result<(), ViperError> {
-        if self.video.open_sent {
+        if self.video.open_sent || self.call.is_none() {
             return Ok(());
         }
         let Some((_, caps_at)) = self.peer_caps else {
@@ -598,16 +832,21 @@ impl Session<'_> {
         self.audio.as_mut().filter(|audio| audio.id == channel)
     }
 
-    /// Best effort: release the call, close every channel, flush recordings.
+    /// Best effort: release our leg of the call and close its connection
+    /// (like the app when its ringing timer expires), close every channel,
+    /// flush recordings.
     async fn teardown(&mut self) {
-        if self.ctp.opened && !self.released {
-            self.ctp.queue.clear();
-            self.ctp.queue.push_back(Csp::release(0));
+        let release = !self.released && self.call.as_ref().is_some_and(|c| c.opened);
+        if release {
+            if let Some(call) = self.call.as_mut() {
+                call.queue.clear();
+                call.queue.push_back(Csp::release(0));
+            }
             let until = Instant::now() + RELEASE_TIMEOUT;
             let _ = tokio::time::timeout_at(until, async {
                 loop {
                     self.pump_ctp().await?;
-                    if self.ctp.in_flight.is_none() && self.ctp.queue.is_empty() {
+                    if self.call.as_ref().is_none_or(Ctp::idle) {
                         return Ok::<_, ViperError>(());
                     }
                     let mut chunk = [0u8; 4096];
@@ -625,6 +864,9 @@ impl Session<'_> {
                 }
             })
             .await;
+            if let Some(close) = self.call.as_ref().map(|c| c.packet(FLAG_CLOSE, vec![])) {
+                let _ = self.send_ctp(close).await;
+            }
         }
 
         let mut channels = vec![];
@@ -816,7 +1058,9 @@ mod tests {
         };
         let target = CallTarget {
             src: LogAddr::new("COMHUB012").unwrap(),
-            dst: LogAddr::new("00000100").unwrap(),
+            mode: CallMode::Watch {
+                external_unit: LogAddr::new("00000100").unwrap(),
+            },
         };
         let stats = run(tcp, &udp, 0x5174, target, options, std::future::pending())
             .await
@@ -841,5 +1085,268 @@ mod tests {
             vec![kind::START, kind::CAPAB_REPORT, kind::MEDIAREQ]
         );
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    /// Fake apartment: accepts the subunit registration, then the external
+    /// unit calls us. Returns the CSP message types received on each
+    /// connection (registration, call).
+    async fn fake_ringing_unit(
+        listener: TcpListener,
+        udp: UdpSocket,
+        unit_closes: bool,
+    ) -> (Vec<u8>, Vec<u8>) {
+        let (mut tcp, _) = listener.accept().await.unwrap();
+        let mut buf = vec![];
+        let mut chunk = [0u8; 4096];
+        let mut ubuf = [0u8; 2048];
+        let mut client_udp: Option<SocketAddr> = None;
+        let (mut ctpp, mut udpm, mut rtpc) = (0u16, 0u16, None::<u16>);
+        let (mut on_registration, mut on_call) = (vec![], vec![]);
+        let me = LogAddr::new("COMHUB012").unwrap();
+        let door = LogAddr::new("00000100").unwrap();
+        // the call connection is ours: conn 12 34, we number from 0x50
+        let mut call_tx = 0x50u8;
+        let mut call_rx: u8;
+        let mut keepalive_pending = false;
+        let call = |flags: u8, tx: u8, rx: u8, payload: Vec<u8>| CtpPacket {
+            flags,
+            conn: [0x12, 0x34],
+            tx,
+            rx,
+            payload,
+            src: door,
+            dst: me,
+        };
+
+        loop {
+            tokio::select! {
+                n = tcp.read(&mut chunk) => {
+                    let n = n.unwrap();
+                    if n == 0 { return (on_registration, on_call); }
+                    buf.extend_from_slice(&chunk[..n]);
+                }
+                r = udp.recv_from(&mut ubuf) => {
+                    let (n, from) = r.unwrap();
+                    client_udp = Some(from);
+                    let (frame, _) = Frame::decode(&ubuf[..n]).unwrap();
+                    let ping = UdpmPing::parse(&frame.body).unwrap();
+                    if !ping.is_reply {
+                        let reply = UdpmPing { is_reply: true, lane_open: true, ..ping };
+                        udp.send_to(&Frame::encode(udpm, &reply.encode()), from).await.unwrap();
+                    }
+                    continue;
+                }
+            }
+            while let Some((frame, used)) = Frame::decode(&buf) {
+                buf.drain(..used);
+                if frame.channel == CONTROL_CHANNEL {
+                    if let Control::Open { name, channel, .. } =
+                        Control::parse(&frame.body).unwrap()
+                    {
+                        let mut reply = Control::open_response(channel, 0);
+                        match &name {
+                            b"CTPP" => ctpp = channel,
+                            b"UDPM" => {
+                                udpm = channel;
+                                reply = Frame::encode(
+                                    CONTROL_CHANNEL,
+                                    &[&reply[8..], &[2, 0, 0, 0][..], &TOKEN[..]].concat(),
+                                );
+                            }
+                            b"RTPC" => rtpc = rtpc.or(Some(channel)),
+                            _ => panic!("unexpected channel"),
+                        }
+                        tcp.write_all(&reply).await.unwrap();
+                    }
+                    continue;
+                }
+                assert_eq!(frame.channel, ctpp);
+                let packet = CtpPacket::parse(&frame.body).unwrap();
+
+                if packet.conn != [0x92, 0x34] {
+                    // registration connection, opened by the client
+                    if packet.flags & FLAG_CLOSE != 0 {
+                        on_registration.push(FLAG_CLOSE);
+                        // registered: the external unit rings the apartment
+                        let start = Csp::start(&door, &LogAddr::new("COMHUB01").unwrap(), 9, b'P');
+                        let p = call(FLAG_OPEN | FLAG_DATA, call_tx, 0x90, start);
+                        tcp.write_all(&Frame::encode(ctpp, &p.encode()))
+                            .await
+                            .unwrap();
+                        continue;
+                    }
+                    if !packet.is_data() {
+                        continue;
+                    }
+                    assert_eq!(packet.dst, LogAddr::new("COMHUB01").unwrap());
+                    let Csp::Other { kind } = Csp::parse(&packet.payload).unwrap() else {
+                        panic!("expected REGISTER_REQ");
+                    };
+                    on_registration.push(kind);
+                    let id = [packet.payload[2], packet.payload[3]];
+                    let mut res = vec![0x00, kind::REGISTER_RES, id[0], id[1]];
+                    res.extend_from_slice(&me.0);
+                    res.extend_from_slice(&[0, 0]);
+                    for (flags, payload) in [(0u8, vec![]), (FLAG_DATA, res)] {
+                        let p = CtpPacket {
+                            flags,
+                            conn: [packet.conn[0] | 0x80, packet.conn[1]],
+                            tx: packet.rx,
+                            rx: packet.tx.wrapping_add(1),
+                            payload,
+                            src: packet.dst,
+                            dst: packet.src,
+                        };
+                        tcp.write_all(&Frame::encode(ctpp, &p.encode()))
+                            .await
+                            .unwrap();
+                    }
+                    continue;
+                }
+
+                // our call connection, answered by the client with the top bit set
+                if packet.flags & FLAG_CLOSE != 0 {
+                    on_call.push(FLAG_CLOSE);
+                    continue;
+                }
+                if keepalive_pending && !packet.is_data() {
+                    assert_eq!(
+                        packet.rx, call_tx,
+                        "keepalive must not advance the sequence"
+                    );
+                    keepalive_pending = false;
+                    on_call.push(0);
+                    continue;
+                }
+                if packet.rx == call_tx.wrapping_add(1) {
+                    call_tx = call_tx.wrapping_add(1);
+                }
+                if !packet.is_data() {
+                    continue;
+                }
+                call_rx = packet.tx.wrapping_add(1);
+                let ack = call(0, call_tx, call_rx, vec![]);
+                tcp.write_all(&Frame::encode(ctpp, &ack.encode()))
+                    .await
+                    .unwrap();
+                on_call.push(packet.payload[1]);
+                match Csp::parse(&packet.payload).unwrap() {
+                    Csp::Alerting => {
+                        // a keepalive must be acked without advancing the sequence
+                        let keepalive = call(FLAG_DATA, call_tx, call_rx, vec![]);
+                        tcp.write_all(&Frame::encode(ctpp, &keepalive.encode()))
+                            .await
+                            .unwrap();
+                        keepalive_pending = true;
+                        let caps = call(FLAG_DATA, call_tx, call_rx, Csp::capab_report(b'P', 0x1b));
+                        tcp.write_all(&Frame::encode(ctpp, &caps.encode()))
+                            .await
+                            .unwrap();
+                    }
+                    Csp::MediaReq { action, channel } => {
+                        assert_eq!(action, MEDIA_VIDEO);
+                        assert_eq!(Some(channel), rtpc);
+                        let to = client_udp.expect("UDP lane must be open first");
+                        for p in [rtp(1, &[0x67, 0x42]), rtp(2, &[0x65, 7])] {
+                            udp.send_to(&Frame::encode(channel, &p), to).await.unwrap();
+                        }
+                        if !unit_closes {
+                            continue;
+                        }
+                        tokio::time::sleep(Duration::from_millis(300)).await;
+                        // the unit gives up ringing: it closes the connection
+                        let close = call(FLAG_DATA | FLAG_CLOSE, call_tx, call_rx, vec![]);
+                        tcp.write_all(&Frame::encode(ctpp, &close.encode()))
+                            .await
+                            .unwrap();
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    async fn listen_to_fake_unit(
+        name: &str,
+        unit_closes: bool,
+        ring_timeout: Duration,
+    ) -> (VideoStats, Vec<u8>, Vec<u8>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let device_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        let tcp_addr = listener.local_addr().unwrap();
+        let udp_addr = device_udp.local_addr().unwrap();
+        let device = tokio::spawn(fake_ringing_unit(listener, device_udp, unit_closes));
+
+        let tcp = TcpStream::connect(tcp_addr).await.unwrap();
+        let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
+        udp.connect(udp_addr).await.unwrap();
+
+        let dir = std::env::temp_dir().join(format!("viper-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let options = VideoOptions {
+            output: dir.join("ring"),
+            duration: Duration::from_secs(20),
+            audio: false,
+            video: VideoParams::default(),
+        };
+        let target = CallTarget {
+            src: LogAddr::new("COMHUB012").unwrap(),
+            mode: CallMode::Listen {
+                apartment: LogAddr::new("COMHUB01").unwrap(),
+                ttl_secs: 300,
+                ring_timeout,
+            },
+        };
+        let stats = run(tcp, &udp, 0x5174, target, options, std::future::pending())
+            .await
+            .unwrap();
+        let video = std::fs::read(stats.video_file.as_ref().unwrap()).unwrap();
+        assert_eq!(video, vec![0, 0, 0, 1, 0x67, 0x42, 0, 0, 0, 1, 0x65, 7]);
+        std::fs::remove_dir_all(dir).unwrap();
+
+        let (on_registration, on_call) = tokio::time::timeout(Duration::from_secs(2), device)
+            .await
+            .unwrap()
+            .unwrap();
+        (stats, on_registration, on_call)
+    }
+
+    #[tokio::test]
+    async fn records_early_video_of_an_incoming_call() {
+        let (stats, on_registration, on_call) =
+            listen_to_fake_unit("listen", true, Duration::from_secs(60)).await;
+
+        assert_eq!(stats.caller.as_deref(), Some("\"00000100\""));
+        assert_eq!(stats.video_packets, 2);
+        assert_eq!(on_registration, vec![kind::REGISTER_REQ, FLAG_CLOSE]);
+        // never CONNECT; the unit closed the call, we close our side too
+        assert_eq!(
+            on_call,
+            vec![
+                kind::CAPAB_REPORT,
+                kind::ALERTING,
+                0, // ack of the keepalive
+                kind::MEDIAREQ,
+                FLAG_CLOSE
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn releases_our_leg_when_the_ringing_time_elapses() {
+        let (_, _, on_call) = listen_to_fake_unit("timeout", false, Duration::from_secs(1)).await;
+
+        // like the app when call_wait_time expires: RELEASE, then close
+        assert_eq!(
+            on_call,
+            vec![
+                kind::CAPAB_REPORT,
+                kind::ALERTING,
+                0, // ack of the keepalive
+                kind::MEDIAREQ,
+                kind::RELEASE,
+                FLAG_CLOSE
+            ]
+        );
     }
 }

@@ -22,6 +22,8 @@ use std::fmt;
 
 pub const FLAG_OPEN: u8 = 0x80;
 pub const FLAG_DATA: u8 = 0x40;
+/// Closes the connection (`ctp_close`).
+pub const FLAG_CLOSE: u8 = 0x20;
 
 const TRAILER_LEN: u8 = 0x18;
 const TRAILER_MAGIC: [u8; 4] = [0xff; 4];
@@ -40,6 +42,14 @@ impl LogAddr {
         let mut out = [0u8; 10];
         out[..bytes.len()].copy_from_slice(bytes);
         Ok(LogAddr(out))
+    }
+}
+
+impl LogAddr {
+    fn from_slice(bytes: &[u8]) -> LogAddr {
+        let mut out = [0u8; 10];
+        out.copy_from_slice(&bytes[..10]);
+        LogAddr(out)
     }
 }
 
@@ -121,6 +131,8 @@ pub mod kind {
     pub const RELEASE: u8 = 0x0e;
     pub const MEDIAREQ: u8 = 0x11;
     pub const MEDIAOFFER: u8 = 0x12;
+    pub const REGISTER_REQ: u8 = 0x40;
+    pub const REGISTER_RES: u8 = 0x41;
 }
 
 /// MEDIAREQ action asking the peer to stream its audio to us.
@@ -137,14 +149,34 @@ pub const APP_CAPABILITIES: u32 = 0x27;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Csp {
-    Start,
-    CapabReport { unit_type: u8, capabilities: u32 },
+    /// Incoming call: `src` is the caller, `unit_type` its kind of unit.
+    Start {
+        src: LogAddr,
+        dst: LogAddr,
+        unit_type: u8,
+    },
+    CapabReport {
+        unit_type: u8,
+        capabilities: u32,
+    },
     Alerting,
     Connect,
-    Release { cause: u8 },
-    MediaReq { action: u8, channel: u16 },
+    Release {
+        cause: u8,
+    },
+    MediaReq {
+        action: u8,
+        channel: u16,
+    },
     MediaOffer,
-    Other { kind: u8 },
+    RegisterRes {
+        id: u16,
+        address: LogAddr,
+        status: u8,
+    },
+    Other {
+        kind: u8,
+    },
 }
 
 impl Csp {
@@ -153,7 +185,11 @@ impl Csp {
             return None;
         }
         let msg = match payload[1] {
-            kind::START => Csp::Start,
+            kind::START if payload.len() >= 0x27 => Csp::Start {
+                src: LogAddr::from_slice(&payload[2..12]),
+                dst: LogAddr::from_slice(&payload[12..22]),
+                unit_type: payload[0x26],
+            },
             kind::CAPAB_REPORT if payload.len() >= 8 => Csp::CapabReport {
                 unit_type: payload[2],
                 capabilities: u32::from_le_bytes(payload[4..8].try_into().unwrap()),
@@ -168,6 +204,11 @@ impl Csp {
                 channel: u16::from_le_bytes([payload[8], payload[9]]),
             },
             kind::MEDIAOFFER => Csp::MediaOffer,
+            kind::REGISTER_RES if payload.len() >= 15 => Csp::RegisterRes {
+                id: u16::from_le_bytes([payload[2], payload[3]]),
+                address: LogAddr::from_slice(&payload[4..14]),
+                status: payload[14],
+            },
             other => Csp::Other { kind: other },
         };
         Some(msg)
@@ -210,6 +251,22 @@ impl Csp {
         out.extend_from_slice(&params.width.to_le_bytes());
         out.extend_from_slice(&params.height.to_le_bytes());
         out.push(params.fps);
+        out.push(0);
+        out
+    }
+
+    pub fn alerting() -> Vec<u8> {
+        vec![0x00, kind::ALERTING, 0x00]
+    }
+
+    /// REGISTER_REQ (17 bytes), sent by a subunit (`Subunit::su_go_registering`)
+    /// to the apartment main address so that calls to the apartment are
+    /// forwarded to it for `ttl_secs`.
+    pub fn register_request(id: u16, address: &LogAddr, ttl_secs: u16) -> Vec<u8> {
+        let mut out = vec![0x00, kind::REGISTER_REQ];
+        out.extend_from_slice(&id.to_le_bytes());
+        out.extend_from_slice(&address.0);
+        out.extend_from_slice(&ttl_secs.to_le_bytes());
         out.push(0);
         out
     }
@@ -380,6 +437,41 @@ mod tests {
             Some(Csp::MediaReq {
                 action: MEDIA_AUDIO,
                 channel: 0xef9e,
+            })
+        );
+    }
+
+    #[test]
+    fn parses_incoming_start() {
+        let payload = Csp::start(&door(), &LogAddr::new("COMHUB01").unwrap(), 7, b'P');
+        assert_eq!(
+            Csp::parse(&payload),
+            Some(Csp::Start {
+                src: door(),
+                dst: LogAddr::new("COMHUB01").unwrap(),
+                unit_type: b'P',
+            })
+        );
+    }
+
+    #[test]
+    fn register_request_layout() {
+        // Subunit::su_go_registering: id, own address, ttl 3600 s, flags 0
+        let req = Csp::register_request(0xbeef, &me(), 0x0e10);
+        assert_eq!(req.len(), 17);
+        assert_eq!(&req[..4], &[0x00, 0x40, 0xef, 0xbe]);
+        assert_eq!(&req[4..14], &me().0);
+        assert_eq!(&req[14..], &[0x10, 0x0e, 0x00]);
+
+        let mut res = vec![0x00, 0x41, 0xef, 0xbe];
+        res.extend_from_slice(&me().0);
+        res.extend_from_slice(&[0x00, 0x00]);
+        assert_eq!(
+            Csp::parse(&res),
+            Some(Csp::RegisterRes {
+                id: 0xbeef,
+                address: me(),
+                status: 0,
             })
         );
     }
