@@ -165,7 +165,14 @@ impl ComelitAccessory<DoorbellDeviceData> for ComelitDoorbellAccessory {
     async fn update(&mut self, _data: &DoorbellDeviceData) -> Result<()> {
         // The Comelit hub pushes VIP events with status=Off on every ring — the status
         // value is not meaningful here. Treat any incoming update as a ring event.
-        // Deduplicate within 2 seconds to handle the hub sending the same event twice.
+        self.ring_now().await
+    }
+}
+
+impl ComelitDoorbellAccessory {
+    /// Rings the HomeKit doorbell. Deduplicated within 2 seconds, as the hub
+    /// can send the same event twice.
+    pub(crate) async fn ring_now(&self) -> Result<()> {
         let mut state = self.state.lock().await;
         let now = Instant::now();
         if state.last_ring.map(|t| t.elapsed() < Duration::from_secs(2)).unwrap_or(false) {

@@ -2,6 +2,7 @@ mod accessories;
 mod bridge;
 mod logging;
 mod settings;
+mod viper;
 mod web;
 
 use std::process::exit;

@@ -123,7 +123,15 @@ COMELIT_MAX_LOG_FILES=7
     "opened_time": 60
   },
   "prometheus_url": null,
-  "prometheus_token": null
+  "prometheus_token": null,
+  "doorbell_video": {
+    "enabled": false,
+    "viper_token": null,
+    "viper_host": null,
+    "viper_port": 64100,
+    "entrance": null,
+    "ring_timeout_secs": 60
+  }
 }
 ```
 
@@ -136,6 +144,11 @@ COMELIT_MAX_LOG_FILES=7
 | `door.opening_closing_time` | Durata del ciclo apertura/chiusura cancello (secondi) |
 | `door.opened_time` | Tempo che il cancello rimane aperto prima di richiudersi (secondi) |
 | `prometheus_url` | URL del push gateway Prometheus (opzionale) |
+| `doorbell_video.enabled` | Collega il campanello al videocitofono ViP: lo squillo arriva dal sistema ViP invece che dai messaggi MQTT dell'hub (richiede `mount_doorbells`) |
+| `doorbell_video.viper_token` | Token utente ViP (ottenuto con l'attivazione di `viper-client`), obbligatorio se `enabled` |
+| `doorbell_video.viper_host` | Indirizzo del gateway ViP; se assente viene cercato in rete |
+| `doorbell_video.entrance` | Nome dell'ingresso ViP da inquadrare quando nessuno suona |
+| `doorbell_video.ring_timeout_secs` | Dopo quanti secondi di squillo il bridge chiude il proprio ramo della chiamata |
 
 ---
 

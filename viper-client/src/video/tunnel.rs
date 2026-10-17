@@ -18,6 +18,7 @@ const CLOSE_MAGIC: [u8; 2] = [0xef, 0x01];
 const CONTROL_OPEN: u16 = 1;
 const CONTROL_OPEN_RESPONSE: u16 = 2;
 const CONTROL_CLOSE: u16 = 3;
+const CONTROL_CLOSE_RESPONSE: u16 = 4;
 
 /// Transport requested when opening a channel. Only RTPC uses `Udp`: its
 /// frames move to UDP once the UDPM lane is open, otherwise they stay on TCP.
@@ -80,6 +81,8 @@ pub enum Control {
     },
     /// `ef 01 03 00 02 00 00 00 <id>`
     Close { channel: u16 },
+    /// `ef 01 04 00 04 00 00 00 <id> <status>`, answer to a close.
+    CloseResponse { channel: u16, status: u16 },
 }
 
 impl Control {
@@ -147,6 +150,10 @@ impl Control {
                 extra: extra_at(12),
             }),
             CONTROL_CLOSE => Some(Control::Close { channel: u16_at(8) }),
+            CONTROL_CLOSE_RESPONSE if body.len() >= 12 => Some(Control::CloseResponse {
+                channel: u16_at(8),
+                status: u16_at(10),
+            }),
             _ => None,
         }
     }
@@ -268,6 +275,18 @@ mod tests {
         assert_eq!(
             Control::close(0x5174),
             crate::command::Command::close(&[0x74, 0x51])
+        );
+    }
+
+    #[test]
+    fn parses_close_response() {
+        // seen on the real device after closing RTPC 0x1044
+        assert_eq!(
+            Control::parse(&hex("ef 01 04 00 04 00 00 00 44 10 00 00")),
+            Some(Control::CloseResponse {
+                channel: 0x1044,
+                status: 0,
+            })
         );
     }
 

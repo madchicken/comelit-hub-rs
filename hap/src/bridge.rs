@@ -3,6 +3,7 @@ use crate::accessories::{
     ComelitThermostatAccessory, ComelitWindowCoveringAccessory, DoorConfig, WindowCoveringConfig,
 };
 use crate::settings::Settings;
+use crate::viper::ViperDoorbell;
 use crate::web::metrics::Metrics;
 use crate::web::state::{BridgeState, ConnectionStatus, DeviceInfo, DeviceType};
 use anyhow::{Context, Result};
@@ -28,7 +29,7 @@ use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
 /// Updater that handles status updates from the Comelit client.
 /// Also updates the shared bridge state for the web UI.
@@ -51,11 +52,13 @@ struct Updater {
     thermostats: DashMap<String, Arc<Mutex<ComelitThermostatAccessory>>>,
     doors: DashMap<String, Arc<Mutex<ComelitDoorAccessory>>>,
     doorbells: DashMap<String, Arc<Mutex<ComelitDoorbellAccessory>>>,
+    /// False when rings come from the ViP registration (`crate::viper`).
+    ring_from_mqtt: bool,
     bridge_state: BridgeState,
 }
 
 impl Updater {
-    fn new(bridge_state: BridgeState) -> Self {
+    fn new(bridge_state: BridgeState, ring_from_mqtt: bool) -> Self {
         Self {
             lights: DashMap::new(),
             window_coverings: DashMap::new(),
@@ -63,6 +66,7 @@ impl Updater {
             doors: DashMap::new(),
             doorbells: DashMap::new(),
             bridge_state,
+            ring_from_mqtt,
         }
     }
 }
@@ -186,6 +190,10 @@ impl StatusUpdate for Updater {
             }
             HomeDeviceData::Doorbell(bell_device_data) => {
                 Metrics::inc_device_updates("doorbell");
+                if !self.ring_from_mqtt {
+                    debug!("Doorbell event from the hub ignored: rings come from ViP");
+                    return;
+                }
                 let maybe_accessory = self.doorbells.get(&device.id()).map(|e| e.value().clone());
                 if let Some(accessory_arc) = maybe_accessory {
                     let mut accessory = accessory_arc.lock().await;
@@ -334,7 +342,10 @@ pub async fn start_bridge(
         .build()
         .map_err(|e| ComelitClientError::Generic(e.to_string()))?;
 
-    let updater = Arc::new(Updater::new(bridge_state.clone()));
+    let updater = Arc::new(Updater::new(
+        bridge_state.clone(),
+        !settings.doorbell_video.enabled,
+    ));
     let client = ComelitClient::new(options, Some(updater.clone())).await?;
 
     // Set the hub host in state
@@ -705,6 +716,25 @@ pub async fn start_bridge(
                 };
             }
         }
+
+        // Rings (and later the camera video) from the ViP system; the
+        // service stops when this bridge instance ends.
+        let _viper_doorbell = if settings.doorbell_video.enabled {
+            let doorbells = updater
+                .doorbells
+                .iter()
+                .map(|entry| entry.value().clone())
+                .collect();
+            match ViperDoorbell::spawn(settings.doorbell_video.clone(), doorbells) {
+                Ok(service) => Some(service),
+                Err(e) => {
+                    error!("Cannot start the ViP doorbell: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
 
         // Update device count metrics
         Metrics::set_device_count("light", updater.lights.len());

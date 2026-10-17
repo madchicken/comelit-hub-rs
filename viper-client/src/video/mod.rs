@@ -11,4 +11,4 @@ pub use ctp::VideoParams;
 pub(crate) use session::run;
 pub use session::{CallMode, CallTarget};
 pub use session::{VideoOptions, VideoStats};
-pub use unit::{MediaKind, MediaPacket, UnitConfig, UnitEvent, ViperUnit};
+pub use unit::{MediaKind, MediaPacket, SpawnedUnit, UnitConfig, UnitEvent, ViperUnit};
