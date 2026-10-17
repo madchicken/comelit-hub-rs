@@ -16,16 +16,16 @@ pub struct StreamWrapper {
 impl StreamWrapper {
     pub fn new(ip: String) -> StreamWrapper {
         let stream = TcpStream::connect(ip).expect("Doorbell unavailable");
+        StreamWrapper::from_std(stream).unwrap()
+    }
 
-        stream
-            .set_read_timeout(Some(Duration::from_millis(TIMEOUT)))
-            .unwrap();
-
-        stream
-            .set_write_timeout(Some(Duration::from_millis(TIMEOUT)))
-            .unwrap();
-
-        StreamWrapper { stream }
+    /// Wraps an already connected stream, in blocking mode with the usual
+    /// read/write timeouts.
+    pub fn from_std(stream: TcpStream) -> Result<StreamWrapper, io::Error> {
+        stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(Duration::from_millis(TIMEOUT)))?;
+        stream.set_write_timeout(Some(Duration::from_millis(TIMEOUT)))?;
+        Ok(StreamWrapper { stream })
     }
 
     pub fn execute(&mut self, b: &[u8]) -> ByteResult {

@@ -616,6 +616,7 @@ dependencies = [
  "tracing-appender",
  "tracing-subscriber 0.3.22",
  "uuid",
+ "viper-client",
 ]
 
 [[package]]

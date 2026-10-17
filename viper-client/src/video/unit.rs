@@ -107,6 +107,14 @@ enum Command {
     Shutdown,
 }
 
+/// A running unit: its handle, its events, and the task (ending with the
+/// error that stopped it).
+pub type SpawnedUnit = (
+    ViperUnit,
+    mpsc::Receiver<UnitEvent>,
+    JoinHandle<Result<(), ViperError>>,
+);
+
 /// Handle on a running unit.
 #[derive(Clone)]
 pub struct ViperUnit {
@@ -121,11 +129,7 @@ impl ViperUnit {
         udp: Arc<UdpSocket>,
         first_channel: u16,
         config: UnitConfig,
-    ) -> (
-        ViperUnit,
-        mpsc::Receiver<UnitEvent>,
-        JoinHandle<Result<(), ViperError>>,
-    ) {
+    ) -> SpawnedUnit {
         let (commands, command_rx) = mpsc::channel(8);
         let (event_tx, events) = mpsc::channel(EVENT_QUEUE);
         let unit = Unit::new(tcp, udp, first_channel, config, event_tx);
@@ -869,6 +873,9 @@ impl Unit {
                 if channel == self.ctpp {
                     return Err(ViperError::Generic("The device closed CTPP".into()));
                 }
+            }
+            Some(Control::CloseResponse { channel, status }) => {
+                debug!("Channel 0x{channel:04x} closed (status {status})");
             }
             None => debug!("Unknown control message {body:02x?}"),
         }

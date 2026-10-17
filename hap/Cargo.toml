@@ -15,6 +15,7 @@ derive_builder = "0.20.2"
 futures = "0.3.27"
 futures-util = "0.3.31"
 comelit-client-rs = { path = "../client" }
+viper-client = { path = "../viper-client" }
 hap = { git = "https://github.com/madchicken/hap-rs" , branch = "patch" }
 #hap = { path = "../../hap-rs" }
 mac_address = "1.1.8"

@@ -13,7 +13,7 @@ use crate::{
     stream_wrapper::StreamWrapper,
     udp_stream_wrapper::UdpStreamWrapper,
     video::{
-        self, CallMode, CallTarget, UnitConfig, UnitEvent, VideoOptions, VideoParams, VideoStats,
+        self, CallMode, CallTarget, SpawnedUnit, UnitConfig, VideoOptions, VideoParams, VideoStats,
         ViperUnit, ctp::LogAddr,
     },
 };
@@ -21,6 +21,8 @@ use serde::Deserialize;
 use tracing::debug;
 
 pub const ICONA_BRIDGE_PORT: u16 = 64100;
+
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Lifetime of a subunit registration. The app asks for one hour and renews
 /// it; a short lived client asks for less so that the apartment stops
@@ -69,6 +71,20 @@ impl ViperClient {
                 .expect("Can't opend UDP connection"),
             control: Helper::control(),
         }
+    }
+
+    /// Like [`Self::new`], but reports an unreachable device as an error
+    /// (after `CONNECT_TIMEOUT`) instead of panicking.
+    pub async fn connect(ip: &str, port: u16) -> Result<ViperClient, ViperError> {
+        let address = format!("{ip}:{port}");
+        let tcp = tokio::time::timeout(CONNECT_TIMEOUT, tokio::net::TcpStream::connect(&address))
+            .await
+            .map_err(|_| ViperError::Generic(format!("Timeout connecting to {address}")))??;
+        Ok(ViperClient {
+            stream: StreamWrapper::from_std(tcp.into_std()?)?,
+            udp: UdpStreamWrapper::new(ip, port).await?,
+            control: Helper::control(),
+        })
     }
 
     pub fn sign_up(&mut self, email: &str) -> JSONResult<ActivateUserResponse> {
@@ -267,14 +283,7 @@ impl ViperClient {
         vip: &VipConfig,
         entrance: Option<&str>,
         ring_timeout: Duration,
-    ) -> Result<
-        (
-            ViperUnit,
-            tokio::sync::mpsc::Receiver<UnitEvent>,
-            tokio::task::JoinHandle<Result<(), ViperError>>,
-        ),
-        ViperError,
-    > {
+    ) -> Result<SpawnedUnit, ViperError> {
         let config = UnitConfig {
             src: Self::own_address(vip)?,
             apartment: Some(LogAddr::new(&vip.apt_address).map_err(ViperError::Generic)?),
