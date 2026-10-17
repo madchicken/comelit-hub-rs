@@ -46,6 +46,10 @@ pub struct DoorbellVideoSettings {
     pub entrance: Option<String>,
     /// How long we watch a ringing call before releasing our leg.
     pub ring_timeout_secs: u64,
+    /// How long a camera snapshot is reused: capturing one while nobody
+    /// rings turns the external unit camera on. A ring always captures a
+    /// fresh one.
+    pub snapshot_max_age_secs: u64,
 }
 
 impl Default for DoorbellVideoSettings {
@@ -57,6 +61,7 @@ impl Default for DoorbellVideoSettings {
             viper_port: 64100,
             entrance: None,
             ring_timeout_secs: 60,
+            snapshot_max_age_secs: 300,
         }
     }
 }
@@ -114,6 +119,7 @@ mod tests {
         assert!(!settings.doorbell_video.enabled);
         assert_eq!(settings.doorbell_video.viper_port, 64100);
         assert_eq!(settings.doorbell_video.ring_timeout_secs, 60);
+        assert_eq!(settings.doorbell_video.snapshot_max_age_secs, 300);
     }
 
     #[test]

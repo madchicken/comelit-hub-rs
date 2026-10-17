@@ -130,7 +130,8 @@ COMELIT_MAX_LOG_FILES=7
     "viper_host": null,
     "viper_port": 64100,
     "entrance": null,
-    "ring_timeout_secs": 60
+    "ring_timeout_secs": 60,
+    "snapshot_max_age_secs": 300
   }
 }
 ```
@@ -149,6 +150,9 @@ COMELIT_MAX_LOG_FILES=7
 | `doorbell_video.viper_host` | Indirizzo del gateway ViP; se assente viene cercato in rete |
 | `doorbell_video.entrance` | Nome dell'ingresso ViP da inquadrare quando nessuno suona |
 | `doorbell_video.ring_timeout_secs` | Dopo quanti secondi di squillo il bridge chiude il proprio ramo della chiamata |
+| `doorbell_video.snapshot_max_age_secs` | Per quanti secondi riusare l'anteprima della telecamera (catturarne una accende la telecamera esterna); uno squillo ne cattura sempre una nuova |
+
+Con `doorbell_video.enabled` il campanello diventa un videocitofono HomeKit: il video H.264 del citofono viene inoltrato all'iPhone cifrato con SRTP, senza transcodifica né `ffmpeg`. Mentre suona il video viene dalla chiamata in corso, altrimenti dall'ingresso `entrance`. L'audio non è ancora supportato.
 
 ---
 

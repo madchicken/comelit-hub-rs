@@ -104,6 +104,7 @@ enum Command {
         reply: oneshot::Sender<Result<(), ViperError>>,
     },
     StopMedia,
+    RequestKeyFrame,
     Shutdown,
 }
 
@@ -159,6 +160,14 @@ impl ViperUnit {
     /// call keeps ringing.
     pub async fn stop_media(&self) -> Result<(), ViperError> {
         self.send(Command::StopMedia).await
+    }
+
+    /// Asks the external unit for a key frame (SPS, PPS and IDR): it only
+    /// sends them when the video starts, so a consumer joining a running
+    /// stream needs one. Like `CallFsm::requestVideoKeyFrameGeneration`,
+    /// this repeats the video MEDIAREQ.
+    pub async fn request_key_frame(&self) -> Result<(), ViperError> {
+        self.send(Command::RequestKeyFrame).await
     }
 
     /// Releases any call, closes the channels and ends the unit task.
@@ -454,6 +463,7 @@ impl Unit {
                         let _ = reply.send(result);
                     }
                     Some(Command::StopMedia) => self.stop_media(None).await?,
+                    Some(Command::RequestKeyFrame) => self.request_key_frame().await?,
                     Some(Command::Shutdown) | None => return Ok(()),
                 },
             }
@@ -574,6 +584,24 @@ impl Unit {
             self.send(&Control::close(id)).await?;
         }
         Ok(())
+    }
+
+    async fn request_key_frame(&mut self) -> Result<(), ViperError> {
+        let video = self.media.as_ref().and_then(|m| {
+            m.channels
+                .iter()
+                .find(|c| c.kind == MediaKind::Video && c.opened)
+                .map(|c| c.id)
+        });
+        let (Some(id), Some(call)) = (video, self.call.as_mut()) else {
+            // no video yet: the first frames will include one anyway
+            return Ok(());
+        };
+        debug!("Requesting a key frame");
+        call.ctp
+            .queue
+            .push_back(Csp::video_request(id, &self.config.video));
+        self.pump_ctp().await
     }
 
     /// Opens the RTPC channels once the call can carry media; the MEDIAREQ
@@ -1493,6 +1521,24 @@ mod tests {
         while let Ok(event) = h.events.try_recv() {
             assert_eq!(event, UnitEvent::UdpLaneOpen);
         }
+
+        h.unit.shutdown().await.unwrap();
+        h.task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_key_frame_request_repeats_the_video_mediareq() {
+        let mut h = start(config(false, true, Duration::from_secs(60))).await;
+        let mut packets = h.unit.start_media(false).await.unwrap();
+        let Seen::Start(watch) = next_seen(&mut h.seen).await else {
+            panic!("expected a call to the entrance");
+        };
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(watch));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
+        next_packet(&mut packets).await;
+
+        h.unit.request_key_frame().await.unwrap();
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
 
         h.unit.shutdown().await.unwrap();
         h.task.await.unwrap().unwrap();
