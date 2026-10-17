@@ -7,5 +7,6 @@ mod session;
 pub mod tunnel;
 
 pub use ctp::VideoParams;
-pub(crate) use session::{CallTarget, run};
+pub(crate) use session::run;
+pub use session::{CallMode, CallTarget};
 pub use session::{VideoOptions, VideoStats};

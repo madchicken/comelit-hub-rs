@@ -12,12 +12,17 @@ use crate::{
     helper::Helper,
     stream_wrapper::StreamWrapper,
     udp_stream_wrapper::UdpStreamWrapper,
-    video::{self, CallTarget, VideoOptions, VideoStats, ctp::LogAddr},
+    video::{self, CallMode, CallTarget, VideoOptions, VideoStats, ctp::LogAddr},
 };
 use serde::Deserialize;
 use tracing::debug;
 
 pub const ICONA_BRIDGE_PORT: u16 = 64100;
+
+/// Lifetime of a subunit registration. The app asks for one hour and renews
+/// it; a short lived client asks for less so that the apartment stops
+/// forwarding calls to it soon after it is gone.
+const REGISTRATION_TTL_SECS: u16 = 300;
 
 pub struct ViperClient {
     stream: StreamWrapper,
@@ -258,11 +263,51 @@ impl ViperClient {
                 ViperError::Generic(format!("Unknown target {target:?}, available: {names:?}"))
             })?;
         let target = CallTarget {
-            src: LogAddr::new(&format!("{}{}", vip.apt_address, vip.apt_subaddress))
-                .map_err(ViperError::Generic)?,
-            dst: LogAddr::new(dst).map_err(ViperError::Generic)?,
+            src: Self::own_address(vip)?,
+            mode: CallMode::Watch {
+                external_unit: LogAddr::new(dst).map_err(ViperError::Generic)?,
+            },
         };
+        self.run_video(target, options, stop).await
+    }
 
+    /// Registers as a subunit of the apartment and waits for an incoming call
+    /// (someone ringing), then records its early video without answering:
+    /// the call keeps ringing on the other units. Unlike [`Self::start_video`]
+    /// this works while the external unit is ringing, which refuses
+    /// auto-ignition calls as busy. Stops when the call ends, after
+    /// `ring_timeout` of ringing (then our leg of the call is released, like
+    /// the app does; the other units keep ringing), after `options.duration`
+    /// or when `stop` resolves.
+    pub async fn listen_video(
+        &mut self,
+        vip: &VipConfig,
+        ring_timeout: std::time::Duration,
+        options: VideoOptions,
+        stop: impl Future<Output = ()>,
+    ) -> Result<VideoStats, ViperError> {
+        let target = CallTarget {
+            src: Self::own_address(vip)?,
+            mode: CallMode::Listen {
+                apartment: LogAddr::new(&vip.apt_address).map_err(ViperError::Generic)?,
+                ttl_secs: REGISTRATION_TTL_SECS,
+                ring_timeout,
+            },
+        };
+        self.run_video(target, options, stop).await
+    }
+
+    fn own_address(vip: &VipConfig) -> Result<LogAddr, ViperError> {
+        LogAddr::new(&format!("{}{}", vip.apt_address, vip.apt_subaddress))
+            .map_err(ViperError::Generic)
+    }
+
+    async fn run_video(
+        &mut self,
+        target: CallTarget,
+        options: VideoOptions,
+        stop: impl Future<Output = ()>,
+    ) -> Result<VideoStats, ViperError> {
         // The session needs the CTPP, UDPM and two RTPC channel ids
         self.tick();
         let first_channel = u16::from_le_bytes(self.control);
