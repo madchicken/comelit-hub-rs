@@ -14,7 +14,7 @@ use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
-use viper_client::video::{UnitEvent, ViperUnit};
+use viper_client::video::{UnitEvent, VideoParams, ViperUnit};
 use viper_client::{ICONA_BRIDGE_PORT, ViperClient};
 
 use crate::accessories::ComelitDoorbellAccessory;
@@ -125,8 +125,12 @@ async fn session(
     .context("ViP authorization task")??;
 
     let ring_timeout = Duration::from_secs(settings.ring_timeout_secs);
+    let video = VideoParams {
+        bitrate_kbps: settings.video_bitrate_kbps,
+        ..VideoParams::default()
+    };
     let (unit, mut events, task) = client
-        .into_unit(&vip, settings.entrance.as_deref(), ring_timeout)
+        .into_unit(&vip, settings.entrance.as_deref(), ring_timeout, video)
         .map_err(|e| anyhow!("{e}"))?;
     *slot.write().await = Some(unit);
     info!(
@@ -138,6 +142,7 @@ async fn session(
         match event {
             UnitEvent::Registered => debug!("ViP registration renewed"),
             UnitEvent::UdpLaneOpen => debug!("ViP UDP lane open"),
+            // the external unit, or the floor call button of the apartment door
             UnitEvent::Ringing { caller } => {
                 info!("Ring from {caller:?}");
                 if let Some(snapshots) = snapshots {

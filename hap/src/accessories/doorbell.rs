@@ -120,12 +120,12 @@ impl ComelitDoorbellAccessory {
         let accessory = match camera {
             None => {
                 let mut doorbell_accessory = DoorbellAccessory::new(id, information)?;
-                configure_doorbell(&mut doorbell_accessory.doorbell)?;
+                configure_doorbell(&mut doorbell_accessory.doorbell, &name).await?;
                 server.add_accessory(doorbell_accessory).await?
             }
             Some(provider) => {
                 let mut doorbell_accessory = VideoDoorbellAccessory::new(id, 1, information)?;
-                configure_doorbell(&mut doorbell_accessory.doorbell)?;
+                configure_doorbell(&mut doorbell_accessory.doorbell, &name).await?;
                 StreamManagerBuilder::new(doorbell_accessory, provider)
                     .build(server)
                     .await?
@@ -145,12 +145,17 @@ impl ComelitDoorbellAccessory {
 }
 
 /// Keeps only what a HomeKit doorbell needs on the Doorbell service.
-fn configure_doorbell(doorbell: &mut DoorbellService) -> Result<()> {
+async fn configure_doorbell(doorbell: &mut DoorbellService, name: &str) -> Result<()> {
     // Strip optional characteristics we don't use
     doorbell.brightness = None;
     doorbell.mute = None;
     doorbell.operating_state_response = None;
     doorbell.volume = None;
+
+    // iOS keeps asking for the service name while it is empty
+    if let Some(service_name) = doorbell.name.as_mut() {
+        service_name.set_value(Value::from(name)).await?;
+    }
 
     // Restrict ProgrammableSwitchEvent to Single Press only (value 0).
     // hap-rs sets event_only=true on this characteristic so GET returns null,

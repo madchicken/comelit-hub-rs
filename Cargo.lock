@@ -1695,7 +1695,7 @@ dependencies = [
 [[package]]
 name = "hap"
 version = "0.1.0-pre.16"
-source = "git+https://github.com/madchicken/hap-rs?branch=patch#2f2536fcc2ea48fcb503db1aa1ad7c31a33a8271"
+source = "git+https://github.com/madchicken/hap-rs?branch=patch#815fd827af7e2abecfe06a9a1f188b805d619003"
 dependencies = [
  "aead",
  "async-trait",

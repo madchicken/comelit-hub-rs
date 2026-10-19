@@ -234,17 +234,25 @@ impl StatusUpdate for Updater {
     }
 }
 
-/// Records in `bell_dir` whether the doorbell has a camera and tells whether
-/// that changed since the last start.
+/// Version of the video doorbell services layout, stored in the bell's
+/// `camera` marker: bump it whenever the services change so that the
+/// configuration number moves and iOS re-reads the accessory.
+const CAMERA_LAYOUT: &str = "2";
+
+/// Records in `bell_dir` whether the doorbell has a camera, and with which
+/// layout, and tells whether that changed since the last start.
 fn camera_changed(bell_dir: &str, has_camera: bool) -> Result<bool> {
     let marker = std::path::Path::new(bell_dir).join("camera");
-    let had_camera = marker.exists();
-    if has_camera && !had_camera {
-        std::fs::write(&marker, b"")?;
-    } else if !has_camera && had_camera {
-        std::fs::remove_file(&marker)?;
+    let current = std::fs::read_to_string(&marker).ok();
+    let wanted = has_camera.then_some(CAMERA_LAYOUT);
+    if current.as_deref() == wanted {
+        return Ok(false);
     }
-    Ok(has_camera != had_camera)
+    match wanted {
+        Some(layout) => std::fs::write(&marker, layout)?,
+        None => std::fs::remove_file(&marker)?,
+    }
+    Ok(true)
 }
 
 /// Derives a stable, locally-administered MAC address from a device ID string.
@@ -712,7 +720,13 @@ pub async fn start_bridge(
                 }
                 let camera = video_feed
                     .as_ref()
-                    .map(|feed| ViperMediaProvider::new(bell_config.host, feed.clone()));
+                    .map(|feed| {
+                        ViperMediaProvider::new(
+                            bell_config.host,
+                            feed.clone(),
+                            settings.doorbell_video.video_bitrate_kbps,
+                        )
+                    });
 
                 let bell_pin = bell_config.pin.to_string();
                 let bell_server = IpServer::new(bell_config, bell_storage).await?;
@@ -723,7 +737,9 @@ pub async fn start_bridge(
                     });
                 }
 
-                match ComelitDoorbellAccessory::new(i, bell_data, &bell_server, camera).await {
+                // the doorbell is the only accessory of its server: HAP wants
+                // aid 1 there, Home hubs keep resubscribing to any other aid
+                match ComelitDoorbellAccessory::new(1, bell_data, &bell_server, camera).await {
                     Ok(accessory) => {
                         info!(
                             "Doorbell {} added as standalone HAP accessory",

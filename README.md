@@ -131,7 +131,8 @@ COMELIT_MAX_LOG_FILES=7
     "viper_port": 64100,
     "entrance": null,
     "ring_timeout_secs": 60,
-    "snapshot_max_age_secs": 300
+    "snapshot_max_age_secs": 5,
+    "video_bitrate_kbps": 1000
   }
 }
 ```
@@ -150,7 +151,8 @@ COMELIT_MAX_LOG_FILES=7
 | `doorbell_video.viper_host` | Indirizzo del gateway ViP; se assente viene cercato in rete |
 | `doorbell_video.entrance` | Nome dell'ingresso ViP da inquadrare quando nessuno suona |
 | `doorbell_video.ring_timeout_secs` | Dopo quanti secondi di squillo il bridge chiude il proprio ramo della chiamata |
-| `doorbell_video.snapshot_max_age_secs` | Per quanti secondi riusare l'anteprima della telecamera (catturarne una accende la telecamera esterna); uno squillo ne cattura sempre una nuova |
+| `doorbell_video.snapshot_max_age_secs` | Per quanti secondi riusare l'anteprima della telecamera. L'app Casa ne chiede una ogni 10 secondi mentre mostra il campanello: la telecamera esterna resta accesa e si spegne poco dopo la chiusura dell'app. Uno squillo ne cattura sempre una nuova |
+| `doorbell_video.video_bitrate_kbps` | Bitrate in kbit/s chiesto al posto esterno quando non c'è una diretta HomeKit: è la qualità delle anteprime. Durante una diretta il posto esterno usa il bitrate chiesto da HomeKit (da 132 a 299 kbit/s), perché HomeKit blocca il video se riceve di più. La telecamera manda sempre 320x240 |
 
 Con `doorbell_video.enabled` il campanello diventa un videocitofono HomeKit: il video H.264 del citofono viene inoltrato all'iPhone cifrato con SRTP, senza transcodifica né `ffmpeg`. Mentre suona il video viene dalla chiamata in corso, altrimenti dall'ingresso `entrance`. L'audio non è ancora supportato.
 
