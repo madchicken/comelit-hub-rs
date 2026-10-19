@@ -87,10 +87,12 @@ impl ViperClient {
         })
     }
 
-    pub fn sign_up(&mut self, email: &str) -> JSONResult<ActivateUserResponse> {
+    /// Activates a new user of the apartment: each user gets its own token
+    /// and subaddress, i.e. its own identity on the ViP system.
+    pub fn sign_up(&mut self, email: &str, description: &str) -> JSONResult<ActivateUserResponse> {
         let fact_channel = self.channel("FACT");
         self.stream.execute(&fact_channel.open())?;
-        let activate_user = CommandKind::ActivateUser(String::from(email));
+        let activate_user = CommandKind::ActivateUser(email.to_string(), description.to_string());
         let act_bytes = self.stream.execute(&fact_channel.com(activate_user))?;
         let json_response = Self::json(&act_bytes);
 
@@ -277,12 +279,14 @@ impl ViperClient {
     /// [`crate::video::unit`]): registered as a subunit of the apartment so
     /// that rings are reported, with media on demand from the ringing call
     /// or, when nobody rings, from `entrance` (an entrance or door name of
-    /// the address books). Call after [`Self::authorize`].
+    /// the address books), asked with `video`. Call after
+    /// [`Self::authorize`].
     pub fn into_unit(
         mut self,
         vip: &VipConfig,
         entrance: Option<&str>,
         ring_timeout: Duration,
+        video: VideoParams,
     ) -> Result<SpawnedUnit, ViperError> {
         let config = UnitConfig {
             src: Self::own_address(vip)?,
@@ -292,7 +296,8 @@ impl ViperClient {
                 .map(|name| Self::entrance_address(vip, name))
                 .transpose()?,
             ring_timeout,
-            video: VideoParams::default(),
+            video,
+            keep_watching: true,
         };
         self.tick();
         let first_channel = u16::from_le_bytes(self.control);

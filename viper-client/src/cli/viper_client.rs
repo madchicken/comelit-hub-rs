@@ -8,6 +8,13 @@ use viper_client::{ICONA_BRIDGE_PORT, ViperClient, ViperError};
 #[derive(Debug, Subcommand)]
 enum Command {
     Info,
+    /// Activate a new user with its own token and subaddress
+    Activate {
+        #[arg(long)]
+        email: String,
+        #[arg(long, default_value = "viper-client")]
+        description: String,
+    },
     OpenDoor {
         #[arg(long, default_value = None)]
         door_name: String,
@@ -47,6 +54,15 @@ enum Command {
         /// Also record the external unit audio
         #[arg(long)]
         audio: bool,
+        /// Bitrate asked to the external unit, in kbit/s
+        #[arg(long)]
+        bitrate: Option<u32>,
+        /// Resolution asked to the external unit, as WIDTHxHEIGHT
+        #[arg(long)]
+        size: Option<String>,
+        /// Frame rate asked to the external unit
+        #[arg(long)]
+        fps: Option<u8>,
     },
 }
 
@@ -90,7 +106,7 @@ async fn main() -> Result<(), ViperError> {
         if params.token.is_none() {
             println!("Token is not provided, creating a new user");
             let mut client = ViperClient::new(ip.as_str(), port).await;
-            if let Ok(token) = client.sign_up("test@gmail.com") {
+            if let Ok(token) = client.sign_up("test@gmail.com", "viper-client") {
                 params.token = Some(token.user_token.clone());
                 println!("Token is {}", token.user_token);
             } else {
@@ -99,8 +115,17 @@ async fn main() -> Result<(), ViperError> {
             }
         }
 
+        if let Command::Activate { email, description } = &params.command {
+            let mut client = ViperClient::new(ip.as_str(), port).await;
+            let response = client.sign_up(email, description)?;
+            println!("{response:#?}");
+            client.shutdown();
+            return Ok(());
+        }
+
         println!("Connected!");
         match params.command {
+            Command::Activate { .. } => unreachable!(),
             Command::Info => {
                 on_connect(ip.as_str(), port, &params.token.unwrap()).await?;
             }
@@ -155,7 +180,21 @@ async fn main() -> Result<(), ViperError> {
                 output,
                 duration,
                 audio,
+                bitrate,
+                size,
+                fps,
             } => {
+                let mut video = VideoParams::default();
+                if let Some(bitrate) = bitrate {
+                    video.bitrate_kbps = bitrate;
+                }
+                if let Some((width, height)) = size.as_deref().and_then(|s| s.split_once('x')) {
+                    video.width = width.parse().expect("invalid width");
+                    video.height = height.parse().expect("invalid height");
+                }
+                if let Some(fps) = fps {
+                    video.fps = fps;
+                }
                 let mut client = ViperClient::new(ip.as_str(), port).await;
                 client.authorize(params.token.unwrap().as_str())?;
                 let vip_reponse = client.configuration("all")?;
@@ -164,7 +203,7 @@ async fn main() -> Result<(), ViperError> {
                     output: output.into(),
                     duration: Duration::from_secs(duration),
                     audio,
-                    video: VideoParams::default(),
+                    video,
                 };
                 let stop = async {
                     let _ = tokio::signal::ctrl_c().await;

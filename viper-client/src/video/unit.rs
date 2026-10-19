@@ -50,6 +50,13 @@ const ANSWER_TIMEOUT: Duration = Duration::from_secs(10);
 const RELEASE_TIMEOUT: Duration = Duration::from_secs(1);
 /// Retry delay after a registration got no answer.
 const REGISTRATION_RETRY: Duration = Duration::from_secs(30);
+/// Delay before calling the entrance again while media is wanted: right
+/// after a ring the external unit is still busy and refuses the call.
+const WATCH_RETRY: Duration = Duration::from_secs(2);
+/// A call to the entrance that lasted this long was not a refusal.
+const WATCH_HEALTHY: Duration = Duration::from_secs(10);
+/// Consecutive refused calls to the entrance before giving up the media.
+const WATCH_MAX_FAILURES: u32 = 5;
 const EVENT_QUEUE: usize = 32;
 const MEDIA_QUEUE: usize = 1024;
 
@@ -67,6 +74,9 @@ pub struct UnitConfig {
     /// How long we keep our leg of an incoming call.
     pub ring_timeout: Duration,
     pub video: VideoParams,
+    /// Call the entrance again when it ends the call while media is still
+    /// wanted (it ends auto-ignition calls after a while).
+    pub keep_watching: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +115,7 @@ enum Command {
     },
     StopMedia,
     RequestKeyFrame,
+    SetVideoBitrate(u32),
     Shutdown,
 }
 
@@ -168,6 +179,13 @@ impl ViperUnit {
     /// this repeats the video MEDIAREQ.
     pub async fn request_key_frame(&self) -> Result<(), ViperError> {
         self.send(Command::RequestKeyFrame).await
+    }
+
+    /// Changes the video bitrate asked to the external unit. A running
+    /// video follows it right away: the MEDIAREQ is repeated with the new
+    /// value, which also brings a key frame.
+    pub async fn set_video_bitrate(&self, kbps: u32) -> Result<(), ViperError> {
+        self.send(Command::SetVideoBitrate(kbps)).await
     }
 
     /// Releases any call, closes the channels and ends the unit task.
@@ -380,6 +398,9 @@ struct Unit {
     next_registration: Option<Instant>,
     call: Option<Call>,
     media: Option<Media>,
+    /// When to call the entrance again for the media still wanted.
+    next_watch: Option<Instant>,
+    watch_failures: u32,
     /// Packets to send on CTPP for connections we already dropped.
     farewells: Vec<Vec<u8>>,
 }
@@ -411,6 +432,8 @@ impl Unit {
             next_registration: None,
             call: None,
             media: None,
+            next_watch: None,
+            watch_failures: 0,
             farewells: vec![],
         }
     }
@@ -464,6 +487,10 @@ impl Unit {
                     }
                     Some(Command::StopMedia) => self.stop_media(None).await?,
                     Some(Command::RequestKeyFrame) => self.request_key_frame().await?,
+                    Some(Command::SetVideoBitrate(kbps)) => {
+                        self.config.video.bitrate_kbps = kbps;
+                        self.request_key_frame().await?
+                    }
                     Some(Command::Shutdown) | None => return Ok(()),
                 },
             }
@@ -505,6 +532,8 @@ impl Unit {
         if self.media.is_some() {
             self.close_media_channels().await?;
         }
+        self.next_watch = None;
+        self.watch_failures = 0;
         if self.call.is_none() {
             if self.ctpp_open {
                 self.start_watch()?;
@@ -555,6 +584,7 @@ impl Unit {
     /// Stops the media; `reason` set means it stopped by itself and is
     /// reported with [`UnitEvent::MediaEnded`].
     async fn stop_media(&mut self, reason: Option<String>) -> Result<(), ViperError> {
+        self.next_watch = None;
         if self.media.is_none() {
             return Ok(());
         }
@@ -691,9 +721,12 @@ impl Unit {
                 info!("Incoming call ended: {reason}");
                 self.emit(UnitEvent::RingEnded);
                 if self.media.is_some() {
-                    // keep showing the entrance once it stops ringing
+                    // keep showing the entrance once it stops ringing, when
+                    // it accepts calls again
                     self.close_media_channels().await?;
-                    if self.start_watch().is_err() {
+                    if self.config.entrance.is_some() {
+                        self.next_watch = Some(Instant::now() + WATCH_RETRY);
+                    } else {
                         self.stop_media(Some(format!("the call ended: {reason}")))
                             .await?;
                     }
@@ -701,10 +734,34 @@ impl Unit {
             }
             CallKind::Watch => {
                 info!("Call to the entrance ended: {reason}");
-                self.stop_media(Some(format!("the entrance ended the call: {reason}")))
+                let lasted = call.ctp.created.elapsed();
+                self.watch_lost(lasted, &format!("the entrance ended the call: {reason}"))
                     .await?;
             }
         }
+        Ok(())
+    }
+
+    /// A call to the entrance is over: call it again while media is wanted,
+    /// unless it keeps refusing.
+    async fn watch_lost(&mut self, lasted: Duration, reason: &str) -> Result<(), ViperError> {
+        if self.media.is_none() {
+            return Ok(());
+        }
+        if !self.config.keep_watching {
+            return self.stop_media(Some(reason.to_string())).await;
+        }
+        if lasted >= WATCH_HEALTHY {
+            self.watch_failures = 0;
+        } else {
+            self.watch_failures += 1;
+        }
+        if self.watch_failures >= WATCH_MAX_FAILURES {
+            return self.stop_media(Some(reason.to_string())).await;
+        }
+        self.close_media_channels().await?;
+        debug!("Calling the entrance again in {WATCH_RETRY:?} ({reason})");
+        self.next_watch = Some(Instant::now() + WATCH_RETRY);
         Ok(())
     }
 
@@ -1062,8 +1119,8 @@ impl Unit {
                 .releasing
                 .is_some_and(|at| call.ctp.idle() || now.duration_since(at) >= RELEASE_TIMEOUT);
             if unanswered {
-                self.call = None;
-                self.stop_media(Some("the entrance did not answer".into()))
+                let call = self.call.take().expect("checked above");
+                self.watch_lost(call.ctp.created.elapsed(), "the entrance did not answer")
                     .await?;
             } else if ring_over {
                 info!("Ringing time elapsed, releasing our leg of the call");
@@ -1106,6 +1163,16 @@ impl Unit {
 
         if self.media.as_ref().is_some_and(|m| m.sink.is_closed()) {
             self.stop_media(None).await?;
+        }
+        if self.call.is_none()
+            && self.ctpp_open
+            && self.media.is_some()
+            && self.next_watch.is_some_and(|at| now >= at)
+        {
+            self.next_watch = None;
+            if let Err(e) = self.start_watch() {
+                self.stop_media(Some(e.to_string())).await?;
+            }
         }
         self.maybe_request_media(now).await?;
         self.pump_ctp().await
@@ -1207,12 +1274,20 @@ mod tests {
         Close([u8; 2]),
     }
 
-    /// A scripted apartment + external unit. `ring` makes the unit call the
-    /// client; everything the client sends is reported on `seen`.
+    /// What the scripted external unit does on request.
+    enum Act {
+        /// Calls the client.
+        Ring,
+        /// Releases the last call the client started.
+        HangUp,
+    }
+
+    /// A scripted apartment + external unit, acting on `acts`; everything
+    /// the client sends is reported on `seen`.
     async fn fake_hub(
         listener: TcpListener,
         udp: UdpSocket,
-        mut ring: mpsc::Receiver<()>,
+        mut acts: mpsc::Receiver<Act>,
         seen: mpsc::UnboundedSender<Seen>,
     ) {
         let (mut tcp, _) = listener.accept().await.unwrap();
@@ -1222,6 +1297,8 @@ mod tests {
         // device tx per connection, keyed by the id the client uses
         let mut dev_tx: HashMap<[u8; 2], u8> = HashMap::new();
         let mut registrations: Vec<[u8; 2]> = vec![];
+        // the last call the client started, with the addresses it used
+        let mut started: Option<CtpPacket> = None;
 
         loop {
             tokio::select! {
@@ -1241,7 +1318,25 @@ mod tests {
                     }
                     continue;
                 }
-                Some(()) = ring.recv() => {
+                Some(act) = acts.recv() => {
+                    if matches!(act, Act::HangUp) {
+                    let last = started.take().expect("no call to hang up");
+                    let conn = last.conn;
+                    let tx = dev_tx[&conn];
+                    let p = CtpPacket {
+                        flags: FLAG_DATA,
+                        conn: [conn[0] ^ 0x80, conn[1]],
+                        tx,
+                        rx: last.tx.wrapping_add(1),
+                        payload: Csp::release(0),
+                        src: last.dst,
+                        dst: last.src,
+                    };
+                    dev_tx.insert(conn, tx.wrapping_add(1));
+                    tcp.write_all(&Frame::encode(ctpp, &p.encode())).await.unwrap();
+                    tcp.write_all(&Frame::encode(ctpp, &CtpPacket { flags: FLAG_CLOSE, payload: vec![], tx: tx.wrapping_add(1), ..p }.encode())).await.unwrap();
+                    continue;
+                    }
                     let start = Csp::start(&door(), &apartment(), 9, b'P');
                     let p = CtpPacket {
                         flags: FLAG_OPEN | FLAG_DATA,
@@ -1319,6 +1414,7 @@ mod tests {
                     }
                     Csp::Start { .. } => {
                         seen.send(Seen::Start(conn)).unwrap();
+                        started = Some(packet.clone());
                         answers.push(Csp::capab_report(b'P', 0x1b));
                         answers.push(vec![0, kind::CONNECT]);
                     }
@@ -1360,7 +1456,7 @@ mod tests {
         unit: ViperUnit,
         events: mpsc::Receiver<UnitEvent>,
         task: JoinHandle<Result<(), ViperError>>,
-        ring: mpsc::Sender<()>,
+        acts: mpsc::Sender<Act>,
         seen: mpsc::UnboundedReceiver<Seen>,
     }
 
@@ -1369,9 +1465,9 @@ mod tests {
         let hub_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let tcp_addr = listener.local_addr().unwrap();
         let udp_addr = hub_udp.local_addr().unwrap();
-        let (ring, ring_rx) = mpsc::channel(1);
+        let (acts, acts_rx) = mpsc::channel(1);
         let (seen_tx, seen) = mpsc::unbounded_channel();
-        tokio::spawn(fake_hub(listener, hub_udp, ring_rx, seen_tx));
+        tokio::spawn(fake_hub(listener, hub_udp, acts_rx, seen_tx));
 
         let tcp = TcpStream::connect(tcp_addr).await.unwrap();
         let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1381,7 +1477,7 @@ mod tests {
             unit,
             events,
             task,
-            ring,
+            acts,
             seen,
         }
     }
@@ -1394,6 +1490,7 @@ mod tests {
             entrance: entrance.then(door),
             ring_timeout,
             video: VideoParams::default(),
+            keep_watching: false,
         }
     }
 
@@ -1444,7 +1541,7 @@ mod tests {
         assert_eq!(next_seen(&mut h.seen).await, Seen::Register);
         assert_eq!(next_event(&mut h).await, UnitEvent::Registered);
 
-        h.ring.send(()).await.unwrap();
+        h.acts.send(Act::Ring).await.unwrap();
         assert_eq!(
             next_event(&mut h).await,
             UnitEvent::Ringing { caller: door() }
@@ -1478,7 +1575,7 @@ mod tests {
 
         // someone rings: the call to the entrance is dropped, the media
         // moves to the ringing call
-        h.ring.send(()).await.unwrap();
+        h.acts.send(Act::Ring).await.unwrap();
         assert_eq!(next_seen(&mut h.seen).await, Seen::Close(watch));
         assert_eq!(
             next_event(&mut h).await,
@@ -1539,6 +1636,59 @@ mod tests {
 
         h.unit.request_key_frame().await.unwrap();
         assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
+
+        h.unit.shutdown().await.unwrap();
+        h.task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_new_bitrate_repeats_the_video_mediareq() {
+        let mut h = start(config(false, true, Duration::from_secs(60))).await;
+        let mut packets = h.unit.start_media(false).await.unwrap();
+        let Seen::Start(watch) = next_seen(&mut h.seen).await else {
+            panic!("expected a call to the entrance");
+        };
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(watch));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
+        next_packet(&mut packets).await;
+
+        h.unit.set_video_bitrate(299).await.unwrap();
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
+
+        h.unit.shutdown().await.unwrap();
+        h.task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn calls_the_entrance_again_when_it_ends_the_call() {
+        let mut h = start(UnitConfig {
+            keep_watching: true,
+            ..config(false, true, Duration::from_secs(60))
+        })
+        .await;
+        let mut packets = h.unit.start_media(false).await.unwrap();
+        let Seen::Start(first) = next_seen(&mut h.seen).await else {
+            panic!("expected a call to the entrance");
+        };
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(first));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(first));
+        next_packet(&mut packets).await;
+
+        // the entrance hangs up: the media goes on with a new call
+        h.acts.send(Act::HangUp).await.unwrap();
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Close(first));
+        let again = tokio::time::timeout(WATCH_RETRY * 3, h.seen.recv())
+            .await
+            .expect("no new call")
+            .unwrap();
+        let Seen::Start(second) = again else {
+            panic!("expected a new call, got {again:?}");
+        };
+        assert_ne!(second, first);
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(second));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(second));
+        while packets.try_recv().is_ok() {}
+        assert_eq!(next_packet(&mut packets).await.kind, MediaKind::Video);
 
         h.unit.shutdown().await.unwrap();
         h.task.await.unwrap().unwrap();
