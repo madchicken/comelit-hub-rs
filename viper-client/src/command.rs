@@ -14,7 +14,8 @@ pub enum CommandKind {
     UAUT(String),
     UCFG(String),
     RemoveAllUsers(String),
-    ActivateUser(String),
+    /// email, description
+    ActivateUser(String, String),
     INFO,
     FRCG,
     PUSH(PushInfo),
@@ -131,10 +132,10 @@ impl Command {
                 serde_json::to_string(&fact).unwrap()
             }
 
-            CommandKind::ActivateUser(email) => {
+            CommandKind::ActivateUser(email, description) => {
                 let fact = ActivateUser {
                     email,
-                    description: String::from("viper-client"),
+                    description,
                     base: Base::request("activate-user", 1),
                 };
 

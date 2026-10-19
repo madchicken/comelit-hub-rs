@@ -180,6 +180,18 @@ impl ComelitDoorAccessory {
                         );
                         return Ok(());
                     }
+                    {
+                        // hap-rs runs this callback on every read too: while
+                        // the door is moving the read value is already
+                        // "opened", don't send the command again
+                        let state = state.lock().unwrap();
+                        if state.position_state != DoorPositionState::Stopped as u8
+                            || state.current_position == FULLY_OPENED
+                        {
+                            info!("Door {id} is already open or moving, no action taken");
+                            return Ok(());
+                        }
+                    }
                     info!("Door {id} started opening");
                     // Wait for the real outcome of the hub call before
                     // reporting success to HomeKit — safe now that

@@ -83,6 +83,7 @@ pub async fn run(
             entrance: Some(external_unit),
             ring_timeout: Duration::ZERO,
             video: options.video,
+            keep_watching: false,
         },
         CallMode::Listen {
             apartment,
@@ -95,6 +96,7 @@ pub async fn run(
             entrance: None,
             ring_timeout,
             video: options.video,
+            keep_watching: false,
         },
     };
     let (unit, mut events, task) = ViperUnit::spawn(tcp, udp, first_channel, config);
