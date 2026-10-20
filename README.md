@@ -154,7 +154,7 @@ COMELIT_MAX_LOG_FILES=7
 | `doorbell_video.snapshot_max_age_secs` | Per quanti secondi riusare l'anteprima della telecamera. L'app Casa ne chiede una ogni 10 secondi mentre mostra il campanello: la telecamera esterna resta accesa e si spegne poco dopo la chiusura dell'app. Uno squillo ne cattura sempre una nuova |
 | `doorbell_video.video_bitrate_kbps` | Bitrate in kbit/s chiesto al posto esterno quando non c'è una diretta HomeKit: è la qualità delle anteprime. Durante una diretta il posto esterno usa il bitrate chiesto da HomeKit (da 132 a 299 kbit/s), perché HomeKit blocca il video se riceve di più. La telecamera manda sempre 320x240 |
 
-Con `doorbell_video.enabled` il campanello diventa un videocitofono HomeKit: il video H.264 del citofono viene inoltrato all'iPhone cifrato con SRTP, senza transcodifica né `ffmpeg`. Mentre suona il video viene dalla chiamata in corso, altrimenti dall'ingresso `entrance`. L'audio non è ancora supportato.
+Con `doorbell_video.enabled` il campanello diventa un videocitofono HomeKit: il video H.264 del citofono viene inoltrato all'iPhone cifrato con SRTP, senza transcodifica né `ffmpeg`. Mentre suona il video viene dalla chiamata in corso, altrimenti dall'ingresso `entrance`. L'audio del citofono (G.711 A-law a 8 kHz) viene convertito in AAC-ELD a 16 kHz, il formato che chiedono gli hub Casa, o in Opus se l'iPhone lo chiede direttamente; parlare al citofono non è ancora supportato. libfdk-aac e libopus sono compilate nel binario: la compilazione richiede `cmake`, e per un Mac con una versione di macOS più vecchia di quella di sviluppo va indicata con `MACOSX_DEPLOYMENT_TARGET` (per esempio `MACOSX_DEPLOYMENT_TARGET=15.0`).
 
 ---
 

@@ -1,5 +1,6 @@
 mod accessories;
 mod bridge;
+mod doorbell_audio;
 mod doorbell_camera;
 mod logging;
 mod settings;

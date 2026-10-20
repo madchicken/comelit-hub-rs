@@ -235,9 +235,10 @@ impl StatusUpdate for Updater {
 }
 
 /// Version of the video doorbell services layout, stored in the bell's
-/// `camera` marker: bump it whenever the services change so that the
-/// configuration number moves and iOS re-reads the accessory.
-const CAMERA_LAYOUT: &str = "2";
+/// `camera` marker: bump it whenever the services or the supported stream
+/// configurations change so that the configuration number moves and iOS
+/// re-reads the accessory.
+const CAMERA_LAYOUT: &str = "4";
 
 /// Records in `bell_dir` whether the doorbell has a camera, and with which
 /// layout, and tells whether that changed since the last start.

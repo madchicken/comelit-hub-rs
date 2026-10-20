@@ -5,7 +5,7 @@
 //! the iOS device with the payload type, SSRC and sequence numbers HomeKit
 //! negotiated, encrypted with SRTP (AES_CM_128_HMAC_SHA1_80). An RTCP sender
 //! report is sent every second on the same port (rtcp-mux), as HomeKit
-//! expects. Audio is not forwarded yet.
+//! expects. The audio is encoded to Opus (`crate::doorbell_audio`).
 //!
 //! Snapshots are decoded from the same video: the first complete frame with
 //! an IDR is decoded with OpenH264 and encoded as JPEG. Capturing one while
@@ -39,6 +39,7 @@ use viper_client::video::{MediaKind, MediaPacket};
 use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
+use crate::doorbell_audio::{AudioSender, CODEC_AAC_ELD, CODEC_OPUS};
 use crate::viper::UnitSlot;
 
 /// Shown when no snapshot could be captured yet.
@@ -92,6 +93,8 @@ pub enum CameraError {
     Srtp(String),
     #[error("snapshot: {0}")]
     Snapshot(String),
+    #[error("audio: {0}")]
+    Audio(String),
 }
 
 /// Shares the external unit video among its consumers (HomeKit streams,
@@ -127,7 +130,7 @@ impl VideoFeed {
             .clone()
             .ok_or(CameraError::NotConnected)?;
         let mut packets = unit
-            .start_media(false)
+            .start_media(true)
             .await
             .map_err(|e| CameraError::Viper(e.to_string()))?;
         let (tx, rx) = broadcast::channel(FEED_QUEUE);
@@ -415,12 +418,15 @@ impl VideoFeed {
     }
 }
 
-/// [`MediaProvider`] streaming the ViP video to HomeKit.
+/// Video and audio tasks of each HomeKit stream.
+type StreamTasks = HashMap<(Uuid, usize), Vec<JoinHandle<()>>>;
+
+/// [`MediaProvider`] streaming the ViP video and audio to HomeKit.
 pub struct ViperMediaProvider {
     address: IpAddr,
     options: StreamOptions,
     feed: Arc<VideoFeed>,
-    streams: Mutex<HashMap<(Uuid, usize), JoinHandle<()>>>,
+    streams: Mutex<StreamTasks>,
     /// Bitrate asked to the external unit when no HomeKit stream runs
     /// (snapshots).
     idle_kbps: u32,
@@ -450,11 +456,12 @@ fn stream_options() -> StreamOptions {
             ],
             "codec": { "profiles": [0, 1, 2], "levels": [0, 1, 2] }
         }),
-        // HomeKit requires an audio configuration even if no audio is sent
+        // the external unit audio is encoded to AAC-ELD or Opus
         audio: json!({
             "codecs": [
+                { "type": "AAC-eld", "samplerate": 16 },
                 { "type": "OPUS", "samplerate": 24 },
-                { "type": "AAC-eld", "samplerate": 16 }
+                { "type": "OPUS", "samplerate": 16 }
             ]
         }),
         srtp: true,
@@ -500,18 +507,44 @@ impl MediaProvider for ViperMediaProvider {
         socket.connect(target).await?;
         let mut sender = RtpSender::new(session, payload_type)?;
         let feed = self.feed.clone();
-        let task = tokio::spawn(async move {
+        let mut tasks = vec![tokio::spawn(async move {
             if let Err(e) = sender.forward(packets, socket, feed).await {
                 warn!("Doorbell video stream stopped: {e}");
             }
-        });
+        })];
+        match stream.audio.as_ref() {
+            Some(audio) if matches!(audio.codec.first(), Some(&(CODEC_OPUS | CODEC_AAC_ELD))) => {
+                let codec = if audio.codec.first() == Some(&CODEC_OPUS) {
+                    "Opus"
+                } else {
+                    "AAC-ELD"
+                };
+                info!(
+                    "HomeKit asks the doorbell audio ({codec} {} kHz, {} ms, {} kbit/s)",
+                    audio.sample_rate, audio.packet_time, audio.max_bitrate
+                );
+                let mut sender = AudioSender::new(session, audio)?;
+                let packets = self.feed.subscribe().await?;
+                let socket = bind_rtp_socket(session.audio_port).await?;
+                socket
+                    .connect(SocketAddr::new(session.address, session.audio_port))
+                    .await?;
+                tasks.push(tokio::spawn(async move {
+                    if let Err(e) = sender.forward(packets, socket).await {
+                        warn!("Doorbell audio stream stopped: {e}");
+                    }
+                }));
+            }
+            Some(audio) => warn!("Doorbell audio codec {:?} not supported", audio.codec),
+            None => {}
+        }
         if let Some(previous) = self
             .streams
             .lock()
             .await
-            .insert((session.session_id, idx), task)
+            .insert((session.session_id, idx), tasks)
         {
-            previous.abort();
+            previous.iter().for_each(JoinHandle::abort);
         }
         Ok(())
     }
@@ -536,10 +569,10 @@ impl MediaProvider for ViperMediaProvider {
     async fn stop(&self, idx: usize, session: &SessionState) -> Result<(), CameraError> {
         info!("HomeKit stopped the doorbell video");
         let mut streams = self.streams.lock().await;
-        let task = streams
+        let tasks = streams
             .remove(&(session.session_id, idx))
             .ok_or(CameraError::UnknownStream(idx))?;
-        task.abort();
+        tasks.iter().for_each(JoinHandle::abort);
         if streams.is_empty() {
             // back to the snapshot quality
             self.feed.set_bitrate(self.idle_kbps).await;
@@ -787,7 +820,7 @@ impl RtpSender {
 }
 
 /// RTCP sender report (RFC 3550 §6.4.1) without reception blocks.
-fn sender_report(ssrc: u32, rtp_timestamp: u32, packets: u32, octets: u32) -> Vec<u8> {
+pub(crate) fn sender_report(ssrc: u32, rtp_timestamp: u32, packets: u32, octets: u32) -> Vec<u8> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
