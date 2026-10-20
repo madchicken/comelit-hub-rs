@@ -39,6 +39,8 @@ uuid = { version = "1.16.0", features = ["v4"] }
 qrcode = "0.14.1"
 webrtc-srtp = "0.17.2"
 openh264 = "0.9.9"
+opus-codec = "0.2"
+fdk-aac-sys = "0.5"
 image = { version = "0.25.10", default-features = false, features = ["jpeg"] }
 
 [dev-dependencies]
