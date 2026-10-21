@@ -616,8 +616,9 @@ struct StreamStats {
     send_errors: u32,
     key_frame_requests: u32,
     nacks: u32,
-    /// Last receiver report: fraction lost (/256), cumulative lost, jitter.
-    report: Option<(u8, u32, u32)>,
+    /// Last receiver report: fraction lost (/256), cumulative lost (signed,
+    /// duplicates count as negative), jitter.
+    report: Option<(u8, i32, u32)>,
 }
 
 impl RtpSender {
@@ -771,7 +772,8 @@ impl RtpSender {
                     let blocks = if kind == RTCP_SR { 24 } else { 4 };
                     if count > 0 && body.len() >= blocks + 24 {
                         let b = &body[blocks..blocks + 24];
-                        let lost = u32::from_be_bytes([0, b[5], b[6], b[7]]);
+                        // a signed 24 bit value
+                        let lost = i32::from_be_bytes([b[5], b[6], b[7], 0]) >> 8;
                         let jitter = u32::from_be_bytes([b[12], b[13], b[14], b[15]]);
                         self.stats.report = Some((b[4], lost, jitter));
                     }

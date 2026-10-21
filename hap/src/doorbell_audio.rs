@@ -5,8 +5,8 @@
 //! for AAC-ELD whatever is offered. The samples are decoded and encoded:
 //!
 //! - AAC-ELD with libfdk-aac at 16 kHz (the samples are upsampled), frames
-//!   of 480 samples (30 ms), RTP as RFC 3640 with one AU header per packet,
-//!   clock of 16 kHz;
+//!   of 480 samples (30 ms), RTP as RFC 3640 with one access unit per 30 ms
+//!   of the packet time HomeKit asks for (30 or 60 ms), clock of 16 kHz;
 //! - Opus with libopus, which takes 8 kHz input as it is, frames of the
 //!   packet time HomeKit asks for, RTP clock of 48 kHz (RFC 7587).
 //!
@@ -46,8 +46,13 @@ const MAX_PACKET: usize = 1500;
 const AAC_RATE: u32 = 16_000;
 /// AAC-ELD frame length at 16 kHz (30 ms).
 const AAC_FRAME: usize = 480;
+const AAC_FRAME_MS: u8 = 30;
+/// Most access units in an RTP packet (120 ms).
+const MAX_AAC_FRAMES: usize = 4;
 const DEFAULT_AAC_KBPS: u16 = 24;
 const RTCP_INTERVAL: Duration = Duration::from_secs(1);
+/// Sender reports between two log lines of the audio statistics.
+const STATS_REPORTS: u32 = 5;
 
 /// Encodes frames of 8 kHz samples into RTP payloads.
 trait FrameEncoder: Send {
@@ -115,6 +120,10 @@ struct AacEld {
     handle: fdk::HANDLE_AACENCODER,
     /// Last input sample, for the upsampling.
     previous: i16,
+    /// Access units per RTP packet, for the packet time HomeKit asks.
+    frames: usize,
+    /// Access units not sent yet.
+    pending: Vec<Vec<u8>>,
 }
 
 // the handle is only used through `&mut self`
@@ -143,6 +152,8 @@ impl AacEld {
             let encoder = AacEld {
                 handle,
                 previous: 0,
+                frames: usize::from(audio.packet_time / AAC_FRAME_MS).clamp(1, MAX_AAC_FRAMES),
+                pending: Vec::new(),
             };
             for (what, param, value) in [
                 (
@@ -203,16 +214,34 @@ impl Drop for AacEld {
 
 impl FrameEncoder for AacEld {
     fn frame_samples(&self) -> usize {
-        AAC_FRAME / 2
+        AAC_FRAME / 2 * self.frames
     }
 
     fn timestamp_step(&self) -> u32 {
-        AAC_FRAME as u32
+        (AAC_FRAME * self.frames) as u32
     }
 
     fn encode(&mut self, frame: &[i16]) -> Result<Option<Vec<u8>>, CameraError> {
-        use std::ffi::{c_int, c_void};
         let input = self.upsample(frame);
+        for granule in input.chunks(AAC_FRAME) {
+            if let Some(access_unit) = self.encode_granule(granule)? {
+                self.pending.push(access_unit);
+            }
+        }
+        if self.pending.len() < self.frames {
+            // the encoder delay
+            return Ok(None);
+        }
+        let access_units: Vec<Vec<u8>> = self.pending.drain(..self.frames).collect();
+        Ok(Some(au_packet(&access_units)))
+    }
+}
+
+impl AacEld {
+    /// One access unit of 480 samples at 16 kHz, if the encoder produced
+    /// one.
+    fn encode_granule(&mut self, input: &[i16]) -> Result<Option<Vec<u8>>, CameraError> {
+        use std::ffi::{c_int, c_void};
         let mut output = [0u8; MAX_PACKET];
         let mut in_buf = input.as_ptr() as *mut c_void;
         let mut in_id = fdk::AACENC_BufferIdentifier_IN_AUDIO_DATA as c_int;
@@ -255,17 +284,23 @@ impl FrameEncoder for AacEld {
         if len == 0 {
             return Ok(None);
         }
-        Ok(Some(au_packet(&output[..len])))
+        Ok(Some(output[..len].to_vec()))
     }
 }
 
-/// RFC 3640 (mpeg4-generic, AAC-hbr) payload of one access unit: the AU
-/// headers length (16 bits), then a 13 bit size and a 3 bit index.
-fn au_packet(access_unit: &[u8]) -> Vec<u8> {
-    let size = access_unit.len() as u16;
-    let mut payload = vec![0x00, 0x10];
-    payload.extend_from_slice(&(size << 3).to_be_bytes());
-    payload.extend_from_slice(access_unit);
+/// RFC 3640 (mpeg4-generic, AAC-hbr) payload of consecutive access units:
+/// the AU headers length in bits (16), one AU header per access unit (a 13
+/// bit size and a 3 bit index or index delta, always 0), then the access
+/// units.
+fn au_packet(access_units: &[Vec<u8>]) -> Vec<u8> {
+    let headers_bits = (access_units.len() * 16) as u16;
+    let mut payload = headers_bits.to_be_bytes().to_vec();
+    for access_unit in access_units {
+        payload.extend_from_slice(&((access_unit.len() as u16) << 3).to_be_bytes());
+    }
+    for access_unit in access_units {
+        payload.extend_from_slice(access_unit);
+    }
     payload
 }
 
@@ -380,6 +415,7 @@ impl AudioSender {
         socket: UdpSocket,
     ) -> Result<(), CameraError> {
         let mut report = tokio::time::interval(RTCP_INTERVAL);
+        let mut reports = 0u32;
         let mut buf = vec![0u8; 2048];
         loop {
             tokio::select! {
@@ -403,6 +439,13 @@ impl AudioSender {
                 // the RTCP of the HomeKit device: nothing to do with it yet
                 _ = socket.recv(&mut buf) => {}
                 _ = report.tick() => {
+                    reports += 1;
+                    if reports.is_multiple_of(STATS_REPORTS) {
+                        info!(
+                            "Doorbell audio: {} packets, {} bytes sent in total",
+                            self.packets, self.octets
+                        );
+                    }
                     if self.packets == 0 {
                         continue;
                     }
@@ -568,6 +611,37 @@ mod tests {
         assert_eq!(&payload[..2], &[0x00, 0x10]);
         let size = u16::from_be_bytes([payload[2], payload[3]]) >> 3;
         assert_eq!(usize::from(size), payload.len() - 4);
+    }
+
+    #[test]
+    fn packs_two_aac_eld_access_units_in_60_ms() {
+        let session = session();
+        let audio = StreamAudio {
+            codec: vec![CODEC_AAC_ELD],
+            packet_time: 60,
+            sample_rate: 16,
+            ..stream_audio(60)
+        };
+        let mut sender = AudioSender::new(&session, &audio).unwrap();
+        let mut sent = vec![];
+        for seq in 0..30 {
+            sent.extend(sender.push(&pcma_packet(seq)).unwrap());
+        }
+        // 600 ms of audio in 60 ms packets, less the encoder delay
+        assert!((7..=10).contains(&sent.len()), "{} packets", sent.len());
+
+        let rtp = decrypt(&session, &sent);
+        let first = RtpPacket::parse(&rtp[0]).unwrap();
+        let second = RtpPacket::parse(&rtp[1]).unwrap();
+        // 960 samples at the 16 kHz clock
+        assert_eq!(second.timestamp.wrapping_sub(first.timestamp), 960);
+        // two AU headers, then the two access units
+        let payload = second.payload;
+        assert_eq!(&payload[..2], &[0x00, 0x20]);
+        let first_size = usize::from(u16::from_be_bytes([payload[2], payload[3]]) >> 3);
+        let second_size = usize::from(u16::from_be_bytes([payload[4], payload[5]]) >> 3);
+        assert!(first_size > 0 && second_size > 0);
+        assert_eq!(first_size + second_size, payload.len() - 6);
     }
 
     #[test]
