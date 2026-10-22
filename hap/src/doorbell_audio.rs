@@ -29,7 +29,7 @@ use viper_client::video::{MediaKind, MediaPacket};
 use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
-use crate::doorbell_camera::{CameraError, sender_report};
+use crate::doorbell_camera::{CameraError, StreamSummary, sender_report};
 
 /// HAP audio codec types.
 pub const CODEC_AAC_ELD: u8 = 2;
@@ -413,6 +413,7 @@ impl AudioSender {
         &mut self,
         mut packets: broadcast::Receiver<Arc<MediaPacket>>,
         socket: UdpSocket,
+        summary: &StreamSummary,
     ) -> Result<(), CameraError> {
         let mut report = tokio::time::interval(RTCP_INTERVAL);
         let mut reports = 0u32;
@@ -422,8 +423,9 @@ impl AudioSender {
                 packet = packets.recv() => match packet {
                     Ok(packet) if packet.kind == MediaKind::Audio => {
                         for encrypted in self.push(&packet.rtp)? {
-                            if let Err(e) = socket.send(&encrypted).await {
-                                debug!("Cannot send audio RTP: {e}");
+                            match socket.send(&encrypted).await {
+                                Ok(_) => summary.audio_sent(),
+                                Err(e) => debug!("Cannot send audio RTP: {e}"),
                             }
                         }
                     }
