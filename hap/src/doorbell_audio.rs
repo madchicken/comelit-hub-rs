@@ -15,7 +15,6 @@
 //! video.
 
 use std::sync::Arc;
-use std::time::Duration;
 
 use fdk_aac_sys as fdk;
 use hap::accessory::camera::manager::SessionState;
@@ -29,7 +28,7 @@ use viper_client::video::{MediaKind, MediaPacket};
 use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
-use crate::doorbell_camera::{CameraError, StreamSummary, sender_report};
+use crate::doorbell_camera::{CameraError, RTCP_INTERVAL, StreamSummary, sender_report};
 
 /// HAP audio codec types.
 pub const CODEC_AAC_ELD: u8 = 2;
@@ -50,9 +49,8 @@ const AAC_FRAME_MS: u8 = 30;
 /// Most access units in an RTP packet (120 ms).
 const MAX_AAC_FRAMES: usize = 4;
 const DEFAULT_AAC_KBPS: u16 = 24;
-const RTCP_INTERVAL: Duration = Duration::from_secs(1);
-/// Sender reports between two log lines of the audio statistics.
-const STATS_REPORTS: u32 = 5;
+/// Sender report ticks between two log lines of the audio statistics (5 s).
+const STATS_REPORTS: u32 = 10;
 
 /// Encodes frames of 8 kHz samples into RTP payloads.
 trait FrameEncoder: Send {
@@ -422,11 +420,19 @@ impl AudioSender {
             tokio::select! {
                 packet = packets.recv() => match packet {
                     Ok(packet) if packet.kind == MediaKind::Audio => {
+                        let first = self.packets == 0;
                         for encrypted in self.push(&packet.rtp)? {
                             match socket.send(&encrypted).await {
                                 Ok(_) => summary.audio_sent(),
                                 Err(e) => debug!("Cannot send audio RTP: {e}"),
                             }
+                        }
+                        if first && self.packets > 0 {
+                            // the first report right away, as for the video
+                            if let Err(e) = socket.send(&self.report()?).await {
+                                debug!("Cannot send audio RTCP: {e}");
+                            }
+                            report.reset();
                         }
                     }
                     Ok(_) => {}
