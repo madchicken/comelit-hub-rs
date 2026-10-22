@@ -1796,7 +1796,7 @@ dependencies = [
 [[package]]
 name = "hap"
 version = "0.1.0-pre.16"
-source = "git+https://github.com/madchicken/hap-rs?branch=patch#815fd827af7e2abecfe06a9a1f188b805d619003"
+source = "git+https://github.com/madchicken/hap-rs?branch=video-doorbell-optional-speaker#b0c315d42ce08cb556199f226eba5a639a2c1a9a"
 dependencies = [
  "aead",
  "async-trait",

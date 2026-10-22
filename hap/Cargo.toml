@@ -16,7 +16,7 @@ futures = "0.3.27"
 futures-util = "0.3.31"
 comelit-client-rs = { path = "../client" }
 viper-client = { path = "../viper-client" }
-hap = { git = "https://github.com/madchicken/hap-rs" , branch = "patch" }
+hap = { git = "https://github.com/madchicken/hap-rs" , branch = "video-doorbell-optional-speaker" }
 #hap = { path = "../../hap-rs" }
 mac_address = "1.1.8"
 metrics = "0.24"

@@ -238,8 +238,9 @@ impl StatusUpdate for Updater {
 /// `camera` marker: bump it whenever the services or the supported stream
 /// configurations change so that the configuration number moves and iOS
 /// re-reads the accessory.
-// "5" announced only 320x240 for a while: "6" brings the usual sizes back
-const CAMERA_LAYOUT: &str = "6";
+// "5" announced only 320x240 for a while, "6" brought the usual sizes back,
+// "7" has no speaker
+const CAMERA_LAYOUT: &str = "7";
 
 /// Records in `bell_dir` whether the doorbell has a camera, and with which
 /// layout, and tells whether that changed since the last start.
