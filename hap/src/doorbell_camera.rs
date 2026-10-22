@@ -551,12 +551,14 @@ impl MediaProvider for ViperMediaProvider {
             "HomeKit asks the doorbell video ({:?}, {:?}) for {target}",
             stream.video_attributes, stream.video_rtp
         );
-        let packets = self.feed.subscribe().await?;
-        // iOS cannot decode anything before a key frame
-        match max_bitrate(&stream) {
-            Some(kbps) => self.feed.set_bitrate(kbps).await,
-            None => self.feed.request_key_frame().await,
+        // the bitrate first: a running video is at the snapshot bitrate,
+        // a burst a remote HomeKit stream does not survive. The packets go
+        // out from the key frame the new MEDIAREQ brings (iOS cannot decode
+        // anything before one anyway)
+        if let Some(kbps) = max_bitrate(&stream) {
+            self.feed.set_bitrate(kbps).await;
         }
+        let packets = self.feed.subscribe().await?;
         let socket = bind_rtp_socket(session.video_port).await?;
         socket.connect(target).await?;
         let mut sender = RtpSender::new(session, payload_type)?;
@@ -663,6 +665,8 @@ struct RtpSender {
     packets: u32,
     octets: u32,
     stats: StreamStats,
+    /// Nothing goes out before the first key frame.
+    key_frame_seen: bool,
 }
 
 /// What happened since the stats were last logged.
@@ -709,6 +713,7 @@ impl RtpSender {
             packets: 0,
             octets: 0,
             stats: StreamStats::default(),
+            key_frame_seen: false,
         })
     }
 
@@ -727,6 +732,12 @@ impl RtpSender {
             tokio::select! {
                 packet = packets.recv() => match packet {
                     Ok(packet) if packet.kind == MediaKind::Video => {
+                        if !self.key_frame_seen {
+                            if !starts_key_frame(&packet.rtp) {
+                                continue;
+                            }
+                            self.key_frame_seen = true;
+                        }
                         let Some(rtp) = self.rewrite(&packet.rtp) else {
                             continue;
                         };
@@ -883,6 +894,26 @@ impl RtpSender {
     }
 }
 
+/// Whether an H.264 RTP packet (RFC 6184) starts a key frame: an SPS or an
+/// IDR slice, alone, first in a STAP-A or in the first FU-A fragment.
+fn starts_key_frame(rtp: &[u8]) -> bool {
+    const STAP_A: u8 = 24;
+    const FU_A: u8 = 28;
+    let Some(packet) = RtpPacket::parse(rtp) else {
+        return false;
+    };
+    let payload = packet.payload;
+    let key = |nal_type: u8| nal_type == NAL_SPS || nal_type == NAL_IDR;
+    match payload.first().map(|h| h & 0x1f) {
+        Some(STAP_A) => payload.get(3).is_some_and(|h| key(h & 0x1f)),
+        Some(FU_A) => payload
+            .get(1)
+            .is_some_and(|h| h & 0x80 != 0 && key(h & 0x1f)),
+        Some(nal_type) => key(nal_type),
+        None => false,
+    }
+}
+
 /// RTCP sender report (RFC 3550 §6.4.1) without reception blocks.
 pub(crate) fn sender_report(ssrc: u32, rtp_timestamp: u32, packets: u32, octets: u32) -> Vec<u8> {
     let now = SystemTime::now()
@@ -931,6 +962,27 @@ mod tests {
         rtp.extend_from_slice(&0xc080_9a0du32.to_be_bytes());
         rtp.extend_from_slice(&[0x65, 1, 2, 3]);
         rtp
+    }
+
+    #[test]
+    fn finds_the_start_of_key_frames() {
+        let with_payload = |payload: &[u8]| {
+            let mut rtp = device_packet(1, false);
+            rtp.truncate(12);
+            rtp.extend_from_slice(payload);
+            rtp
+        };
+        // single NAL units: IDR, SPS, then a P slice
+        assert!(starts_key_frame(&with_payload(&[0x65, 1])));
+        assert!(starts_key_frame(&with_payload(&[0x67, 1])));
+        assert!(!starts_key_frame(&with_payload(&[0x41, 1])));
+        // STAP-A carrying SPS first
+        assert!(starts_key_frame(&with_payload(&[0x78, 0, 2, 0x67, 1])));
+        // FU-A of an IDR: the first fragment only
+        assert!(starts_key_frame(&with_payload(&[0x7c, 0x85, 1])));
+        assert!(!starts_key_frame(&with_payload(&[0x7c, 0x05, 1])));
+        assert!(!starts_key_frame(&with_payload(&[0x7c, 0x81, 1])));
+        assert!(!starts_key_frame(&[0x80]));
     }
 
     #[test]
