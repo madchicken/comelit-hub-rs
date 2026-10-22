@@ -15,8 +15,8 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Weak};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, OnceLock, Weak};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -419,7 +419,61 @@ impl VideoFeed {
 }
 
 /// Video and audio tasks of each HomeKit stream.
-type StreamTasks = HashMap<(Uuid, usize), Vec<JoinHandle<()>>>;
+type StreamTasks = HashMap<(Uuid, usize), (Vec<JoinHandle<()>>, Arc<StreamSummary>)>;
+
+/// What a HomeKit stream got, logged when HomeKit stops it: the periodic
+/// statistics miss the streams stopped within seconds.
+pub(crate) struct StreamSummary {
+    started: Instant,
+    first_video: OnceLock<Instant>,
+    first_rtcp: OnceLock<Instant>,
+    video_packets: AtomicU32,
+    audio_packets: AtomicU32,
+    rtcp_packets: AtomicU32,
+}
+
+impl StreamSummary {
+    fn new() -> StreamSummary {
+        StreamSummary {
+            started: Instant::now(),
+            first_video: OnceLock::new(),
+            first_rtcp: OnceLock::new(),
+            video_packets: AtomicU32::new(0),
+            audio_packets: AtomicU32::new(0),
+            rtcp_packets: AtomicU32::new(0),
+        }
+    }
+
+    fn video_sent(&self) {
+        self.first_video.get_or_init(Instant::now);
+        self.video_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn audio_sent(&self) {
+        self.audio_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn rtcp_received(&self) {
+        self.first_rtcp.get_or_init(Instant::now);
+        self.rtcp_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    fn describe(&self) -> String {
+        let after = |at: &OnceLock<Instant>| match at.get() {
+            Some(at) => format!("after {} ms", at.duration_since(self.started).as_millis()),
+            None => "never".to_string(),
+        };
+        format!(
+            "lasted {} ms, {} video packets (first {}), {} audio packets, {} RTCP packets from HomeKit (first {})",
+            self.started.elapsed().as_millis(),
+            self.video_packets.load(Ordering::Relaxed),
+            after(&self.first_video),
+            self.audio_packets.load(Ordering::Relaxed),
+            self.rtcp_packets.load(Ordering::Relaxed),
+            after(&self.first_rtcp),
+        )
+    }
+}
 
 /// [`MediaProvider`] streaming the ViP video and audio to HomeKit.
 pub struct ViperMediaProvider {
@@ -507,8 +561,10 @@ impl MediaProvider for ViperMediaProvider {
         socket.connect(target).await?;
         let mut sender = RtpSender::new(session, payload_type)?;
         let feed = self.feed.clone();
+        let summary = Arc::new(StreamSummary::new());
+        let video_summary = summary.clone();
         let mut tasks = vec![tokio::spawn(async move {
-            if let Err(e) = sender.forward(packets, socket, feed).await {
+            if let Err(e) = sender.forward(packets, socket, feed, &video_summary).await {
                 warn!("Doorbell video stream stopped: {e}");
             }
         })];
@@ -529,8 +585,9 @@ impl MediaProvider for ViperMediaProvider {
                 socket
                     .connect(SocketAddr::new(session.address, session.audio_port))
                     .await?;
+                let audio_summary = summary.clone();
                 tasks.push(tokio::spawn(async move {
-                    if let Err(e) = sender.forward(packets, socket).await {
+                    if let Err(e) = sender.forward(packets, socket, &audio_summary).await {
                         warn!("Doorbell audio stream stopped: {e}");
                     }
                 }));
@@ -542,9 +599,9 @@ impl MediaProvider for ViperMediaProvider {
             .streams
             .lock()
             .await
-            .insert((session.session_id, idx), tasks)
+            .insert((session.session_id, idx), (tasks, summary))
         {
-            previous.iter().for_each(JoinHandle::abort);
+            previous.0.iter().for_each(JoinHandle::abort);
         }
         Ok(())
     }
@@ -567,12 +624,12 @@ impl MediaProvider for ViperMediaProvider {
     }
 
     async fn stop(&self, idx: usize, session: &SessionState) -> Result<(), CameraError> {
-        info!("HomeKit stopped the doorbell video");
         let mut streams = self.streams.lock().await;
-        let tasks = streams
+        let (tasks, summary) = streams
             .remove(&(session.session_id, idx))
             .ok_or(CameraError::UnknownStream(idx))?;
         tasks.iter().for_each(JoinHandle::abort);
+        info!("HomeKit stopped the doorbell video: {}", summary.describe());
         if streams.is_empty() {
             // back to the snapshot quality
             self.feed.set_bitrate(self.idle_kbps).await;
@@ -660,6 +717,7 @@ impl RtpSender {
         mut packets: broadcast::Receiver<Arc<MediaPacket>>,
         socket: UdpSocket,
         feed: Arc<VideoFeed>,
+        summary: &StreamSummary,
     ) -> Result<(), CameraError> {
         let mut report = tokio::time::interval(RTCP_INTERVAL);
         let mut stats = tokio::time::interval(STATS_INTERVAL);
@@ -678,9 +736,12 @@ impl RtpSender {
                             .map_err(|e| CameraError::Srtp(e.to_string()))?;
                         // ICMP errors from a port closed for a moment must
                         // not end the stream: HomeKit stops it when it wants
-                        if let Err(e) = socket.send(&encrypted).await {
-                            self.stats.send_errors += 1;
-                            debug!("Cannot send RTP: {e}");
+                        match socket.send(&encrypted).await {
+                            Ok(_) => summary.video_sent(),
+                            Err(e) => {
+                                self.stats.send_errors += 1;
+                                debug!("Cannot send RTP: {e}");
+                            }
                         }
                     }
                     Ok(_) => {}
@@ -694,6 +755,7 @@ impl RtpSender {
                 },
                 received = socket.recv(&mut buf) => {
                     let Ok(n) = received else { continue };
+                    summary.rtcp_received();
                     if self.on_rtcp(&buf[..n]) {
                         self.stats.key_frame_requests += 1;
                         let now = Instant::now();
