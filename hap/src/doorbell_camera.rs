@@ -60,7 +60,10 @@ const SNAPSHOT_FRAMES: usize = 3;
 const SNAPSHOT_WARM: Duration = Duration::from_secs(30);
 
 const FEED_QUEUE: usize = 512;
-const RTCP_INTERVAL: Duration = Duration::from_secs(1);
+/// Sender reports as often as HomeKit asks for them (rtcp_interval 0.5),
+/// the first one right after the first packet: a home hub relaying a remote
+/// stream stopped it within a second, before any report.
+pub(crate) const RTCP_INTERVAL: Duration = Duration::from_millis(500);
 /// How often the stream statistics are logged.
 const STATS_INTERVAL: Duration = Duration::from_secs(5);
 /// Minimum delay between two key frames asked for HomeKit (PLI/FIR).
@@ -748,6 +751,11 @@ impl RtpSender {
                         // ICMP errors from a port closed for a moment must
                         // not end the stream: HomeKit stops it when it wants
                         match socket.send(&encrypted).await {
+                            Ok(_) if self.packets == 1 => {
+                                summary.video_sent();
+                                self.send_report(&socket).await?;
+                                report.reset();
+                            }
                             Ok(_) => summary.video_sent(),
                             Err(e) => {
                                 self.stats.send_errors += 1;
@@ -780,18 +788,23 @@ impl RtpSender {
                     if self.packets == 0 {
                         continue;
                     }
-                    let sr = sender_report(self.ssrc, self.last_timestamp, self.packets, self.octets);
-                    let encrypted = self
-                        .srtp
-                        .encrypt_rtcp(&sr)
-                        .map_err(|e| CameraError::Srtp(e.to_string()))?;
-                    if let Err(e) = socket.send(&encrypted).await {
-                        debug!("Cannot send RTCP: {e}");
-                    }
+                    self.send_report(&socket).await?;
                 }
                 _ = stats.tick() => self.log_stats(),
             }
         }
+    }
+
+    async fn send_report(&mut self, socket: &UdpSocket) -> Result<(), CameraError> {
+        let sr = sender_report(self.ssrc, self.last_timestamp, self.packets, self.octets);
+        let encrypted = self
+            .srtp
+            .encrypt_rtcp(&sr)
+            .map_err(|e| CameraError::Srtp(e.to_string()))?;
+        if let Err(e) = socket.send(&encrypted).await {
+            debug!("Cannot send RTCP: {e}");
+        }
+        Ok(())
     }
 
     fn log_stats(&mut self) {
