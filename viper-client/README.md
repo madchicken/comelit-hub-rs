@@ -111,8 +111,12 @@ C→S  CTP RELEASE, CTRL close channels
 * it keeps CTPP and UDPM open and registers as a subunit of the apartment,
   renewing the registration at 90% of its lifetime (10 min);
 * `UnitEvent::Ringing` / `UnitEvent::RingEnded` report incoming calls; our leg
-  is answered with CAPAB_REPORT + ALERTING (never CONNECT) and released after
-  the ring timeout;
+  is answered with CAPAB_REPORT + ALERTING and released after the ring
+  timeout;
+* `answer` takes the ringing call like the app (`CallFsm::st_in_alerting` on
+  event 0x1000): audio MEDIAREQ, CONNECT (`00 0c`), video MEDIAREQ. The
+  external unit sends its audio only on an answered call, and the other units
+  stop ringing. `hang_up` releases it; an answered call has no ring timeout;
 * `start_media` returns the RTP packets of the external unit: from the ringing
   call, or by calling the configured entrance when nobody rings. If someone
   rings while the entrance is being watched, the media moves to the incoming

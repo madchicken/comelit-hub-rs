@@ -259,6 +259,11 @@ impl Csp {
         vec![0x00, kind::ALERTING, 0x00]
     }
 
+    /// Answers a call (`csp_send_connect`).
+    pub fn connect() -> Vec<u8> {
+        vec![0x00, kind::CONNECT]
+    }
+
     /// REGISTER_REQ (17 bytes), sent by a subunit (`Subunit::su_go_registering`)
     /// to the apartment main address so that calls to the apartment are
     /// forwarded to it for `ttl_secs`.

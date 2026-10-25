@@ -419,6 +419,26 @@ impl VideoFeed {
             debug!("Cannot request a key frame: {e}");
         }
     }
+
+    /// Answers the ringing call, if someone rings: the external unit only
+    /// sends its audio on an answered call.
+    async fn answer(&self) {
+        let unit = self.slot.read().await.clone();
+        if let Some(unit) = unit
+            && let Err(e) = unit.answer().await
+        {
+            debug!("Cannot answer the call: {e}");
+        }
+    }
+
+    async fn hang_up(&self) {
+        let unit = self.slot.read().await.clone();
+        if let Some(unit) = unit
+            && let Err(e) = unit.hang_up().await
+        {
+            debug!("Cannot hang up the call: {e}");
+        }
+    }
 }
 
 /// Video and audio tasks of each HomeKit stream.
@@ -562,6 +582,10 @@ impl MediaProvider for ViperMediaProvider {
             self.feed.set_bitrate(kbps).await;
         }
         let packets = self.feed.subscribe().await?;
+        // a live view opened while someone rings (the notification) takes
+        // the call, or the external unit keeps its audio for itself.
+        // Snapshots do not get here
+        self.feed.answer().await;
         let socket = bind_rtp_socket(session.video_port).await?;
         socket.connect(target).await?;
         let mut sender = RtpSender::new(session, payload_type)?;
@@ -636,6 +660,7 @@ impl MediaProvider for ViperMediaProvider {
         tasks.iter().for_each(JoinHandle::abort);
         info!("HomeKit stopped the doorbell video: {}", summary.describe());
         if streams.is_empty() {
+            self.feed.hang_up().await;
             // back to the snapshot quality
             self.feed.set_bitrate(self.idle_kbps).await;
         }

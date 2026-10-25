@@ -6,8 +6,10 @@
 //!   (REGISTER_REQ to the apartment main address) and renews the
 //!   registration before it expires, so calls to the apartment reach it;
 //! * an incoming call (someone ringing) is answered with CAPAB_REPORT +
-//!   ALERTING, never CONNECT, so every other unit keeps ringing; our leg is
-//!   released after `ring_timeout`, like the app's `call_wait_time`;
+//!   ALERTING, so every other unit keeps ringing; our leg is released after
+//!   `ring_timeout`, like the app's `call_wait_time`. [`ViperUnit::answer`]
+//!   takes the call with CONNECT: the external unit only sends its audio
+//!   then, and the other units stop ringing;
 //! * media is started on demand: on the ringing call if there is one,
 //!   otherwise by calling the configured entrance (auto-ignition). RTP
 //!   packets are handed to the caller as they arrive.
@@ -114,6 +116,8 @@ enum Command {
         reply: oneshot::Sender<Result<(), ViperError>>,
     },
     StopMedia,
+    Answer,
+    HangUp,
     RequestKeyFrame,
     SetVideoBitrate(u32),
     Shutdown,
@@ -171,6 +175,17 @@ impl ViperUnit {
     /// call keeps ringing.
     pub async fn stop_media(&self) -> Result<(), ViperError> {
         self.send(Command::StopMedia).await
+    }
+
+    /// Answers the ringing call, if there is one: the external unit sends
+    /// its audio only on an answered call. The other units stop ringing.
+    pub async fn answer(&self) -> Result<(), ViperError> {
+        self.send(Command::Answer).await
+    }
+
+    /// Ends the call we answered; a call still ringing keeps ringing.
+    pub async fn hang_up(&self) -> Result<(), ViperError> {
+        self.send(Command::HangUp).await
     }
 
     /// Asks the external unit for a key frame (SPS, PPS and IDR): it only
@@ -363,6 +378,8 @@ struct Call {
     kind: CallKind,
     peer_caps: Option<Instant>,
     peer_ready: bool,
+    /// An incoming call we took with CONNECT.
+    answered: bool,
     /// RELEASE queued: close the connection once it is acknowledged.
     releasing: Option<Instant>,
 }
@@ -486,6 +503,8 @@ impl Unit {
                         let _ = reply.send(result);
                     }
                     Some(Command::StopMedia) => self.stop_media(None).await?,
+                    Some(Command::Answer) => self.answer().await?,
+                    Some(Command::HangUp) => self.hang_up(),
                     Some(Command::RequestKeyFrame) => self.request_key_frame().await?,
                     Some(Command::SetVideoBitrate(kbps)) => {
                         self.config.video.bitrate_kbps = kbps;
@@ -576,6 +595,7 @@ impl Unit {
             kind: CallKind::Watch,
             peer_caps: None,
             peer_ready: false,
+            answered: false,
             releasing: None,
         });
         Ok(())
@@ -597,7 +617,7 @@ impl Unit {
         if self
             .call
             .as_ref()
-            .is_some_and(|c| c.kind == CallKind::Watch)
+            .is_some_and(|c| c.kind == CallKind::Watch || c.answered)
         {
             self.release_call();
         }
@@ -632,6 +652,47 @@ impl Unit {
             .queue
             .push_back(Csp::video_request(id, &self.config.video));
         self.pump_ctp().await
+    }
+
+    /// Takes the ringing call like `CallFsm::st_in_alerting` on 0x1000: the
+    /// audio MEDIAREQ again, CONNECT, then the video MEDIAREQ again
+    /// (`go_connected` updates the video). Channels not opened yet get
+    /// their MEDIAREQ when the device confirms them.
+    async fn answer(&mut self) -> Result<(), ViperError> {
+        let opened = |kind| {
+            self.media.as_ref().and_then(|m| {
+                m.channels
+                    .iter()
+                    .find(|c| c.kind == kind && c.opened)
+                    .map(|c| c.id)
+            })
+        };
+        let (audio, video) = (opened(MediaKind::Audio), opened(MediaKind::Video));
+        let Some(call) = self.call.as_mut().filter(|c| {
+            matches!(c.kind, CallKind::Incoming { .. }) && !c.answered && c.releasing.is_none()
+        }) else {
+            debug!("Nobody is ringing, nothing to answer");
+            return Ok(());
+        };
+        info!("Answering the incoming call");
+        call.answered = true;
+        if let Some(id) = audio {
+            call.ctp.queue.push_back(Csp::media_request(MEDIA_AUDIO, id));
+        }
+        call.ctp.queue.push_back(Csp::connect());
+        if let Some(id) = video {
+            call.ctp
+                .queue
+                .push_back(Csp::video_request(id, &self.config.video));
+        }
+        self.pump_ctp().await
+    }
+
+    fn hang_up(&mut self) {
+        if self.call.as_ref().is_some_and(|c| c.answered) {
+            info!("Hanging up the call we answered");
+            self.release_call();
+        }
     }
 
     /// Opens the RTPC channels once the call can carry media; the MEDIAREQ
@@ -824,6 +885,7 @@ impl Unit {
             },
             peer_caps: None,
             peer_ready: true,
+            answered: false,
             releasing: None,
         });
         self.emit(UnitEvent::Ringing { caller: src });
@@ -1113,7 +1175,9 @@ impl Unit {
             let unanswered = call.kind == CallKind::Watch
                 && !call.ctp.peer_seen
                 && now.duration_since(call.ctp.created) > ANSWER_TIMEOUT;
+            // an answered call lasts until we hang up or the device ends it
             let ring_over = matches!(call.kind, CallKind::Incoming { deadline } if now >= deadline)
+                && !call.answered
                 && call.releasing.is_none();
             let released = call
                 .releasing
@@ -1130,8 +1194,12 @@ impl Unit {
                 self.send_ctp(call.ctp.packet(FLAG_CLOSE, vec![])).await?;
                 if matches!(call.kind, CallKind::Incoming { .. }) {
                     self.emit(UnitEvent::RingEnded);
-                    self.stop_media(Some("the ringing time elapsed".into()))
-                        .await?;
+                    let reason = if call.answered {
+                        "we hung up"
+                    } else {
+                        "the ringing time elapsed"
+                    };
+                    self.stop_media(Some(reason.into())).await?;
                 }
             }
         }
@@ -1269,6 +1337,7 @@ mod tests {
         Start([u8; 2]),
         Capab([u8; 2]),
         Alerting([u8; 2]),
+        Connect([u8; 2]),
         MediaReq([u8; 2]),
         Release([u8; 2]),
         Close([u8; 2]),
@@ -1436,6 +1505,7 @@ mod tests {
                                 .unwrap();
                         }
                     }
+                    Csp::Connect => seen.send(Seen::Connect(conn)).unwrap(),
                     Csp::Release { .. } => seen.send(Seen::Release(conn)).unwrap(),
                     _ => {}
                 }
@@ -1598,6 +1668,48 @@ mod tests {
         h.task.await.unwrap().unwrap();
         assert_eq!(next_seen(&mut h.seen).await, Seen::Release(ours));
         assert_eq!(next_seen(&mut h.seen).await, Seen::Close(ours));
+    }
+
+    #[tokio::test]
+    async fn answers_the_ringing_call_until_we_hang_up() {
+        let mut h = start(config(true, false, Duration::from_millis(500))).await;
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Register);
+        assert_eq!(next_event(&mut h).await, UnitEvent::Registered);
+
+        h.acts.send(Act::Ring).await.unwrap();
+        assert_eq!(
+            next_event(&mut h).await,
+            UnitEvent::Ringing { caller: door() }
+        );
+        let mut packets = h.unit.start_media(false).await.unwrap();
+        let ours = [CALL_CONN[0] ^ 0x80, CALL_CONN[1]];
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(ours));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Alerting(ours));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(ours));
+        next_packet(&mut packets).await;
+
+        // CONNECT, then the video asked again
+        h.unit.answer().await.unwrap();
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Connect(ours));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(ours));
+
+        // an answered call outlives the ringing time
+        tokio::time::sleep(Duration::from_millis(800)).await;
+        assert!(h.seen.try_recv().is_err());
+
+        h.unit.hang_up().await.unwrap();
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Release(ours));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Close(ours));
+        assert_eq!(next_event(&mut h).await, UnitEvent::RingEnded);
+        assert_eq!(
+            next_event(&mut h).await,
+            UnitEvent::MediaEnded {
+                reason: "we hung up".into()
+            }
+        );
+
+        h.unit.shutdown().await.unwrap();
+        h.task.await.unwrap().unwrap();
     }
 
     #[tokio::test]
