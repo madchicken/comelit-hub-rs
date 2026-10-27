@@ -131,6 +131,7 @@ pub mod kind {
     pub const RELEASE: u8 = 0x0e;
     pub const MEDIAREQ: u8 = 0x11;
     pub const MEDIAOFFER: u8 = 0x12;
+    pub const VOICESTATUS: u8 = 0x70;
     pub const REGISTER_REQ: u8 = 0x40;
     pub const REGISTER_RES: u8 = 0x41;
 }
@@ -139,6 +140,8 @@ pub mod kind {
 pub const MEDIA_AUDIO: u8 = 0x18;
 /// MEDIAREQ action asking the peer to stream its video to us.
 pub const MEDIA_VIDEO: u8 = 0x14;
+/// Bit of a MEDIAREQ action stopping that stream (`0x98` stops the audio).
+pub const MEDIA_STOP: u8 = 0x80;
 /// Capability bit announcing that a unit can send video.
 pub const CAPAB_VIDEO: u32 = 0x08;
 
@@ -257,6 +260,15 @@ impl Csp {
 
     pub fn alerting() -> Vec<u8> {
         vec![0x00, kind::ALERTING, 0x00]
+    }
+
+    /// Turns our voice on or off (`csp_send_voicestatus`, sent by
+    /// `CallFsm::start_fonica` when the app answers).
+    pub fn voice_status(address: &LogAddr, on: bool) -> Vec<u8> {
+        let mut out = vec![0x00, kind::VOICESTATUS];
+        out.extend_from_slice(&address.0);
+        out.extend_from_slice(&[u8::from(on), 0x00]);
+        out
     }
 
     /// Answers a call (`csp_send_connect`).
@@ -457,6 +469,16 @@ mod tests {
                 unit_type: b'P',
             })
         );
+    }
+
+    #[test]
+    fn voice_status_layout() {
+        let on = Csp::voice_status(&me(), true);
+        assert_eq!(on.len(), 14);
+        assert_eq!(&on[..2], &[0x00, 0x70]);
+        assert_eq!(&on[2..12], &me().0);
+        assert_eq!(&on[12..], &[0x01, 0x00]);
+        assert_eq!(Csp::voice_status(&me(), false)[12], 0);
     }
 
     #[test]

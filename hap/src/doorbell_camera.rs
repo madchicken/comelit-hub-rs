@@ -35,11 +35,12 @@ use tokio::time::Instant;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 use viper_client::video::media::{H264Depacketizer, RtpPacket};
-use viper_client::video::{MediaKind, MediaPacket};
+use viper_client::video::{MediaKind, MediaPacket, ViperUnit};
 use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
 use crate::doorbell_audio::{AudioSender, CODEC_AAC_ELD, CODEC_OPUS};
+use crate::doorbell_voice::VoiceReceiver;
 use crate::viper::UnitSlot;
 
 /// Shown when no snapshot could be captured yet.
@@ -73,10 +74,10 @@ const KEY_FRAME_MIN_INTERVAL: Duration = Duration::from_secs(1);
 const MAX_TIMESTAMP_JUMP: u32 = 90_000 * 5;
 /// Outgoing timestamp step used across such a jump (one frame at 30 fps).
 const TIMESTAMP_STEP: u32 = 3_000;
-const RTCP_SR: u8 = 200;
+pub(crate) const RTCP_SR: u8 = 200;
 const RTCP_RR: u8 = 201;
 const RTCP_RTPFB: u8 = 205;
-const RTCP_PSFB: u8 = 206;
+pub(crate) const RTCP_PSFB: u8 = 206;
 const PSFB_PLI: u8 = 1;
 const PSFB_FIR: u8 = 4;
 /// H.264 RTP payload type used when HomeKit does not say.
@@ -431,6 +432,10 @@ impl VideoFeed {
         }
     }
 
+    async fn unit(&self) -> Option<ViperUnit> {
+        self.slot.read().await.clone()
+    }
+
     async fn hang_up(&self) {
         let unit = self.slot.read().await.clone();
         if let Some(unit) = unit
@@ -453,6 +458,8 @@ pub(crate) struct StreamSummary {
     video_packets: AtomicU32,
     audio_packets: AtomicU32,
     rtcp_packets: AtomicU32,
+    /// Audio packets of the HomeKit device (our voice).
+    voice_packets: AtomicU32,
 }
 
 impl StreamSummary {
@@ -464,6 +471,7 @@ impl StreamSummary {
             video_packets: AtomicU32::new(0),
             audio_packets: AtomicU32::new(0),
             rtcp_packets: AtomicU32::new(0),
+            voice_packets: AtomicU32::new(0),
         }
     }
 
@@ -474,6 +482,10 @@ impl StreamSummary {
 
     pub(crate) fn audio_sent(&self) {
         self.audio_packets.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn voice_received(&self) {
+        self.voice_packets.fetch_add(1, Ordering::Relaxed);
     }
 
     fn rtcp_received(&self) {
@@ -487,13 +499,14 @@ impl StreamSummary {
             None => "never".to_string(),
         };
         format!(
-            "lasted {} ms, {} video packets (first {}), {} audio packets, {} RTCP packets from HomeKit (first {})",
+            "lasted {} ms, {} video packets (first {}), {} audio packets, {} RTCP packets from HomeKit (first {}), {} voice packets from HomeKit",
             self.started.elapsed().as_millis(),
             self.video_packets.load(Ordering::Relaxed),
             after(&self.first_video),
             self.audio_packets.load(Ordering::Relaxed),
             self.rtcp_packets.load(Ordering::Relaxed),
             after(&self.first_rtcp),
+            self.voice_packets.load(Ordering::Relaxed),
         )
     }
 }
@@ -609,6 +622,14 @@ impl MediaProvider for ViperMediaProvider {
                     audio.sample_rate, audio.packet_time, audio.max_bitrate
                 );
                 let mut sender = AudioSender::new(session, audio)?;
+                // the Home app microphone, to the external unit
+                let voice = match VoiceReceiver::new(session, audio, self.feed.unit().await) {
+                    Ok(voice) => Some(voice),
+                    Err(e) => {
+                        warn!("Our voice will not reach the doorbell: {e}");
+                        None
+                    }
+                };
                 let packets = self.feed.subscribe().await?;
                 let socket = bind_rtp_socket(session.audio_port).await?;
                 socket
@@ -616,7 +637,7 @@ impl MediaProvider for ViperMediaProvider {
                     .await?;
                 let audio_summary = summary.clone();
                 tasks.push(tokio::spawn(async move {
-                    if let Err(e) = sender.forward(packets, socket, &audio_summary).await {
+                    if let Err(e) = sender.forward(packets, socket, &audio_summary, voice).await {
                         warn!("Doorbell audio stream stopped: {e}");
                     }
                 }));

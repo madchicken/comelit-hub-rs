@@ -124,10 +124,9 @@ impl ComelitDoorbellAccessory {
                 server.add_accessory(doorbell_accessory).await?
             }
             Some(provider) => {
-                // one way audio only: with a speaker the Home app tries the
-                // two way audio and restarts remote streams again and again
-                let mut doorbell_accessory =
-                    VideoDoorbellAccessory::new(id, 1, information)?.without_speaker();
+                // the speaker brings the Home app microphone
+                // (crate::doorbell_voice)
+                let mut doorbell_accessory = VideoDoorbellAccessory::new(id, 1, information)?;
                 configure_doorbell(&mut doorbell_accessory.doorbell, &name).await?;
                 StreamManagerBuilder::new(doorbell_accessory, provider)
                     .build(server)

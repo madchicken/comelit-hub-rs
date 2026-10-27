@@ -2,6 +2,7 @@ mod accessories;
 mod bridge;
 mod doorbell_audio;
 mod doorbell_camera;
+mod doorbell_voice;
 mod logging;
 mod settings;
 mod viper;

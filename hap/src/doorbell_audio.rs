@@ -29,6 +29,7 @@ use webrtc_srtp::context::Context;
 use webrtc_srtp::protection_profile::ProtectionProfile;
 
 use crate::doorbell_camera::{CameraError, RTCP_INTERVAL, StreamSummary, sender_report};
+use crate::doorbell_voice::{VoiceReceiver, with_report_block};
 
 /// HAP audio codec types.
 pub const CODEC_AAC_ELD: u8 = 2;
@@ -189,6 +190,19 @@ impl AacEld {
         }
     }
 
+    /// The AudioSpecificConfig of the stream, for a decoder.
+    fn config(&self) -> Result<Vec<u8>, CameraError> {
+        // SAFETY: aacEncInfo fills the struct of an initialized encoder
+        unsafe {
+            let mut info: fdk::AACENC_InfoStruct = std::mem::zeroed();
+            let result = fdk::aacEncInfo(self.handle, &mut info);
+            if result != fdk::AACENC_ERROR_AACENC_OK {
+                return Err(CameraError::Audio(format!("AAC-ELD info: error {result}")));
+            }
+            Ok(info.confBuf[..info.confSize as usize].to_vec())
+        }
+    }
+
     /// 8 kHz to 16 kHz by linear interpolation.
     fn upsample(&mut self, frame: &[i16]) -> Vec<i16> {
         let mut out = Vec::with_capacity(frame.len() * 2);
@@ -284,6 +298,12 @@ impl AacEld {
         }
         Ok(Some(output[..len].to_vec()))
     }
+}
+
+/// The AudioSpecificConfig of the AAC-ELD stream HomeKit asked for: the
+/// HomeKit device sends its audio with the same parameters.
+pub(crate) fn aac_eld_config(audio: &StreamAudio) -> Result<Vec<u8>, CameraError> {
+    AacEld::new(audio)?.config()
 }
 
 /// RFC 3640 (mpeg4-generic, AAC-hbr) payload of consecutive access units:
@@ -396,8 +416,12 @@ impl AudioSender {
         rtp
     }
 
-    fn report(&mut self) -> Result<Vec<u8>, CameraError> {
-        let sr = sender_report(self.ssrc, self.timestamp, self.packets, self.octets);
+    fn report(&mut self, voice: Option<&mut VoiceReceiver>) -> Result<Vec<u8>, CameraError> {
+        let mut sr = sender_report(self.ssrc, self.timestamp, self.packets, self.octets);
+        // what we receive of the HomeKit device audio
+        if let Some(block) = voice.and_then(VoiceReceiver::report_block) {
+            sr = with_report_block(sr, &block);
+        }
         Ok(self
             .srtp
             .encrypt_rtcp(&sr)
@@ -406,12 +430,14 @@ impl AudioSender {
     }
 
     /// Sends the audio of `packets` until the feed ends or the task is
-    /// aborted.
+    /// aborted; the audio of the HomeKit device on the same socket goes to
+    /// `voice`.
     pub async fn forward(
         &mut self,
         mut packets: broadcast::Receiver<Arc<MediaPacket>>,
         socket: UdpSocket,
         summary: &StreamSummary,
+        mut voice: Option<VoiceReceiver>,
     ) -> Result<(), CameraError> {
         let mut report = tokio::time::interval(RTCP_INTERVAL);
         let mut reports = 0u32;
@@ -429,7 +455,7 @@ impl AudioSender {
                         }
                         if first && self.packets > 0 {
                             // the first report right away, as for the video
-                            if let Err(e) = socket.send(&self.report()?).await {
+                            if let Err(e) = socket.send(&self.report(voice.as_mut())?).await {
                                 debug!("Cannot send audio RTCP: {e}");
                             }
                             report.reset();
@@ -444,8 +470,14 @@ impl AudioSender {
                         return Ok(());
                     }
                 },
-                // the RTCP of the HomeKit device: nothing to do with it yet
-                _ = socket.recv(&mut buf) => {}
+                // our voice, and the RTCP of the HomeKit device
+                received = socket.recv(&mut buf) => {
+                    if let (Ok(n), Some(voice)) = (received, voice.as_mut())
+                        && voice.receive(&buf[..n])
+                    {
+                        summary.voice_received();
+                    }
+                }
                 _ = report.tick() => {
                     reports += 1;
                     if reports.is_multiple_of(STATS_REPORTS) {
@@ -457,7 +489,7 @@ impl AudioSender {
                     if self.packets == 0 {
                         continue;
                     }
-                    if let Err(e) = socket.send(&self.report()?).await {
+                    if let Err(e) = socket.send(&self.report(voice.as_mut())?).await {
                         debug!("Cannot send audio RTCP: {e}");
                     }
                 }
@@ -467,7 +499,7 @@ impl AudioSender {
 }
 
 /// G.711 A-law sample to 16 bit linear PCM.
-fn alaw_to_linear(byte: u8) -> i16 {
+pub(crate) fn alaw_to_linear(byte: u8) -> i16 {
     let a = byte ^ 0x55;
     let segment = (a & 0x70) >> 4;
     let mut value = i16::from(a & 0x0f) << 4;
@@ -480,13 +512,13 @@ fn alaw_to_linear(byte: u8) -> i16 {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use hap::accessory::camera::protocol::SetupEndpointCrypto;
     use std::net::{IpAddr, Ipv4Addr};
     use uuid::Uuid;
 
-    fn session() -> SessionState {
+    pub(crate) fn session() -> SessionState {
         let crypto = SetupEndpointCrypto {
             cypto_suite: 0,
             master_key: vec![3; 16],
@@ -504,7 +536,7 @@ mod tests {
         }
     }
 
-    fn stream_audio(packet_time: u8) -> StreamAudio {
+    pub(crate) fn stream_audio(packet_time: u8) -> StreamAudio {
         StreamAudio {
             codec: vec![CODEC_OPUS],
             comfort_noise: vec![0],
@@ -521,7 +553,7 @@ mod tests {
     }
 
     /// A PCMA packet of the external unit: 20 ms of a 440 Hz tone.
-    fn pcma_packet(seq: u16) -> Vec<u8> {
+    pub(crate) fn pcma_packet(seq: u16) -> Vec<u8> {
         let mut rtp = vec![0x80, PT_PCMA];
         rtp.extend_from_slice(&seq.to_be_bytes());
         rtp.extend_from_slice(&(u32::from(seq) * 160).to_be_bytes());

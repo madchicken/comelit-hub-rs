@@ -10,6 +10,9 @@
 //!   `ring_timeout`, like the app's `call_wait_time`. [`ViperUnit::answer`]
 //!   takes the call with CONNECT: the external unit only sends its audio
 //!   then, and the other units stop ringing;
+//! * our voice ([`ViperUnit::send_voice`], PCMA at 8 kHz) goes to the
+//!   channel the external unit asks it on with its own audio MEDIAREQ, as
+//!   RTP like `Rtp::rtp_tx_write` (payload type 8);
 //! * media is started on demand: on the ringing call if there is one,
 //!   otherwise by calling the configured entrance (auto-ignition). RTP
 //!   packets are handed to the caller as they arrive.
@@ -32,7 +35,7 @@ use tracing::{debug, info, warn};
 
 use super::ctp::{
     APP_CAPABILITIES, CAPAB_VIDEO, Csp, CtpPacket, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, LogAddr,
-    MEDIA_AUDIO, UNIT_INTERNAL, VideoParams,
+    MEDIA_AUDIO, MEDIA_STOP, UNIT_INTERNAL, VideoParams,
 };
 use super::tunnel::{CONTROL_CHANNEL, Control, Frame, Transport, UdpmPing};
 use crate::ViperError;
@@ -61,6 +64,10 @@ const WATCH_HEALTHY: Duration = Duration::from_secs(10);
 const WATCH_MAX_FAILURES: u32 = 5;
 const EVENT_QUEUE: usize = 32;
 const MEDIA_QUEUE: usize = 1024;
+/// Voice packets waiting to be sent (a second of 20 ms packets).
+const VOICE_QUEUE: usize = 50;
+/// Payload type of our voice: PCMA, as the app sends it.
+const PT_PCMA: u8 = 8;
 
 #[derive(Debug, Clone)]
 pub struct UnitConfig {
@@ -135,6 +142,7 @@ pub type SpawnedUnit = (
 #[derive(Clone)]
 pub struct ViperUnit {
     commands: mpsc::Sender<Command>,
+    voice: mpsc::Sender<Vec<u8>>,
 }
 
 impl ViperUnit {
@@ -147,10 +155,11 @@ impl ViperUnit {
         config: UnitConfig,
     ) -> SpawnedUnit {
         let (commands, command_rx) = mpsc::channel(8);
+        let (voice, voice_rx) = mpsc::channel(VOICE_QUEUE);
         let (event_tx, events) = mpsc::channel(EVENT_QUEUE);
         let unit = Unit::new(tcp, udp, first_channel, config, event_tx);
-        let task = tokio::spawn(unit.run(command_rx));
-        (ViperUnit { commands }, events, task)
+        let task = tokio::spawn(unit.run(command_rx, voice_rx));
+        (ViperUnit { commands, voice }, events, task)
     }
 
     /// Requests the external unit video (and audio): on the ringing call if
@@ -186,6 +195,14 @@ impl ViperUnit {
     /// Ends the call we answered; a call still ringing keeps ringing.
     pub async fn hang_up(&self) -> Result<(), ViperError> {
         self.send(Command::HangUp).await
+    }
+
+    /// Sends our voice, PCMA samples at 8 kHz, to the external unit: dropped
+    /// unless it asked for our audio, or when the unit falls behind.
+    pub fn send_voice(&self, pcma: Vec<u8>) {
+        if let Err(mpsc::error::TrySendError::Full(_)) = self.voice.try_send(pcma) {
+            debug!("Voice packet dropped, the video unit is busy");
+        }
     }
 
     /// Asks the external unit for a key frame (SPS, PPS and IDR): it only
@@ -380,6 +397,8 @@ struct Call {
     peer_ready: bool,
     /// An incoming call we took with CONNECT.
     answered: bool,
+    /// The channel the device asked our audio on.
+    voice_channel: Option<u16>,
     /// RELEASE queued: close the connection once it is acknowledged.
     releasing: Option<Instant>,
 }
@@ -420,6 +439,15 @@ struct Unit {
     watch_failures: u32,
     /// Packets to send on CTPP for connections we already dropped.
     farewells: Vec<Vec<u8>>,
+    voice: VoiceRtp,
+}
+
+/// RTP of our voice.
+struct VoiceRtp {
+    ssrc: u32,
+    sequence: u16,
+    timestamp: u32,
+    packets: u64,
 }
 
 impl Unit {
@@ -452,16 +480,30 @@ impl Unit {
             next_watch: None,
             watch_failures: 0,
             farewells: vec![],
+            voice: VoiceRtp {
+                ssrc: rand::rng().random(),
+                sequence: rand::rng().random(),
+                timestamp: rand::rng().random(),
+                packets: 0,
+            },
         }
     }
 
-    async fn run(mut self, mut commands: mpsc::Receiver<Command>) -> Result<(), ViperError> {
-        let result = self.drive(&mut commands).await;
+    async fn run(
+        mut self,
+        mut commands: mpsc::Receiver<Command>,
+        mut voice: mpsc::Receiver<Vec<u8>>,
+    ) -> Result<(), ViperError> {
+        let result = self.drive(&mut commands, &mut voice).await;
         self.teardown().await;
         result
     }
 
-    async fn drive(&mut self, commands: &mut mpsc::Receiver<Command>) -> Result<(), ViperError> {
+    async fn drive(
+        &mut self,
+        commands: &mut mpsc::Receiver<Command>,
+        voice: &mut mpsc::Receiver<Vec<u8>>,
+    ) -> Result<(), ViperError> {
         let mut tick = interval(TICK);
         tick.set_missed_tick_behavior(MissedTickBehavior::Delay);
         let mut ubuf = vec![0u8; 65536];
@@ -497,6 +539,7 @@ impl Unit {
                     }
                 }
                 _ = tick.tick() => self.on_tick().await?,
+                Some(pcma) = voice.recv() => self.send_voice(&pcma).await?,
                 command = commands.recv() => match command {
                     Some(Command::StartMedia { audio, sink, reply }) => {
                         let result = self.start_media(audio, sink).await;
@@ -596,6 +639,7 @@ impl Unit {
             peer_caps: None,
             peer_ready: false,
             answered: false,
+            voice_channel: None,
             releasing: None,
         });
         Ok(())
@@ -676,6 +720,10 @@ impl Unit {
         };
         info!("Answering the incoming call");
         call.answered = true;
+        // CallFsm::start_fonica: our voice on
+        call.ctp
+            .queue
+            .push_back(Csp::voice_status(&self.config.src, true));
         if let Some(id) = audio {
             call.ctp.queue.push_back(Csp::media_request(MEDIA_AUDIO, id));
         }
@@ -686,6 +734,42 @@ impl Unit {
                 .push_back(Csp::video_request(id, &self.config.video));
         }
         self.pump_ctp().await
+    }
+
+    /// Our voice to the channel the device asked it on, over the UDP lane
+    /// when it is open (like the RTPC it sends us).
+    async fn send_voice(&mut self, pcma: &[u8]) -> Result<(), ViperError> {
+        let Some(channel) = self
+            .call
+            .as_ref()
+            .filter(|c| c.releasing.is_none())
+            .and_then(|c| c.voice_channel)
+        else {
+            return Ok(());
+        };
+        let voice = &mut self.voice;
+        let mut rtp = Vec::with_capacity(12 + pcma.len());
+        rtp.extend_from_slice(&[0x80, PT_PCMA]);
+        rtp.extend_from_slice(&voice.sequence.to_be_bytes());
+        rtp.extend_from_slice(&voice.timestamp.to_be_bytes());
+        rtp.extend_from_slice(&voice.ssrc.to_be_bytes());
+        rtp.extend_from_slice(pcma);
+        voice.sequence = voice.sequence.wrapping_add(1);
+        // one byte per sample
+        voice.timestamp = voice.timestamp.wrapping_add(pcma.len() as u32);
+        voice.packets += 1;
+        if voice.packets == 1 {
+            info!("Sending our voice on channel 0x{channel:04x}");
+        }
+        let frame = Frame::encode(channel, &rtp);
+        if self.lane_open {
+            if let Err(e) = self.udp.send(&frame).await {
+                debug!("Cannot send our voice: {e}");
+            }
+            Ok(())
+        } else {
+            self.send(&frame).await
+        }
     }
 
     fn hang_up(&mut self) {
@@ -844,6 +928,15 @@ impl Unit {
             }
             Some(Csp::Alerting) | Some(Csp::Connect) => call.peer_ready = true,
             Some(Csp::Release { cause }) => return Some(format!("released (cause {cause})")),
+            Some(Csp::MediaReq { action, channel }) if action & !MEDIA_STOP == MEDIA_AUDIO => {
+                if action & MEDIA_STOP == 0 {
+                    info!("The device asks our audio on channel 0x{channel:04x}");
+                    call.voice_channel = Some(channel);
+                } else {
+                    info!("The device stops our audio");
+                    call.voice_channel = None;
+                }
+            }
             Some(Csp::MediaReq { action, channel }) => debug!(
                 "Device asks for our media 0x{action:02x} on channel 0x{channel:04x}, ignored"
             ),
@@ -886,6 +979,7 @@ impl Unit {
             peer_caps: None,
             peer_ready: true,
             answered: false,
+            voice_channel: None,
             releasing: None,
         });
         self.emit(UnitEvent::Ringing { caller: src });
@@ -1319,6 +1413,7 @@ mod tests {
 
     const TOKEN: [u8; 2] = [0x6b, 0x12];
     const CALL_CONN: [u8; 2] = [0x12, 0x34];
+    const VOICE_CHANNEL: u16 = 0xef9e;
 
     fn me() -> LogAddr {
         LogAddr::new("COMHUB012").unwrap()
@@ -1338,6 +1433,8 @@ mod tests {
         Capab([u8; 2]),
         Alerting([u8; 2]),
         Connect([u8; 2]),
+        /// RTP of our voice: channel, payload type, payload length.
+        Voice(u16, u8, usize),
         MediaReq([u8; 2]),
         Release([u8; 2]),
         Close([u8; 2]),
@@ -1380,6 +1477,11 @@ mod tests {
                     let (n, from) = r.unwrap();
                     client_udp = Some(from);
                     let (frame, _) = Frame::decode(&ubuf[..n]).unwrap();
+                    if frame.channel != udpm {
+                        let rtp = &frame.body;
+                        seen.send(Seen::Voice(frame.channel, rtp[1] & 0x7f, rtp.len() - 12)).unwrap();
+                        continue;
+                    }
                     let ping = UdpmPing::parse(&frame.body).unwrap();
                     if !ping.is_reply {
                         let reply = UdpmPing { is_reply: true, lane_open: true, ..ping };
@@ -1505,7 +1607,11 @@ mod tests {
                                 .unwrap();
                         }
                     }
-                    Csp::Connect => seen.send(Seen::Connect(conn)).unwrap(),
+                    Csp::Connect => {
+                        seen.send(Seen::Connect(conn)).unwrap();
+                        // the external unit asks our audio once answered
+                        answers.push(Csp::media_request(MEDIA_AUDIO, VOICE_CHANNEL));
+                    }
                     Csp::Release { .. } => seen.send(Seen::Release(conn)).unwrap(),
                     _ => {}
                 }
@@ -1692,6 +1798,14 @@ mod tests {
         h.unit.answer().await.unwrap();
         assert_eq!(next_seen(&mut h.seen).await, Seen::Connect(ours));
         assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(ours));
+
+        // our voice goes where the external unit asked it
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        h.unit.send_voice(vec![0xd5; 160]);
+        assert_eq!(
+            next_seen(&mut h.seen).await,
+            Seen::Voice(VOICE_CHANNEL, PT_PCMA, 160)
+        );
 
         // an answered call outlives the ringing time
         tokio::time::sleep(Duration::from_millis(800)).await;

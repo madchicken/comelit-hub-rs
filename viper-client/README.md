@@ -85,6 +85,7 @@ the UDP source address of the pings.
 | `00 11` | MEDIAREQ (audio) | `18 02 00000000 <rtpc id>` |
 | `00 11` | MEDIAREQ (video) | `14 32 00000000 <rtpc id> <max rtp payload u16> <bitrate u32> <xmax> <ymax> <xpref> <ypref> <fps> 00` |
 | `00 12` | MEDIAOFFER | |
+| `00 70` | VOICESTATUS | `<logaddr (10)> <on> 00` (`CallFsm::start_fonica` on answer) |
 
 ## Watching an external unit
 
@@ -117,6 +118,10 @@ C→S  CTP RELEASE, CTRL close channels
   event 0x1000): audio MEDIAREQ, CONNECT (`00 0c`), video MEDIAREQ. The
   external unit sends its audio only on an answered call, and the other units
   stop ringing. `hang_up` releases it; an answered call has no ring timeout;
+  the app also sends VOICESTATUS on before the audio MEDIAREQ;
+* the external unit asks our audio with its own MEDIAREQ `18` (stopped by
+  `98`) naming the RTPC channel it opened. `send_voice` sends PCMA there as
+  plain RTP, payload type 8, like `Rtp::rtp_tx_write`, over the UDP lane;
 * `start_media` returns the RTP packets of the external unit: from the ringing
   call, or by calling the configured entrance when nobody rings. If someone
   rings while the entrance is being watched, the media moves to the incoming
