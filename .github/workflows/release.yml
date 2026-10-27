@@ -38,6 +38,11 @@ jobs:
           cp hap/installer/comelit-hub-hap.env       deb/etc/comelit-hub-hap/comelit-hub-hap.env
           chmod 755 deb/usr/local/bin/comelit-hub-hap-wrapper.sh
           chmod 755 deb/usr/local/bin/comelit-hub-ctl
+          # dirs, service start and the configuration kept on upgrades
+          install -m 755 hap/installer/linux/debian/postinst \
+                         hap/installer/linux/debian/prerm \
+                         hap/installer/linux/debian/postrm deb/DEBIAN/
+          install -m 644 hap/installer/linux/debian/conffiles deb/DEBIAN/
 
           cat > deb/DEBIAN/control <<EOF
           Package: comelit-hub-hap
@@ -77,19 +82,22 @@ jobs:
           VERSION=${GITHUB_REF_NAME#v}
           mkdir -p pkgroot/usr/local/bin \
                    pkgroot/Library/LaunchDaemons \
-                   pkgroot/etc/comelit-hub-hap
+                   pkgroot/usr/local/share/comelit-hub-hap
 
           cp target/release/comelit-hub-hap                pkgroot/usr/local/bin/
           cp hap/installer/macos/com.comelit.hub.hap.plist  pkgroot/Library/LaunchDaemons/
           cp hap/installer/comelit-hub-wrapper.sh           pkgroot/usr/local/bin/comelit-hub-hap-wrapper.sh
           cp hap/installer/comelit-hub-ctl.sh               pkgroot/usr/local/bin/comelit-hub-ctl
-          cp hap/installer/default-config.json              pkgroot/etc/comelit-hub-hap/comelit-hub-hap-config.json
-          cp hap/installer/comelit-hub-hap.env              pkgroot/etc/comelit-hub-hap/comelit-hub-hap.env
+          # the postinstall script copies them to /etc/comelit-hub-hap
+          # unless a configuration is already there
+          cp hap/installer/default-config.json              pkgroot/usr/local/share/comelit-hub-hap/comelit-hub-hap-config.json
+          cp hap/installer/comelit-hub-hap.env              pkgroot/usr/local/share/comelit-hub-hap/comelit-hub-hap.env
           chmod 755 pkgroot/usr/local/bin/comelit-hub-hap-wrapper.sh
           chmod 755 pkgroot/usr/local/bin/comelit-hub-ctl
 
           pkgbuild \
             --root pkgroot \
+            --scripts hap/installer/macos/scripts \
             --identifier com.comelit.hub.hap \
             --version "$VERSION" \
             comelit-hub-hap-${VERSION}-macos.pkg

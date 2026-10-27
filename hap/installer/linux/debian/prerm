@@ -1,0 +1,7 @@
+#!/bin/sh
+# Debian package: stop the service before its files go away
+set -e
+
+if [ "$1" = "remove" ] && [ -d /run/systemd/system ]; then
+    systemctl disable --now comelit-hub-hap || true
+fi

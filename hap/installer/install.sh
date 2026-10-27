@@ -23,15 +23,31 @@ install_binary() {
   chmod 755 "$BIN_DST"
 }
 
+# An existing configuration (credentials, ViP token) is kept on upgrades
+install_config() {
+  mkdir -p /etc/comelit-hub-hap
+  for file in comelit-hub-hap.env:comelit-hub-hap.env default-config.json:comelit-hub-hap-config.json; do
+    src="${file%%:*}"
+    dst="/etc/comelit-hub-hap/${file##*:}"
+    if [[ -f "$dst" ]]; then
+      echo "→ Keeping $dst"
+    else
+      cp "./$src" "$dst"
+    fi
+  done
+  chmod 600 /etc/comelit-hub-hap/comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap-config.json
+}
+
 install_macos() {
   echo "→ macOS detected"
   install_binary
 
+  # working directory of the service: HomeKit pairings and PID file
+  mkdir -p /var/lib/comelit-hub-hap
+
   cp ./macos/com.comelit.hub.hap.plist \
      /Library/LaunchDaemons/
-  mkdir -p /etc/comelit-hub-hap
-  cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
-  cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
+  install_config
   cp ./comelit-hub-wrapper.sh /usr/local/bin/comelit-hub-hap-wrapper.sh
   chmod 755 /usr/local/bin/comelit-hub-hap-wrapper.sh
 
@@ -66,9 +82,7 @@ install_linux() {
   cp ./linux/comelit-hub-hap.service \
      /etc/systemd/system/
 
-  mkdir -p /etc/comelit-hub-hap
-  cp ./comelit-hub-hap.env /etc/comelit-hub-hap/comelit-hub-hap.env
-  cp ./default-config.json /etc/comelit-hub-hap/comelit-hub-hap-config.json
+  install_config
   cp ./comelit-hub-wrapper.sh /usr/local/bin/comelit-hub-hap-wrapper.sh
   chmod 755 /usr/local/bin/comelit-hub-hap-wrapper.sh
 
