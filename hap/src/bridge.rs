@@ -239,8 +239,8 @@ impl StatusUpdate for Updater {
 /// configurations change so that the configuration number moves and iOS
 /// re-reads the accessory.
 // "5" announced only 320x240 for a while, "6" brought the usual sizes back,
-// "7" has no speaker
-const CAMERA_LAYOUT: &str = "7";
+// "7" had no speaker, "8" has it again for our voice
+const CAMERA_LAYOUT: &str = "8";
 
 /// Records in `bell_dir` whether the doorbell has a camera, and with which
 /// layout, and tells whether that changed since the last start.
