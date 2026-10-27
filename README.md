@@ -69,24 +69,21 @@ Ogni [release](https://github.com/madchicken/comelit-hub-rs/releases) contiene:
 - `comelit-hub-hap-<versione>-amd64.deb` per Linux x86_64 (Debian, Ubuntu)
 - `comelit-hub-hap-<versione>-macos.pkg` per macOS su Apple Silicon
 
-I pacchetti copiano il binario, gli script, l'unità systemd o il LaunchDaemon e una configurazione di esempio, ma non creano le cartelle di lavoro e non avviano il servizio. Dopo l'installazione:
+I pacchetti installano binario, script, servizio di sistema e una configurazione di esempio, creano le cartelle di lavoro e di log e avviano il servizio:
 
 **Linux**
 ```bash
 sudo dpkg -i comelit-hub-hap-<versione>-amd64.deb
-sudo mkdir -p /var/lib/comelit-hub-hap /var/log/comelit-hub-hap
-sudo systemctl daemon-reload
-sudo systemctl enable --now comelit-hub-hap
 ```
 
 **macOS**
 ```bash
 sudo installer -pkg comelit-hub-hap-<versione>-macos.pkg -target /
-sudo mkdir -p /var/lib/comelit-hub-hap /var/log/comelit-hub-hap
-sudo launchctl load /Library/LaunchDaemons/com.comelit.hub.hap.plist
 ```
 
-Prima di avviare il servizio conviene impostare credenziali e configurazione (vedi [Configurazione](#configurazione)).
+Aggiornando con un pacchetto più recente, la configurazione in `/etc/comelit-hub-hap` resta quella che c'era. Rimuovendo il pacchetto `.deb` restano configurazione, associazioni HomeKit e log.
+
+Dopo la prima installazione vanno impostate credenziali e configurazione (vedi [Configurazione](#configurazione)) e riavviato il servizio con `sudo comelit-hub-ctl restart`.
 
 ### Da sorgenti
 

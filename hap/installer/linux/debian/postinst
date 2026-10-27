@@ -1,0 +1,16 @@
+#!/bin/sh
+# Debian package: working and log directories, then the service
+set -e
+
+if [ "$1" = "configure" ]; then
+    # working directory: HomeKit pairings and PID file
+    mkdir -p /var/lib/comelit-hub-hap /var/log/comelit-hub-hap
+    chmod 600 /etc/comelit-hub-hap/comelit-hub-hap.env \
+              /etc/comelit-hub-hap/comelit-hub-hap-config.json
+
+    if [ -d /run/systemd/system ]; then
+        systemctl daemon-reload
+        systemctl enable comelit-hub-hap
+        systemctl restart comelit-hub-hap
+    fi
+fi

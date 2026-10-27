@@ -1,0 +1,25 @@
+#!/bin/sh
+# macOS package: the example configuration unless there is one, working
+# and log directories, then the LaunchDaemon
+set -e
+
+DEFAULTS=/usr/local/share/comelit-hub-hap
+CONFIG_DIR=/etc/comelit-hub-hap
+PLIST=/Library/LaunchDaemons/com.comelit.hub.hap.plist
+
+mkdir -p "$CONFIG_DIR"
+for file in comelit-hub-hap.env comelit-hub-hap-config.json; do
+    if [ ! -f "$CONFIG_DIR/$file" ]; then
+        cp "$DEFAULTS/$file" "$CONFIG_DIR/$file"
+        chmod 600 "$CONFIG_DIR/$file"
+    fi
+done
+
+# working directory: HomeKit pairings and PID file
+mkdir -p /var/lib/comelit-hub-hap /var/log/comelit-hub-hap
+
+chown root:wheel "$PLIST"
+chmod 644 "$PLIST"
+launchctl unload "$PLIST" 2>/dev/null || true
+launchctl load "$PLIST"
+exit 0
