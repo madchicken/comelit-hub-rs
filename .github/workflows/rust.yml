@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@v7
     - name: Install system dependencies
       # The runner image preconfigures third-party apt repos we never use
       # (Google Chrome, etc.). When one of those mirrors serves a stale or
