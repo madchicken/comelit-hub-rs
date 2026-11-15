@@ -131,6 +131,7 @@ pub mod kind {
     pub const RELEASE: u8 = 0x0e;
     pub const MEDIAREQ: u8 = 0x11;
     pub const MEDIAOFFER: u8 = 0x12;
+    pub const OPENDOOR: u8 = 0x2d;
     pub const VOICESTATUS: u8 = 0x70;
     pub const REGISTER_REQ: u8 = 0x40;
     pub const REGISTER_RES: u8 = 0x41;
@@ -144,6 +145,9 @@ pub const MEDIA_VIDEO: u8 = 0x14;
 pub const MEDIA_STOP: u8 = 0x80;
 /// Capability bit announcing that a unit can send video.
 pub const CAPAB_VIDEO: u32 = 0x08;
+/// Capability bit announcing that a unit opens its door on a call: the app
+/// sends OPENDOOR on the call only to a peer announcing it.
+pub const CAPAB_OPENDOOR: u32 = 0x10;
 
 /// Unit type of an internal unit (the app presents itself as one).
 pub const UNIT_INTERNAL: u8 = b'I';
@@ -268,6 +272,16 @@ impl Csp {
         let mut out = vec![0x00, kind::VOICESTATUS];
         out.extend_from_slice(&address.0);
         out.extend_from_slice(&[u8::from(on), 0x00]);
+        out
+    }
+
+    /// Opens the door `output` of `address` (`csp_send_opendoor_onconn`,
+    /// 13 bytes): on a call (`CallFsm::handle_opendoor_req`) or on a
+    /// connection of its own (`OutOfCall::opendoor_call`).
+    pub fn open_door(address: &LogAddr, output: u8) -> Vec<u8> {
+        let mut out = vec![0x00, kind::OPENDOOR];
+        out.extend_from_slice(&address.0);
+        out.push(output);
         out
     }
 
@@ -479,6 +493,16 @@ mod tests {
         assert_eq!(&on[2..12], &me().0);
         assert_eq!(&on[12..], &[0x01, 0x00]);
         assert_eq!(Csp::voice_status(&me(), false)[12], 0);
+    }
+
+    #[test]
+    fn open_door_layout() {
+        // the template of ctpp_channel::get_init_open_door_message
+        let door = LogAddr::new("00000100").unwrap();
+        assert_eq!(
+            Csp::open_door(&door, 2),
+            hex("00 2d 30 30 30 30 30 31 30 30 00 00 02")
+        );
     }
 
     #[test]

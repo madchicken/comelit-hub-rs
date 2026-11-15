@@ -19,6 +19,7 @@ use crate::{
         ComelitAccessory,
         state::door::{DoorPositionState, DoorState, FULLY_CLOSED, FULLY_OPENED},
     },
+    viper::DoorOpener,
     web::metrics::Metrics,
 };
 
@@ -47,6 +48,7 @@ impl ComelitDoorAccessory {
         client: ComelitClient,
         server: &IpServer,
         config: DoorConfig,
+        opener: Option<DoorOpener>,
     ) -> Result<Self> {
         let device_id = door_data.id.clone();
         let name = door_data.description.clone().unwrap_or(device_id.clone());
@@ -101,6 +103,7 @@ impl ComelitDoorAccessory {
         Self::setup_update_target_position(
             &device_id,
             client.clone(),
+            opener,
             &mut door_accessory,
             config.opening_closing_time,
             config.opened_time,
@@ -150,6 +153,7 @@ impl ComelitDoorAccessory {
     fn setup_update_target_position(
         id: &str,
         client: ComelitClient,
+        opener: Option<DoorOpener>,
         accessory: &mut DoorAccessory,
         opening_closing_time: Duration, // the time the door takes to open/close
         opened_time: Duration,          // the time the door remains open
@@ -170,6 +174,7 @@ impl ComelitDoorAccessory {
 
                 let state = state.clone();
                 let client = client.clone();
+                let opener = opener.clone();
                 let id = id.to_string();
                 async move {
                     Metrics::inc_hap_requests();
@@ -184,13 +189,16 @@ impl ComelitDoorAccessory {
                         // hap-rs runs this callback on every read too: while
                         // the door is moving the read value is already
                         // "opened", don't send the command again
-                        let state = state.lock().unwrap();
+                        let mut state = state.lock().unwrap();
                         if state.position_state != DoorPositionState::Stopped as u8
                             || state.current_position == FULLY_OPENED
                         {
                             info!("Door {id} is already open or moving, no action taken");
                             return Ok(());
                         }
+                        // moving from now on: opening it can take a while
+                        state.target_position = FULLY_OPENED;
+                        state.position_state = DoorPositionState::Opening as u8;
                     }
                     info!("Door {id} started opening");
                     // Wait for the real outcome of the hub call before
@@ -200,11 +208,17 @@ impl ComelitDoorAccessory {
                     // door's physical movement (the hub doesn't push
                     // position updates for it), not a real command, so it
                     // stays fire-and-forget in the spawned task below.
-                    client.toggle_device_status(&id, true).await?;
-                    {
+                    // A ViP door ignores the hub while it is in a call with
+                    // us: the call opens it then.
+                    let on_call = match &opener {
+                        Some(opener) => opener.open().await,
+                        None => false,
+                    };
+                    if !on_call && let Err(e) = client.toggle_device_status(&id, true).await {
                         let mut state = state.lock().unwrap();
-                        state.target_position = FULLY_OPENED;
-                        state.position_state = DoorPositionState::Opening as u8;
+                        state.target_position = FULLY_CLOSED;
+                        state.position_state = DoorPositionState::Stopped as u8;
+                        return Err(e.into());
                     }
                     tokio::spawn(async move {
                         tokio::time::sleep(opening_closing_time).await;

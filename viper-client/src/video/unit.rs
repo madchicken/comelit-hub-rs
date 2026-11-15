@@ -13,6 +13,9 @@
 //! * our voice ([`ViperUnit::send_voice`], PCMA at 8 kHz) goes to the
 //!   channel the external unit asks it on with its own audio MEDIAREQ, as
 //!   RTP like `Rtp::rtp_tx_write` (payload type 8);
+//! * [`ViperUnit::open_door`] opens a door of the peer on the current call,
+//!   the way the app does while it shows a call: a unit in a call ignores
+//!   the door openings of the other units, the hub's among them;
 //! * media is started on demand: on the ringing call if there is one,
 //!   otherwise by calling the configured entrance (auto-ignition). RTP
 //!   packets are handed to the caller as they arrive.
@@ -34,8 +37,8 @@ use tokio::time::{Instant, MissedTickBehavior, interval};
 use tracing::{debug, info, warn};
 
 use super::ctp::{
-    APP_CAPABILITIES, CAPAB_VIDEO, Csp, CtpPacket, FLAG_CLOSE, FLAG_DATA, FLAG_OPEN, LogAddr,
-    MEDIA_AUDIO, MEDIA_STOP, UNIT_INTERNAL, VideoParams,
+    APP_CAPABILITIES, CAPAB_OPENDOOR, CAPAB_VIDEO, Csp, CtpPacket, FLAG_CLOSE, FLAG_DATA,
+    FLAG_OPEN, LogAddr, MEDIA_AUDIO, MEDIA_STOP, UNIT_INTERNAL, VideoParams,
 };
 use super::tunnel::{CONTROL_CHANNEL, Control, Frame, Transport, UdpmPing};
 use crate::ViperError;
@@ -58,6 +61,9 @@ const REGISTRATION_RETRY: Duration = Duration::from_secs(30);
 /// Delay before calling the entrance again while media is wanted: right
 /// after a ring the external unit is still busy and refuses the call.
 const WATCH_RETRY: Duration = Duration::from_secs(2);
+/// How long we leave the entrance free after releasing our call for a door
+/// opening sent by someone else.
+const DOOR_HOLD: Duration = Duration::from_secs(5);
 /// A call to the entrance that lasted this long was not a refusal.
 const WATCH_HEALTHY: Duration = Duration::from_secs(10);
 /// Consecutive refused calls to the entrance before giving up the media.
@@ -123,6 +129,11 @@ enum Command {
         reply: oneshot::Sender<Result<(), ViperError>>,
     },
     StopMedia,
+    OpenDoor {
+        address: LogAddr,
+        output: u8,
+        reply: oneshot::Sender<DoorOpening>,
+    },
     Answer,
     HangUp,
     RequestKeyFrame,
@@ -137,6 +148,19 @@ pub type SpawnedUnit = (
     mpsc::Receiver<UnitEvent>,
     JoinHandle<Result<(), ViperError>>,
 );
+
+/// What [`ViperUnit::open_door`] did.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoorOpening {
+    /// Sent on our call with the door's unit.
+    OnCall,
+    /// Our call with the door's unit is released (the unit does not open on
+    /// a call): the entrance is left free for a moment, for the door
+    /// opening to come from someone else.
+    CallReleased,
+    /// No call with the door's unit: open it some other way.
+    NoCall,
+}
 
 /// Handle on a running unit.
 #[derive(Clone)]
@@ -184,6 +208,23 @@ impl ViperUnit {
     /// call keeps ringing.
     pub async fn stop_media(&self) -> Result<(), ViperError> {
         self.send(Command::StopMedia).await
+    }
+
+    /// Opens the door `output` of the unit at `address` on our call with
+    /// that unit, if there is one. A unit in a call ignores the door
+    /// openings of the others, so when it does not open on a call, a call
+    /// of ours we can drop (watching, not answered) is released instead.
+    pub async fn open_door(&self, address: LogAddr, output: u8) -> Result<DoorOpening, ViperError> {
+        let (reply, opened) = oneshot::channel();
+        self.send(Command::OpenDoor {
+            address,
+            output,
+            reply,
+        })
+        .await?;
+        opened
+            .await
+            .map_err(|_| ViperError::Generic("The video unit stopped".into()))
     }
 
     /// Answers the ringing call, if there is one: the external unit sends
@@ -393,7 +434,9 @@ enum CallKind {
 struct Call {
     ctp: Ctp,
     kind: CallKind,
+    /// When the peer sent its capabilities, and which.
     peer_caps: Option<Instant>,
+    capabilities: u32,
     peer_ready: bool,
     /// An incoming call we took with CONNECT.
     answered: bool,
@@ -437,6 +480,8 @@ struct Unit {
     /// When to call the entrance again for the media still wanted.
     next_watch: Option<Instant>,
     watch_failures: u32,
+    /// No call to the entrance before this, a door opening is on its way.
+    door_hold: Option<Instant>,
     /// Packets to send on CTPP for connections we already dropped.
     farewells: Vec<Vec<u8>>,
     voice: VoiceRtp,
@@ -479,6 +524,7 @@ impl Unit {
             media: None,
             next_watch: None,
             watch_failures: 0,
+            door_hold: None,
             farewells: vec![],
             voice: VoiceRtp {
                 ssrc: rand::rng().random(),
@@ -546,6 +592,10 @@ impl Unit {
                         let _ = reply.send(result);
                     }
                     Some(Command::StopMedia) => self.stop_media(None).await?,
+                    Some(Command::OpenDoor { address, output, reply }) => {
+                        let opening = self.open_door(address, output).await?;
+                        let _ = reply.send(opening);
+                    }
                     Some(Command::Answer) => self.answer().await?,
                     Some(Command::HangUp) => self.hang_up(),
                     Some(Command::RequestKeyFrame) => self.request_key_frame().await?,
@@ -597,7 +647,10 @@ impl Unit {
         self.next_watch = None;
         self.watch_failures = 0;
         if self.call.is_none() {
-            if self.ctpp_open {
+            if self.door_held(Instant::now()) {
+                // called once the door opening is through
+                self.next_watch = Some(Instant::now());
+            } else if self.ctpp_open {
                 self.start_watch()?;
             } else if self.config.entrance.is_none() {
                 // nothing to call: media can only come from a ringing call
@@ -637,6 +690,7 @@ impl Unit {
             ctp,
             kind: CallKind::Watch,
             peer_caps: None,
+            capabilities: 0,
             peer_ready: false,
             answered: false,
             voice_channel: None,
@@ -779,6 +833,43 @@ impl Unit {
         }
     }
 
+    /// `CallFsm::handle_opendoor_req`: OPENDOOR on the call, when the peer
+    /// announced it opens on a call. Otherwise our call would keep the door
+    /// closed: a unit in a call ignores the door openings of the others.
+    async fn open_door(&mut self, address: LogAddr, output: u8) -> Result<DoorOpening, ViperError> {
+        let Some(call) = self
+            .call
+            .as_mut()
+            .filter(|c| c.releasing.is_none() && c.ctp.dst == address)
+        else {
+            return Ok(DoorOpening::NoCall);
+        };
+        if call.capabilities & CAPAB_OPENDOOR != 0 {
+            info!("Opening door {output} of {address:?} on the call");
+            call.ctp.queue.push_back(Csp::open_door(&address, output));
+            self.pump_ctp().await?;
+            return Ok(DoorOpening::OnCall);
+        }
+        if call.kind != CallKind::Watch || call.answered {
+            // not ours to drop: someone is ringing
+            return Ok(DoorOpening::NoCall);
+        }
+        info!("{address:?} does not open on a call, releasing ours for its door");
+        self.door_hold = Some(Instant::now() + DOOR_HOLD);
+        self.release_call();
+        if self.media.is_some() {
+            // the media goes on with a new call, once the door is open
+            self.close_media_channels().await?;
+            self.next_watch = Some(Instant::now());
+        }
+        self.pump_ctp().await?;
+        Ok(DoorOpening::CallReleased)
+    }
+
+    fn door_held(&self, now: Instant) -> bool {
+        self.door_hold.is_some_and(|until| now < until)
+    }
+
     /// Opens the RTPC channels once the call can carry media; the MEDIAREQ
     /// follows when the device confirms each channel.
     async fn maybe_request_media(&mut self, now: Instant) -> Result<(), ViperError> {
@@ -917,7 +1008,7 @@ impl Unit {
                 unit_type,
                 capabilities,
             }) => {
-                debug!(
+                info!(
                     "Device '{}' capabilities 0x{capabilities:x}",
                     unit_type as char
                 );
@@ -925,6 +1016,7 @@ impl Unit {
                     warn!("The device does not announce video capability");
                 }
                 call.peer_caps = Some(Instant::now());
+                call.capabilities = capabilities;
             }
             Some(Csp::Alerting) | Some(Csp::Connect) => call.peer_ready = true,
             Some(Csp::Release { cause }) => return Some(format!("released (cause {cause})")),
@@ -977,6 +1069,7 @@ impl Unit {
                 deadline: Instant::now() + self.config.ring_timeout,
             },
             peer_caps: None,
+            capabilities: 0,
             peer_ready: true,
             answered: false,
             voice_channel: None,
@@ -1330,6 +1423,7 @@ impl Unit {
             && self.ctpp_open
             && self.media.is_some()
             && self.next_watch.is_some_and(|at| now >= at)
+            && !self.door_held(now)
         {
             self.next_watch = None;
             if let Err(e) = self.start_watch() {
@@ -1436,6 +1530,8 @@ mod tests {
         /// RTP of our voice: channel, payload type, payload length.
         Voice(u16, u8, usize),
         MediaReq([u8; 2]),
+        /// OPENDOOR: connection, output.
+        OpenDoor([u8; 2], u8),
         Release([u8; 2]),
         Close([u8; 2]),
     }
@@ -1448,11 +1544,15 @@ mod tests {
         HangUp,
     }
 
-    /// A scripted apartment + external unit, acting on `acts`; everything
-    /// the client sends is reported on `seen`.
+    /// Capabilities of the scripted external unit: video, opens on a call.
+    const DOOR_CAPABILITIES: u32 = 0x1b;
+
+    /// A scripted apartment + external unit announcing `capabilities`,
+    /// acting on `acts`; everything the client sends is reported on `seen`.
     async fn fake_hub(
         listener: TcpListener,
         udp: UdpSocket,
+        capabilities: u32,
         mut acts: mpsc::Receiver<Act>,
         seen: mpsc::UnboundedSender<Seen>,
     ) {
@@ -1586,13 +1686,13 @@ mod tests {
                     Csp::Start { .. } => {
                         seen.send(Seen::Start(conn)).unwrap();
                         started = Some(packet.clone());
-                        answers.push(Csp::capab_report(b'P', 0x1b));
+                        answers.push(Csp::capab_report(b'P', capabilities));
                         answers.push(vec![0, kind::CONNECT]);
                     }
                     Csp::CapabReport { .. } => seen.send(Seen::Capab(conn)).unwrap(),
                     Csp::Alerting => {
                         seen.send(Seen::Alerting(conn)).unwrap();
-                        answers.push(Csp::capab_report(b'P', 0x1b));
+                        answers.push(Csp::capab_report(b'P', capabilities));
                     }
                     Csp::MediaReq { channel, .. } => {
                         seen.send(Seen::MediaReq(conn)).unwrap();
@@ -1613,6 +1713,12 @@ mod tests {
                         answers.push(Csp::media_request(MEDIA_AUDIO, VOICE_CHANNEL));
                     }
                     Csp::Release { .. } => seen.send(Seen::Release(conn)).unwrap(),
+                    Csp::Other {
+                        kind: kind::OPENDOOR,
+                    } => {
+                        assert_eq!(&packet.payload[2..12], &door().0);
+                        seen.send(Seen::OpenDoor(conn, packet.payload[12])).unwrap();
+                    }
                     _ => {}
                 }
                 let mut tx = tx;
@@ -1637,13 +1743,17 @@ mod tests {
     }
 
     async fn start(config: UnitConfig) -> Harness {
+        start_with(config, DOOR_CAPABILITIES).await
+    }
+
+    async fn start_with(config: UnitConfig, capabilities: u32) -> Harness {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let hub_udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
         let tcp_addr = listener.local_addr().unwrap();
         let udp_addr = hub_udp.local_addr().unwrap();
         let (acts, acts_rx) = mpsc::channel(1);
         let (seen_tx, seen) = mpsc::unbounded_channel();
-        tokio::spawn(fake_hub(listener, hub_udp, acts_rx, seen_tx));
+        tokio::spawn(fake_hub(listener, hub_udp, capabilities, acts_rx, seen_tx));
 
         let tcp = TcpStream::connect(tcp_addr).await.unwrap();
         let udp = UdpSocket::bind("127.0.0.1:0").await.unwrap();
@@ -1821,6 +1931,72 @@ mod tests {
                 reason: "we hung up".into()
             }
         );
+
+        h.unit.shutdown().await.unwrap();
+        h.task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn opens_the_door_on_the_call_with_its_unit() {
+        let mut h = start(config(false, true, Duration::from_secs(60))).await;
+        let other = LogAddr::new("00000200").unwrap();
+        assert_eq!(
+            h.unit.open_door(door(), 2).await.unwrap(),
+            DoorOpening::NoCall
+        );
+
+        let mut packets = h.unit.start_media(false).await.unwrap();
+        let Seen::Start(watch) = next_seen(&mut h.seen).await else {
+            panic!("expected a call to the entrance");
+        };
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(watch));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
+        next_packet(&mut packets).await;
+
+        assert_eq!(
+            h.unit.open_door(other, 1).await.unwrap(),
+            DoorOpening::NoCall
+        );
+        assert_eq!(
+            h.unit.open_door(door(), 2).await.unwrap(),
+            DoorOpening::OnCall
+        );
+        assert_eq!(next_seen(&mut h.seen).await, Seen::OpenDoor(watch, 2));
+        // the call goes on
+        next_packet(&mut packets).await;
+
+        h.unit.shutdown().await.unwrap();
+        h.task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn leaves_the_entrance_free_for_a_door_it_does_not_open_on_calls() {
+        let mut config = config(false, true, Duration::from_secs(60));
+        config.keep_watching = true;
+        let mut h = start_with(config, DOOR_CAPABILITIES & !CAPAB_OPENDOOR).await;
+        let mut packets = h.unit.start_media(false).await.unwrap();
+        let Seen::Start(watch) = next_seen(&mut h.seen).await else {
+            panic!("expected a call to the entrance");
+        };
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Capab(watch));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::MediaReq(watch));
+        next_packet(&mut packets).await;
+
+        let released = Instant::now();
+        assert_eq!(
+            h.unit.open_door(door(), 2).await.unwrap(),
+            DoorOpening::CallReleased
+        );
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Release(watch));
+        assert_eq!(next_seen(&mut h.seen).await, Seen::Close(watch));
+        // the media is still wanted: the entrance is called again, once the
+        // door had the time to open
+        let again = tokio::time::timeout(DOOR_HOLD * 2, h.seen.recv())
+            .await
+            .expect("the entrance is not called again")
+            .unwrap();
+        assert!(matches!(again, Seen::Start(_)), "{again:?}");
+        assert!(released.elapsed() >= DOOR_HOLD);
 
         h.unit.shutdown().await.unwrap();
         h.task.await.unwrap().unwrap();
