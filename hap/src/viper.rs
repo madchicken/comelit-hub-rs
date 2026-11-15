@@ -4,8 +4,9 @@
 //! registered as a subunit of the apartment: when someone rings, the ViP
 //! system calls it and the HomeKit doorbell rings, instead of relying on the
 //! Comelit hub MQTT event. The unit is also what the HomeKit camera takes its
-//! video from (`crate::doorbell_camera`). The connection is re-established
-//! when it drops.
+//! video from (`crate::doorbell_camera`), and what opens the hub doors of
+//! the ViP system while it is in a call with them ([`DoorOpener`]). The
+//! connection is re-established when it drops.
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -14,7 +15,8 @@ use anyhow::{Context, Result, anyhow};
 use tokio::sync::{Mutex, RwLock};
 use tokio::task::JoinHandle;
 use tracing::{debug, error, info, warn};
-use viper_client::video::{UnitEvent, VideoParams, ViperUnit};
+use viper_client::video::ctp::LogAddr;
+use viper_client::video::{DoorOpening, UnitEvent, VideoParams, ViperUnit};
 use viper_client::{ICONA_BRIDGE_PORT, ViperClient};
 
 use crate::accessories::ComelitDoorbellAccessory;
@@ -27,8 +29,56 @@ const MAX_BACKOFF: Duration = Duration::from_secs(60);
 /// reconnection starts again from the minimum delay.
 const HEALTHY_SESSION: Duration = Duration::from_secs(120);
 
-/// The connected ViP unit, shared with the HomeKit camera.
+/// The connected ViP unit, shared with the HomeKit camera and the doors.
 pub type UnitSlot = Arc<RwLock<Option<ViperUnit>>>;
+
+/// Time for the external unit to end the call we released, before the hub
+/// sends it the door opening.
+const CALL_RELEASE_WAIT: Duration = Duration::from_secs(1);
+
+/// Opens a hub door of the ViP system on our call with its external unit.
+/// While the HomeKit camera shows it (the Home app asks a snapshot every 10
+/// seconds), that unit is in a call with us and ignores the door opening
+/// the hub sends it.
+#[derive(Clone)]
+pub struct DoorOpener {
+    slot: UnitSlot,
+    address: LogAddr,
+    output: u8,
+}
+
+impl DoorOpener {
+    /// For a hub door `VIP#OD#<address>.<output>`; `None` for other doors.
+    pub fn for_hub_door(slot: UnitSlot, id: &str) -> Option<DoorOpener> {
+        let (address, output) = id.strip_prefix("VIP#OD#")?.split_once('.')?;
+        Some(DoorOpener {
+            slot,
+            address: LogAddr::new(address).ok()?,
+            output: output.parse().ok()?,
+        })
+    }
+
+    /// Opens the door on our call with its unit. False when the hub must
+    /// open it: no call (our call is released first if needed), or no ViP
+    /// connection.
+    pub async fn open(&self) -> bool {
+        let Some(unit) = self.slot.read().await.clone() else {
+            return false;
+        };
+        match unit.open_door(self.address, self.output).await {
+            Ok(DoorOpening::OnCall) => true,
+            Ok(DoorOpening::CallReleased) => {
+                tokio::time::sleep(CALL_RELEASE_WAIT).await;
+                false
+            }
+            Ok(DoorOpening::NoCall) => false,
+            Err(e) => {
+                warn!("Cannot open the door through the ViP unit: {e}");
+                false
+            }
+        }
+    }
+}
 
 /// Handle on the ViP doorbell service. The task is aborted when it is
 /// dropped, i.e. when the bridge restarts.
@@ -132,6 +182,12 @@ async fn session(
     let (unit, mut events, task) = client
         .into_unit(&vip, settings.entrance.as_deref(), ring_timeout, video)
         .map_err(|e| anyhow!("{e}"))?;
+    for door in &vip.user_parameters.opendoor_address_book {
+        info!(
+            "ViP door {:?}: {} output {}",
+            door.name, door.apt_address, door.output_index
+        );
+    }
     *slot.write().await = Some(unit);
     info!(
         "Connected to the ViP system as {}{}",
@@ -162,4 +218,18 @@ async fn session(
     task.await
         .context("ViP unit task")?
         .map_err(|e| anyhow!("{e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hub_door_names_its_unit_and_output() {
+        let opener = DoorOpener::for_hub_door(UnitSlot::default(), "VIP#OD#00000100.2").unwrap();
+        assert_eq!(opener.address, LogAddr::new("00000100").unwrap());
+        assert_eq!(opener.output, 2);
+        assert!(DoorOpener::for_hub_door(UnitSlot::default(), "DOM#LT#4.1").is_none());
+        assert!(DoorOpener::for_hub_door(UnitSlot::default(), "VIP#OD#00000100").is_none());
+    }
 }

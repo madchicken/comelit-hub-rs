@@ -78,13 +78,14 @@ the UDP source address of the pings.
 | Type | Name | Layout |
 |---|---|---|
 | `00 01` | START | `src(10) dst(10) 01 00 <call id u32> src(10) 'I' 'I'` |
-| `00 03` | CAPAB_REPORT | `<unit type> 00 <capabilities u32>` (bit `0x08` = video) |
+| `00 03` | CAPAB_REPORT | `<unit type> 00 <capabilities u32>` (bit `0x08` = video, `0x10` = opens its door on a call) |
 | `00 0a` | ALERTING | |
 | `00 0c` | CONNECT | |
 | `00 0e` | RELEASE | `<cause>` |
 | `00 11` | MEDIAREQ (audio) | `18 02 00000000 <rtpc id>` |
 | `00 11` | MEDIAREQ (video) | `14 32 00000000 <rtpc id> <max rtp payload u16> <bitrate u32> <xmax> <ymax> <xpref> <ypref> <fps> 00` |
 | `00 12` | MEDIAOFFER | |
+| `00 2d` | OPENDOOR | `<door unit logaddr (10)> <output>` (`csp_send_opendoor_onconn`) |
 | `00 70` | VOICESTATUS | `<logaddr (10)> <on> 00` (`CallFsm::start_fonica` on answer) |
 
 ## Watching an external unit
@@ -126,7 +127,13 @@ C→S  CTP RELEASE, CTRL close channels
   call, or by calling the configured entrance when nobody rings. If someone
   rings while the entrance is being watched, the media moves to the incoming
   call; when the incoming call ends while media is still wanted, the unit goes
-  back to watching the entrance.
+  back to watching the entrance;
+* `open_door` opens a door of the unit we are in a call with, like the app
+  (`CallFsm::handle_opendoor_req`): OPENDOOR on the call, in every call state,
+  when the peer announced capability `0x10`. A unit in a call ignores the
+  door openings of the others (the hub's, or a separate CTP connection like
+  `OutOfCall::opendoor_call`); when it does not open on a call, `open_door`
+  releases a watching call instead and leaves the entrance free for 5 s.
 
 The CLI commands are thin wrappers recording a unit's media to files.
 

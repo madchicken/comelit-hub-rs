@@ -4,7 +4,7 @@ use crate::accessories::{
 };
 use crate::settings::Settings;
 use crate::doorbell_camera::{SnapshotSource, VideoFeed, ViperMediaProvider};
-use crate::viper::{UnitSlot, ViperDoorbell};
+use crate::viper::{DoorOpener, UnitSlot, ViperDoorbell};
 use futures::FutureExt;
 use crate::web::metrics::Metrics;
 use crate::web::state::{BridgeState, ConnectionStatus, DeviceInfo, DeviceType};
@@ -617,6 +617,10 @@ pub async fn start_bridge(
             }
         }
 
+        // With doorbell_video the doorbells get a camera fed by the ViP unit,
+        // and the doors of the ViP system open on its calls
+        let unit_slot = UnitSlot::default();
+
         for door in doors {
             if settings.mount_doors.unwrap_or_default() {
                 i += 1;
@@ -634,6 +638,11 @@ pub async fn start_bridge(
                         opened_time: Duration::from_secs(settings.door.opened_time),
                         mount_as: crate::accessories::DoorType::Door,
                     },
+                    settings
+                        .doorbell_video
+                        .enabled
+                        .then(|| DoorOpener::for_hub_door(unit_slot.clone(), &door.id))
+                        .flatten(),
                 )
                 .await
                 {
@@ -660,8 +669,6 @@ pub async fn start_bridge(
             }
         }
 
-        // With doorbell_video the doorbells get a camera fed by the ViP unit
-        let unit_slot = UnitSlot::default();
         let video_feed = settings
             .doorbell_video
             .enabled
